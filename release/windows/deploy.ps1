@@ -337,6 +337,14 @@ try {
         Remove-Item -LiteralPath $pluginTarget -Recurse -Force
     }
     Copy-DirectoryContents -Source $payloadRoot -Destination $pluginTarget
+    $gitMetadataBackup = Join-Path $pluginBackup '.git'
+    $gitMetadataTarget = Join-Path $pluginTarget '.git'
+    if (Test-Path -LiteralPath $gitMetadataBackup -PathType Container) {
+        Copy-DirectoryContents -Source $gitMetadataBackup -Destination $gitMetadataTarget
+    }
+    elseif (Test-Path -LiteralPath $gitMetadataBackup -PathType Leaf) {
+        Copy-Item -LiteralPath $gitMetadataBackup -Destination $gitMetadataTarget -Force
+    }
     $pluginChanged = $true
     Write-JsonAtomic -Path (Join-Path $pluginTarget '.codex-auto-retry-release.json') -Value ([pscustomobject][ordered]@{
         packageVersion = [string]$manifest.packageVersion

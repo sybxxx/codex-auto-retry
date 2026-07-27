@@ -64,7 +64,7 @@ try {
 
     $payloadRoot = Join-Path $packageRoot 'payload\codex-auto-retry'
     New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
-    foreach ($entry in @('.codex-plugin', '.mcp.json', 'assets', 'docs', 'release', 'skills', 'scripts', 'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md')) {
+    foreach ($entry in @('.codex-plugin', '.gitattributes', '.gitignore', '.mcp.json', 'assets', 'docs', 'release', 'skills', 'scripts', 'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md')) {
         $source = Join-Path $pluginRoot $entry
         if (-not (Test-Path -LiteralPath $source)) { throw "Plugin payload entry is missing: $entry" }
         Copy-Item -LiteralPath $source -Destination (Join-Path $payloadRoot $entry) -Recurse -Force

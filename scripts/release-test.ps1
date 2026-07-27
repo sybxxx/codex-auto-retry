@@ -40,7 +40,8 @@ try {
     $privateRuntimeEntries = @($archiveEntries | Where-Object {
         $_ -match '(^|/)(config|control|state|status)\.json$' -or
         $_ -match '(^|/)logs/' -or
-        $_ -match '(^|/)node_modules/'
+        $_ -match '(^|/)node_modules/' -or
+        $_ -match '(^|/)\.git/'
     })
     if ($privateRuntimeEntries.Count -gt 0) {
         throw "Release contains runtime state or build dependencies: $($privateRuntimeEntries -join ', ')"

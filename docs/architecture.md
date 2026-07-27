@@ -229,7 +229,10 @@ state. It stages a rollback copy of any existing owned plugin, edits the
 personal marketplace through a JSON parser while retaining unrelated entries,
 and invokes Codex's supported `plugin add` command instead of editing Codex
 configuration directly. Runtime installation keeps user data in place and
-must publish a version-matching heartbeat before the release is accepted.
+must publish a version-matching heartbeat before the release is accepted. When
+the installed plugin source is also a Git checkout, the installer restores its
+`.git` metadata from the rollback copy before registration, preserving local
+history and remotes without adding that metadata to the release archive.
 
 The uninstaller uses Codex's supported `plugin remove` command, stops the
 watchdog, removes current-user startup, and deletes only a plugin directory

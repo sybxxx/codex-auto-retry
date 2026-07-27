@@ -5,6 +5,7 @@
 | Path | Responsibility |
 | --- | --- |
 | `.codex-plugin/plugin.json` | Codex plugin identity, catalog metadata, skill discovery, and MCP server declaration. |
+| `.gitignore`, `.gitattributes` | Keep local runtime state out of public source and make cross-platform line endings deterministic. |
 | `.mcp.json` | Launches the installed local MCP management server on demand through stdio. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
 | `scripts/status.ps1` | Reads the installed heartbeat without inspecting conversation content. |
@@ -77,6 +78,9 @@ Installation replaces only the owned plugin source after taking a temporary
 rollback copy. It updates `~/.agents/plugins/marketplace.json` through JSON
 parsing while retaining unrelated marketplace entries, uses Codex's own
 `plugin add` command, and delegates runtime replacement to `scripts/install.ps1`.
+If the installed source is a Git checkout, its `.git` directory or worktree
+pointer is restored after the payload replacement, so an upgrade does not erase
+local history or remote configuration.
 
 ## Configuration
 
