@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.txt text eol=crlf
+*.go text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+*.exe binary
+*.png binary
+*.zip binary
+
+scripts/source/ui/dist/panel.html -whitespace linguist-generated=true

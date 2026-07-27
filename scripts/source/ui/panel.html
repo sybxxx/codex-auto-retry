@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:," />
+    <title>Codex Auto Retry</title>
+  </head>
+  <body>
+    <main class="app-shell" id="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">
+            <i data-lucide="refresh-cw"></i>
+          </div>
+          <div class="brand-copy">
+            <h1>Codex Auto Retry</h1>
+            <p class="service-line" id="service-line">正在连接</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span class="version" id="version"></span>
+          <button class="icon-button" id="refresh-button" type="button" title="刷新状态" aria-label="刷新状态">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+        </div>
+      </header>
+
+      <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="metrics" aria-label="自动重试概况">
+        <div class="metric">
+          <span class="metric-label">服务</span>
+          <strong class="metric-value status-value" id="service-status">
+            <span class="status-dot status-dot-neutral"></span>
+            连接中
+          </strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">队列</span>
+          <strong class="metric-value" id="queue-count">--</strong>
+        </div>
+        <div class="metric metric-next">
+          <span class="metric-label">下次重试</span>
+          <strong class="metric-value countdown" id="next-retry">--</strong>
+        </div>
+      </section>
+
+      <section class="queue-section" aria-labelledby="queue-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="queue-heading">重试队列</h2>
+            <p id="queue-summary">正在读取</p>
+          </div>
+          <span class="scan-time" id="scan-time"></span>
+        </div>
+        <div class="queue-list" id="queue-list" aria-live="polite">
+          <div class="empty-state loading-state">
+            <i data-lucide="clock"></i>
+            <span>正在读取队列</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="controls-section" aria-labelledby="settings-heading">
+        <div class="section-heading compact-heading">
+          <div>
+            <h2 id="settings-heading">设置</h2>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="setting-row pause-row">
+            <div class="setting-copy">
+              <label for="pause-toggle">自动重试</label>
+              <span id="pause-description">运行中</span>
+            </div>
+            <label class="switch" title="开启或暂停新的自动重试">
+              <input id="pause-toggle" type="checkbox" role="switch" />
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <div class="prompt-setting">
+            <div class="prompt-label-row">
+              <label for="retry-prompt">普通对话重试文字</label>
+              <span><span id="prompt-count">0</span>/500</span>
+            </div>
+            <textarea id="retry-prompt" maxlength="500" rows="3" spellcheck="false" disabled></textarea>
+            <div class="prompt-actions">
+              <span class="field-error" id="prompt-error" role="alert"></span>
+              <button class="command-button" id="save-prompt" type="button" disabled>
+                <i data-lucide="save"></i>
+                <span>保存</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/panel.ts"></script>
+  </body>
+</html>

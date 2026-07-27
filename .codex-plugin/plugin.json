@@ -1,0 +1,34 @@
+{
+  "name": "codex-auto-retry",
+  "version": "0.3.0+codex.20260727101310",
+  "description": "Automatically resumes Codex tasks after recoverable provider failures, with an embedded status and settings panel.",
+  "author": {
+    "name": "TQY Local Tools"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "retry",
+    "reliability",
+    "provider"
+  ],
+  "interface": {
+    "displayName": "Codex Auto Retry",
+    "shortDescription": "Recover interrupted tasks and manage retries inside Codex.",
+    "longDescription": "Runs a local, provider-independent watchdog that retries failed tasks through Codex App's own background connection without focusing the App or switching tasks. An embedded panel shows live countdowns and queue state, and lets you pause retries or change the normal-conversation retry text.",
+    "developerName": "TQY Local Tools",
+    "category": "Productivity",
+    "capabilities": [
+      "Automation",
+      "Interactive",
+      "Local"
+    ],
+    "defaultPrompt": [
+      "\u6253\u5f00 Codex Auto Retry \u7ba1\u7406\u9762\u677f\u3002",
+      "\u67e5\u770b\u81ea\u52a8\u91cd\u8bd5\u961f\u5217\u548c\u5012\u8ba1\u65f6\u3002",
+      "\u628a\u666e\u901a\u5bf9\u8bdd\u7684\u91cd\u8bd5\u6587\u5b57\u6539\u6210\u201c\u7ee7\u7eed\u201d\u3002"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "codex-auto-retry-panel",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "lucide": "1.27.0",
+    "zod": "4.1.13"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "vite-plugin-singlefile": "2.3.3"
+  }
+}

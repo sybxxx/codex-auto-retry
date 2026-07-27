@@ -1,0 +1,15 @@
+# Local installation metadata
+.codex-auto-retry-release.json
+
+# Frontend dependencies are restored from package-lock.json
+scripts/source/ui/node_modules/
+
+# Keep only the two distributable runtime binaries in scripts/bin
+scripts/bin/*
+!scripts/bin/codex-auto-retry.exe
+!scripts/bin/codex-auto-retry-mcp.exe
+
+# Local and editor artifacts
+*.tmp
+.DS_Store
+Thumbs.db

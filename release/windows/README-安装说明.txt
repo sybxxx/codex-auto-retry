@@ -1,0 +1,58 @@
+Codex Auto Retry 0.3.0 - Windows x64 安装说明
+================================================
+
+适用环境
+--------
+- Windows 10/11 64 位
+- 电脑上已经安装并至少启动过一次 Codex App
+- 不需要管理员权限
+- 不需要安装 Go、Node.js 或其他开发工具
+
+安装
+----
+1. 先把整个 ZIP 解压到一个普通文件夹，不要直接在压缩包预览窗口里运行。
+2. 双击“安装.cmd”。
+3. 等待窗口显示“Installation succeeded”。
+4. 在 Codex App 中新建一个任务，即可加载管理面板。
+
+自动重试在安装后是全局生效的，不需要在每个任务里引用插件，也不需要一直
+打开管理面板。后台守护进程会随当前 Windows 用户登录而启动，不会获得管理员
+权限。安装或升级不会删除已有的重试文字、暂停状态、队列、历史状态和日志。
+
+管理面板
+--------
+在 Codex 中输入“打开 Codex Auto Retry 管理面板”，可以查看倒计时、任务队列、
+暂停开关，并修改普通对话中自动发送的文字。目标模式使用 Codex 原生目标恢复，
+不会发送这段文字。
+
+卸载
+----
+双击“卸载.cmd”即可停止后台进程、移除开机启动和 Codex 插件。默认会保留
+重试设置、状态和日志，重新安装后可以继续使用。
+
+如需彻底删除这些数据，可在本文件所在目录打开 PowerShell 后运行：
+
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\uninstall-release.ps1 -RemoveData
+
+安装位置
+--------
+- 插件文件：%USERPROFILE%\plugins\codex-auto-retry
+- 运行程序和状态：%LOCALAPPDATA%\CodexAutoRetry
+- Codex 插件缓存：%USERPROFILE%\.codex\plugins\cache
+- 当前用户开机启动项：CodexAutoRetry
+
+安全与校验
+----------
+安装程序会先按 SHA256SUMS.txt 检查发布包里的每个文件，再执行安装。外层 ZIP
+的哈希值写在同目录的 .sha256.txt 文件中。程序不会读取或保存 API 密钥、消息
+正文、工具参数或回复正文。
+
+当前发布包未使用商业代码签名证书，因此 Windows 或安全软件可能显示“未知发布
+者”。请只使用来源可信且 SHA-256 一致的发布包。
+
+排查
+----
+- 安装器提示找不到 Codex：先启动一次 Codex App，然后重新双击“安装.cmd”。
+- 后台状态日志：%LOCALAPPDATA%\CodexAutoRetry\logs\daemon.log
+- 安装完成后看不到插件：在 Codex App 中新建一个任务；旧任务不会重新加载插件。
+- 永久失效或被撤销的账号仍需要重新登录，自动重试不会绕过身份验证。
