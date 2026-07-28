@@ -15,7 +15,7 @@
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
 | `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs mutation-free installer/uninstaller checks. |
 | `scripts/mcp-smoke-test.ps1` | Verifies MCP discovery, app resource metadata, isolated settings updates, and queued controls. |
-| `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible settings form, non-overlapping numeric settings, settings-process shutdown, heartbeat, and clean status shutdown. |
+| `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible non-overlapping settings form, concurrent refresh stability, settings-process shutdown, heartbeat, and clean status shutdown. |
 | `scripts/smoke-test.ps1` | Runs an isolated process-level two-task retry and strict-correlation test through a mock background endpoint. |
 | `scripts/renderer-control-smoke-test.ps1` | Probes the installed Codex App's background bridge through production discovery and transport code without changing UI or tasks. |
 | `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal and normal-turn continuation against an isolated app-server and temporary `CODEX_HOME`. |

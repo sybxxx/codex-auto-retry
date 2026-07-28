@@ -18,7 +18,30 @@ $smokeClosePath = Join-Path $DataDir 'settings-smoke-close.signal'
 function Read-JsonFile {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    try { return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json } catch { return $null }
+    $stream = $null
+    $reader = $null
+    try {
+        $share = [System.IO.FileShare]([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+        $stream = [System.IO.FileStream]::new(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            $share
+        )
+        $reader = [System.IO.StreamReader]::new(
+            $stream,
+            [System.Text.UTF8Encoding]::new($false),
+            $true,
+            1024,
+            $true
+        )
+        return $reader.ReadToEnd() | ConvertFrom-Json
+    } catch {
+        return $null
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($stream) { $stream.Dispose() }
+    }
 }
 
 function Start-LocalCommand {
@@ -407,6 +430,7 @@ $timer.Interval = if ($SmokeTest) { 100 } else { 1000 }
 $smokeDeadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
 $timer.add_Tick({
     if ($SmokeTest) {
+        Update-RuntimeView
         if ((Test-Path -LiteralPath $smokeClosePath) -or [DateTimeOffset]::UtcNow -ge $smokeDeadline) {
             $form.Close()
         }

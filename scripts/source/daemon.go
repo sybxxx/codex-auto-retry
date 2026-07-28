@@ -141,9 +141,11 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 		return nil
 	}
 	if stateErr != nil {
+		d.logger.Printf("state save failed category=state_write")
 		return fmt.Errorf("save state: %w", stateErr)
 	}
 	if statusErr != nil {
+		d.logger.Printf("status save failed category=status_write")
 		return fmt.Errorf("save status: %w", statusErr)
 	}
 	return nil

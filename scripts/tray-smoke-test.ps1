@@ -128,6 +128,14 @@ try {
     if ($settingsWindow -eq [IntPtr]::Zero) {
         throw 'The tray settings window exists but is not visible.'
     }
+    $refreshDeadline = (Get-Date).AddSeconds(4)
+    do {
+        Start-Sleep -Milliseconds 200
+        $process.Refresh()
+        if ($process.HasExited) {
+            throw 'The watchdog stopped while the settings window was refreshing.'
+        }
+    } while ((Get-Date) -lt $refreshDeadline)
     New-Item -ItemType File -Force -Path (Join-Path $dataDir 'settings-smoke-close.signal') | Out-Null
     if (-not $settingsProcess.WaitForExit(10000)) {
         throw 'The tray settings window did not close cleanly.'
@@ -151,6 +159,7 @@ try {
         SettingsWindowInitialized = $true
         SettingsWindowVisible = $true
         SettingsLayoutSeparated = $true
+        ConcurrentRefreshStable = $true
         SettingsProcessClosed = $true
         HeartbeatPublished = $true
         FinalStateClean = $true

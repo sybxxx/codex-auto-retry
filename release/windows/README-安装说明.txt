@@ -1,4 +1,4 @@
-Codex Auto Retry 0.4.2 - Windows x64 安装说明
+Codex Auto Retry 0.4.3 - Windows x64 安装说明
 ================================================
 
 适用环境

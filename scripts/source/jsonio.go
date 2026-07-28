@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
+
+const atomicReplaceAttempts = 8
 
 func writeJSONAtomic(path string, value any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -37,8 +40,27 @@ func writeJSONAtomic(path string, value any) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := replaceFileWithRetry(tempPath, path); err != nil {
 		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
 	}
 	return nil
+}
+
+func replaceFileWithRetry(source, destination string) error {
+	delay := 10 * time.Millisecond
+	var err error
+	for attempt := 1; attempt <= atomicReplaceAttempts; attempt++ {
+		err = os.Rename(source, destination)
+		if err == nil {
+			return nil
+		}
+		if attempt == atomicReplaceAttempts {
+			break
+		}
+		time.Sleep(delay)
+		if delay < 80*time.Millisecond {
+			delay *= 2
+		}
+	}
+	return err
 }

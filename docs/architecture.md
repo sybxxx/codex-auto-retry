@@ -265,8 +265,9 @@ becoming additional writers for `state.json`.
 - `tray-smoke-test.ps1` starts an isolated GUI-subsystem watchdog and opens the
   real Windows Forms settings process through the native tray command. It
   requires the settings top-level window to be visible, verifies that numeric
-  labels do not overlap their input fields, closes it through a test-only
-  signal, and verifies that no stale running status remains.
+  labels do not overlap their input fields, exercises concurrent status refresh
+  across several watchdog scans, closes it through a test-only signal, and
+  verifies that no stale running status remains.
 - The panel is type-checked, bundled into a single offline HTML resource, and
   inspected with Playwright at desktop and narrow widths. The MCP Apps client
   handles host theme variables, safe-area insets, and automatic iframe sizing.
