@@ -30,10 +30,15 @@ function Write-LifecycleEvent {
         [Parameter(Mandatory = $true)][string]$Kind,
         [Parameter(Mandatory = $true)][string]$TurnId,
         $ErrorValue,
+        $LastAgentMessage,
+        [switch]$IncludeLastAgentMessage,
         [switch]$Append
     )
     $payload = [ordered]@{ type = $Kind; turn_id = $TurnId }
-    if ($Kind -eq 'task_complete') { $payload.error = $ErrorValue }
+    if ($Kind -eq 'task_complete') {
+        $payload.error = $ErrorValue
+        if ($IncludeLastAgentMessage) { $payload.last_agent_message = $LastAgentMessage }
+    }
     $line = [ordered]@{
         timestamp = (Get-Date).ToUniversalTime().ToString('o')
         type = 'event_msg'
@@ -119,7 +124,7 @@ try {
     $mockPort = [int](Get-Content -Raw -Encoding UTF8 -LiteralPath $mockPortPath | ConvertFrom-Json)
 
     $config = [ordered]@{
-        config_version = 2
+        config_version = 3
         poll_interval_seconds = 1
         initial_delay_seconds = 1
         max_delay_seconds = 4
@@ -164,6 +169,8 @@ try {
             Cwd = Join-Path $testRoot 'workspace-a'
             Model = 'model-alpha'
             Effort = 'high'
+            FailureClass = 'server'
+            EmptyResponse = $false
         },
         [pscustomobject]@{
             Id = '33333333-3333-4333-8333-333333333333'
@@ -172,12 +179,19 @@ try {
             Cwd = Join-Path $testRoot 'workspace-b'
             Model = 'model-beta'
             Effort = 'max'
+            FailureClass = 'empty_response'
+            EmptyResponse = $true
         }
     )
     foreach ($thread in $retryThreads) {
         New-Item -ItemType Directory -Force -Path $thread.Cwd | Out-Null
         Write-TurnContext -Path $thread.Path -Cwd $thread.Cwd -Model $thread.Model -Effort $thread.Effort
-        Write-LifecycleEvent -Path $thread.Path -Kind 'task_complete' -TurnId 'failed-turn' -ErrorValue 'HTTP 503 Service Unavailable' -Append
+        if ($thread.EmptyResponse) {
+            Write-LifecycleEvent -Path $thread.Path -Kind 'task_complete' -TurnId 'failed-turn' -ErrorValue $null -LastAgentMessage $null -IncludeLastAgentMessage -Append
+        }
+        else {
+            Write-LifecycleEvent -Path $thread.Path -Kind 'task_complete' -TurnId 'failed-turn' -ErrorValue 'HTTP 503 Service Unavailable' -Append
+        }
     }
 
     $deadline = (Get-Date).AddSeconds(15)
@@ -196,6 +210,7 @@ try {
         }
     }
     if (-not $expressions.Contains('Continue smoke test.')) { throw 'Continuation prompt was not encoded in the same-task request.' }
+    if (-not $expressions.Contains('input: []')) { throw 'Normal recovery did not prefer a silent empty-input continuation.' }
     foreach ($setting in @('model_reasoning_effort', ':danger-full-access', 'runtime_workspace_roots')) {
         if (-not $expressions.Contains($setting)) { throw "Background dispatch omitted preserved setting $setting." }
     }
@@ -214,6 +229,9 @@ try {
         } while ((-not $threadState -or -not $threadState.awaiting) -and (Get-Date) -lt $deadline)
         if (-not $threadState -or -not $threadState.awaiting) {
             throw "Dispatched retry was not persisted for task $($thread.Id)."
+        }
+        if ($threadState.awaiting.class -ne $thread.FailureClass) {
+            throw "Task $($thread.Id) was classified as $($threadState.awaiting.class), expected $($thread.FailureClass)."
         }
     }
 
@@ -259,6 +277,7 @@ try {
     [pscustomobject]@{
         Status = 'passed'
         NonRetryableSuppressed = $true
+        EmptyResponseDetected = $true
         IndependentTasksDispatched = 2
         IndependentTaskSettingsPreserved = 2
         VisibleNavigationForbidden = $true

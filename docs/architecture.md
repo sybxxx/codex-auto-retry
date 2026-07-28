@@ -43,16 +43,20 @@ UI surface that caused both reported failures.
 1. Codex writes a JSONL lifecycle event to a session rollout.
 2. The scanner reads only newly appended bytes using a persisted file cursor.
 3. The event parser accepts only `event_msg` records with payload type
-   `task_started`, `task_complete`, or `thread_goal_updated`. A goal event is
-   routed by its payload task ID because Codex may persist it in another
-   task's rollout; only its status and lifecycle timestamps are retained.
+   `task_started`, `task_complete`, `turn_aborted`, or
+   `thread_goal_updated`. For a completion it derives only whether
+   `last_agent_message` is known and non-empty, then discards the value. A goal
+   event is routed by its payload task ID because Codex may persist it in
+   another task's rollout; only its status and lifecycle timestamps are retained.
 4. A non-active goal state creates a durable hold and cancels pending,
    awaiting, or starting recovery. Only an explicit later `active` goal update
    clears that hold. A `blocked` state is exempt only when its update time is
    from two seconds before through five seconds after the matching provider
    failure, which allows for timestamp precision and event ordering.
-5. A failed `task_complete` is classified as retryable, limited-retry, or
-   non-retryable.
+5. A `task_complete` with an explicit provider error or a known empty final
+   reply is classified as retryable, limited-retry, or non-retryable. A
+   `turn_aborted` clears recovery and records the aborted turn ID, so a delayed
+   completion for the same turn cannot override user cancellation.
 6. A retryable failure is deduplicated and scheduled with exponential backoff
    in state owned by that task ID.
 7. The controller discovers Codex App's loopback debugging port, verifies an
@@ -69,8 +73,13 @@ UI surface that caused both reported failures.
    goal or a blocked goal that predates the provider failure stops recovery. A
    provider-attributed blocked goal is changed to `active`; completed,
    usage-limited, budget-limited, changed, and unknown states fail closed. Only
-   a task with no goal may fall through to the configured normal continuation.
-12. The first lifecycle `task_started` in the dispatch window becomes the retry
+   a task with no goal may fall through to normal continuation.
+12. Normal continuation first calls `turn/start` with an empty input array. It
+   starts another model inference in the same task without a user-message item,
+   while preserving the original request and completed tool results. The
+   configured text is used only when the App returns an explicit empty-input
+   validation error. The controller never rolls back or replays a completed turn.
+13. The first lifecycle `task_started` in the dispatch window becomes the retry
    turn ID. Only a `task_complete` with that same ID can recover the chain or
    schedule its next provider retry.
 
@@ -85,7 +94,7 @@ UI surface that caused both reported failures.
 3. The MCP App receives structured tool output, refreshes approximately every
    five seconds, and updates each countdown locally once per second.
 4. `set_retry_prompt` atomically updates only `config.json`. The runner reloads
-   that field immediately before dispatching a normal-conversation retry.
+   that fallback field immediately before dispatching a normal-conversation retry.
 5. `set_auto_retry_paused` atomically updates `control.json`. The watchdog keeps
    scanning and tracking active turns while paused, but starts no new retry.
 6. `retry_now` and `cancel_retry` create unique atomic command files. During its
@@ -127,7 +136,7 @@ transport, and the fixed renderer program.
 - HTTP and WebSocket connections are restricted to loopback addresses and the
   same discovered port.
 - The selected page must be a Codex `app://-/index.html` page.
-- Task IDs, continuation prompts, and allowlisted resume settings are inserted
+- Task IDs, fallback prompts, and allowlisted resume settings are inserted
   by JSON encoding, not executable string concatenation.
 - The renderer program calls only the fixed background methods needed for
   state read, hydration, resume, goal activation, and turn start.
@@ -140,7 +149,9 @@ transport, and the fixed renderer program.
   lifecycle acknowledgement is rescheduled with backoff.
 - Missing or invalid persisted task settings fail closed and reschedule only
   that task; App defaults are never substituted during recovery.
-- There is deliberately no visible-UI fallback.
+- There is deliberately no visible-UI or navigation fallback. The compatibility
+  prompt fallback is still a structured background request and runs only after
+  an explicit empty-input validation rejection.
 
 Windows PowerShell is used only to discover the numeric debugging port. The
 embedded stdin stream ends with a blank submission line because Windows
@@ -148,11 +159,13 @@ PowerShell otherwise may exit before executing its final compound statement.
 
 ## Concurrency And Retry Policy
 
-Transient failures receive bounded retries with delays from five seconds up to
+Transient and empty-response failures receive bounded retries with delays from five seconds up to
 five minutes. The default is five automatic attempts per consecutive failure
 chain and the user may select 1 through 20. These failures include network and
 stream interruptions, timeouts, HTTP 408/425/429, HTTP 5xx, provider overload,
-cooldown, and temporarily unavailable authentication services.
+cooldown, successful completions without a final reply, and temporarily
+unavailable authentication services. An empty automatic retry remains a
+failure until the matching completion contains a real final reply.
 
 Generic 401/403 authentication errors and unknown provider errors have limited
 budgets that can only lower the global limit. Invalid payloads, context limits,
@@ -177,7 +190,8 @@ provider retry from a limited authentication budget.
 
 `state.json` stores file offsets, processed event keys, task retry counters,
 pending deadlines, failed turn IDs and times, goal status/timestamps/hold,
-background actions, retry turn IDs, dispatch deadlines, exhausted retry
+last-started and last-aborted turn IDs, background actions, retry turn IDs,
+dispatch deadlines, exhausted retry
 records, and rollout paths.
 Atomic replacement prevents partial state files.
 
@@ -215,13 +229,14 @@ becoming additional writers for `state.json`.
 
 ## Privacy And Security
 
-- Lifecycle scanning parses only start, completion, and goal status/time
-  events. For a goal it retains the payload task ID, status, and update time,
+- Lifecycle scanning parses only start, completion, abort, and goal status/time
+  events. For a completion it retains only known/non-empty booleans for the
+  final message. For a goal it retains the payload task ID, status, and update time,
   but not the objective. The separate
   resume-settings reader inspects only the latest `turn_context` and decodes a
   fixed subset. A second allowlisted record supplies model-provider and service
   tier provenance without forwarding collaboration instructions or messages.
-- Conversation messages, prompts, developer instructions, assistant output,
+- Conversation messages, prompts, developer instructions, assistant output text,
   tool arguments, and tool results are never retained or forwarded by either
   parser.
 - Logs contain short task identifiers, retry categories, attempt numbers,
@@ -256,8 +271,13 @@ becoming additional writers for `state.json`.
 - `app-server-protocol-smoke-test.ps1` uses a temporary `CODEX_HOME` to prove
   that model, provider, service tier, workspace, approvals, permissions, and
   reasoning effort survive resume; goal activation starts native continuation;
-  and `turn/start` creates a normal continuation in the same task without using
+  and empty-input `turn/start` creates a normal continuation in the same task without using
   Codex App UI.
+- `empty-response-protocol-smoke-test.ps1` uses a local fake Responses API and
+  temporary `CODEX_HOME` to reproduce an HTTP 200 completion with zero model
+  output. It proves that silent continuation sends exactly one additional
+  provider request, retains the original prompt in context, creates no visible
+  user item, and stores the recovered assistant reply in the same task.
 - `mcp-smoke-test.ps1` launches the console-subsystem MCP binary with isolated
   data. It verifies all seven tools, nested and compatibility UI metadata, the
   `text/html;profile=mcp-app` resource, structured status, prompt and pause

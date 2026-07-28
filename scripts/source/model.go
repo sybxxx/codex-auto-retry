@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const appVersion = "0.4.3"
+const appVersion = "0.5.0"
 
 type FailureClass string
 
@@ -13,6 +13,7 @@ const (
 	classServer        FailureClass = "server"
 	classAuthTransient FailureClass = "auth_transient"
 	classAuthLimited   FailureClass = "auth_limited"
+	classEmptyResponse FailureClass = "empty_response"
 	classUnknown       FailureClass = "unknown"
 )
 
@@ -29,6 +30,9 @@ type RelevantEvent struct {
 	TurnID        string
 	Timestamp     time.Time
 	ErrorText     string
+	FinalKnown    bool
+	FinalPresent  bool
+	AbortReason   string
 	GoalStatus    string
 	GoalUpdatedAt time.Time
 }
@@ -93,6 +97,9 @@ type ThreadState struct {
 	GoalUpdatedAt       time.Time      `json:"goal_updated_at,omitempty"`
 	GoalObservedAt      time.Time      `json:"goal_observed_at,omitempty"`
 	GoalHeld            bool           `json:"goal_held,omitempty"`
+	LastStartedTurnID   string         `json:"last_started_turn_id,omitempty"`
+	LastAbortedTurnID   string         `json:"last_aborted_turn_id,omitempty"`
+	LastAbortedAt       time.Time      `json:"last_aborted_at,omitempty"`
 	Pending             *PendingRetry  `json:"pending,omitempty"`
 	Awaiting            *AwaitingRetry `json:"awaiting,omitempty"`
 	Stopped             *StoppedRetry  `json:"stopped,omitempty"`

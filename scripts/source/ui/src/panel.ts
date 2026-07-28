@@ -23,6 +23,7 @@ type FailureClass =
   | "server"
   | "auth_transient"
   | "auth_limited"
+  | "empty_response"
   | "unknown"
   | "none";
 
@@ -341,6 +342,7 @@ function classLabel(value: FailureClass): string {
     server: "供应商故障",
     auth_transient: "登录服务暂不可用",
     auth_limited: "登录异常",
+    empty_response: "模型空回复",
     unknown: "未知故障",
     none: "未分类",
   };
@@ -459,7 +461,7 @@ window.setInterval(() => {
 if (new URLSearchParams(window.location.search).has("preview")) {
   render(previewSnapshot());
 } else {
-  app = new App({ name: "Codex Auto Retry", version: "0.4.3" });
+  app = new App({ name: "Codex Auto Retry", version: "0.5.0" });
   app.onerror = (error) => showNotice(error instanceof Error ? error.message : "连接失败", true);
   app.onhostcontextchanged = handleHostContext;
   app.ontoolresult = (result) => {
@@ -478,7 +480,7 @@ if (new URLSearchParams(window.location.search).has("preview")) {
 function previewSnapshot(): ManagementSnapshot {
   const now = Date.now();
   return {
-    version: "0.4.3",
+    version: "0.5.0",
     running: true,
     heartbeat_stale: false,
     paused: false,

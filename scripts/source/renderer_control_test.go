@@ -171,6 +171,29 @@ func TestRendererDispatchProtectsIntentionalGoalHolds(t *testing.T) {
 	}
 }
 
+func TestRendererDispatchUsesSilentContinuationWithNarrowFallback(t *testing.T) {
+	for _, required := range []string{
+		`request("turn/start", {threadId: payload.thread_id, input: []})`,
+		`silent_turn_started_in_background`,
+		`emptyInputUnsupported(error)`,
+		`input: [{type: "text", text: payload.prompt, text_elements: []}]`,
+		`fallback_turn_started_in_background`,
+	} {
+		if !strings.Contains(rendererDispatchExpression, required) {
+			t.Fatalf("background controller is missing silent continuation behavior %q", required)
+		}
+	}
+	silentStart := strings.Index(rendererDispatchExpression, `input: []`)
+	fallbackGate := strings.Index(rendererDispatchExpression, `if (!emptyInputUnsupported(error)) throw error`)
+	fallbackPrompt := strings.Index(rendererDispatchExpression, `text: payload.prompt`)
+	if silentStart < 0 || fallbackGate < silentStart || fallbackPrompt < fallbackGate {
+		t.Fatal("visible fallback can run before a rejected silent continuation")
+	}
+	if strings.Count(rendererDispatchExpression, `text: payload.prompt`) != 1 {
+		t.Fatal("configured retry text escaped the single guarded fallback")
+	}
+}
+
 func TestGoalBlockedByFailureWindow(t *testing.T) {
 	failureAt := time.Date(2026, 7, 27, 15, 52, 2, 500_000_000, time.UTC)
 	for _, test := range []struct {

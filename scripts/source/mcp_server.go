@@ -19,11 +19,11 @@ var managementPanelHTML string
 type emptyToolInput struct{}
 
 type setRetryPromptInput struct {
-	Prompt string `json:"prompt" jsonschema:"new normal-conversation retry text, from 1 to 500 characters"`
+	Prompt string `json:"prompt" jsonschema:"fallback text used only when silent continuation is unsupported, from 1 to 500 characters"`
 }
 
 type setRetrySettingsInput struct {
-	RetryPrompt         string `json:"retry_prompt" jsonschema:"normal-conversation retry text, from 1 to 500 characters"`
+	RetryPrompt         string `json:"retry_prompt" jsonschema:"fallback text used only when silent continuation is unsupported, from 1 to 500 characters"`
 	MaxRetryAttempts    int    `json:"max_retry_attempts" jsonschema:"maximum consecutive retry attempts, from 1 to 20"`
 	InitialDelaySeconds int    `json:"initial_delay_seconds" jsonschema:"delay before the first retry, from 1 to 3600 seconds"`
 	MaxDelaySeconds     int    `json:"max_delay_seconds" jsonschema:"maximum delay, at least the initial delay and no more than 86400 seconds"`
@@ -81,8 +81,8 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Meta:        managementToolMeta(),
 		Name:        "set_retry_prompt",
-		Title:       "修改重试文字",
-		Description: "修改普通对话中断后自动发送的文字；目标模式仍使用原生恢复，不发送这段文字。",
+		Title:       "修改后备重试文字",
+		Description: "修改静默续接不受支持时使用的后备文字；正常情况下不会新增可见消息，目标模式仍使用原生恢复。",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "修改重试文字"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input setRetryPromptInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
 		snapshot, err := service.setRetryPrompt(input.Prompt, time.Now().UTC())
@@ -93,7 +93,7 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Meta:        managementToolMeta(),
 		Name:        "set_retry_settings",
 		Title:       "修改自动重试设置",
-		Description: "同时修改普通对话重试文字、连续重试上限、等待时间和 Windows 通知设置。",
+		Description: "同时修改后备重试文字、连续重试上限、等待时间和 Windows 通知设置。",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "修改自动重试设置"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input setRetrySettingsInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
 		snapshot, err := service.setRetrySettings(RetrySettings(input), time.Now().UTC())

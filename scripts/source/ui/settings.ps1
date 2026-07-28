@@ -177,7 +177,7 @@ $notificationsCheck.Size = [System.Drawing.Size]::new(285, 24)
 $notificationsCheck.Checked = [bool]$config.show_notifications
 $settingsGroup.Controls.AddRange(@($enabledCheck, $notificationsCheck))
 
-$settingsGroup.Controls.Add((New-Label '普通对话重试文字' 18 60 180 22))
+$settingsGroup.Controls.Add((New-Label '后备重试文字' 18 60 180 22))
 $promptBox = [System.Windows.Forms.TextBox]::new()
 $promptBox.Location = [System.Drawing.Point]::new(18, 83)
 $promptBox.Size = [System.Drawing.Size]::new(540, 54)
@@ -392,7 +392,7 @@ $closeButton.add_Click({ $form.Close() })
 $saveButton.add_Click({
     $prompt = $promptBox.Text.Trim()
     if (-not $prompt) {
-        [System.Windows.Forms.MessageBox]::Show('普通对话重试文字不能为空。', 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show('后备重试文字不能为空。', 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
         return
     }
     if ([int]$maxDelayBox.Value -lt [int]$initialDelayBox.Value) {

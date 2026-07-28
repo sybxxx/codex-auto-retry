@@ -39,6 +39,51 @@ func TestParseObjectError(t *testing.T) {
 	}
 }
 
+func TestParseEmptySuccessfulCompletionWithoutRetainingMessage(t *testing.T) {
+	for _, lastMessage := range []any{nil, "", "   "} {
+		line := makeCompletionLine(t, lastMessage)
+		event, ok := parseRelevantEvent(line)
+		if !ok {
+			t.Fatal("empty successful completion was not parsed")
+		}
+		if !event.FinalKnown || event.FinalPresent || event.ErrorText != "" {
+			t.Fatalf("unexpected empty completion metadata: %+v", event)
+		}
+	}
+
+	event, ok := parseRelevantEvent(makeCompletionLine(t, "completed answer"))
+	if !ok || !event.FinalKnown || !event.FinalPresent {
+		t.Fatalf("non-empty final response was not recognized: %+v", event)
+	}
+}
+
+func TestCompletionWithoutLastAgentFieldRemainsBackwardCompatible(t *testing.T) {
+	event, ok := parseRelevantEvent(makeEventLine(t, "2026-07-26T09:00:00Z", "task_complete", "turn-legacy", nil))
+	if !ok || event.FinalKnown || event.FinalPresent {
+		t.Fatalf("legacy completion state changed: %+v", event)
+	}
+}
+
+func TestParseTurnAbortedLifecycleEvent(t *testing.T) {
+	payload := map[string]any{
+		"type":    "turn_aborted",
+		"turn_id": "turn-cancelled",
+		"reason":  "interrupted",
+	}
+	line, err := json.Marshal(map[string]any{
+		"timestamp": "2026-07-26T09:00:00Z",
+		"type":      "event_msg",
+		"payload":   payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := parseRelevantEvent(append(line, '\n'))
+	if !ok || event.Kind != "turn_aborted" || event.TurnID != "turn-cancelled" || event.AbortReason != "interrupted" {
+		t.Fatalf("unexpected abort event: %+v", event)
+	}
+}
+
 func TestIgnoreConversationContent(t *testing.T) {
 	line := []byte(`{"timestamp":"2026-07-26T09:00:00Z","type":"response_item","payload":{"type":"message","content":"HTTP 503 Service Unavailable task_complete thread_goal_updated paused blocked"}}` + "\n")
 	if _, ok := parseRelevantEvent(line); ok {
@@ -123,6 +168,24 @@ func makeEventLine(t *testing.T, timestamp, kind, turnID string, errorValue any)
 	}
 	envelope := map[string]any{"timestamp": timestamp, "type": "event_msg", "payload": payload}
 	line, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(line, '\n')
+}
+
+func makeCompletionLine(t *testing.T, lastMessage any) []byte {
+	t.Helper()
+	payload := map[string]any{
+		"type":               "task_complete",
+		"turn_id":            "turn-empty",
+		"last_agent_message": lastMessage,
+	}
+	line, err := json.Marshal(map[string]any{
+		"timestamp": "2026-07-26T09:00:00Z",
+		"type":      "event_msg",
+		"payload":   payload,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

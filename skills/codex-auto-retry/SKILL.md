@@ -26,8 +26,10 @@ and exit. This is not a second watchdog or a separate retry engine.
   the hold.
 - Completed, usage-limited, budget-limited, missing, and unknown goal states
   must fail closed; never turn them into a normal-conversation continuation.
-- Normal conversation: create the configured continuation turn in the exact
-  same task without touching the composer or a user draft.
+- Normal conversation: start a silent empty-input continuation in the exact
+  same task without touching the composer, adding a visible user message, or
+  replaying the failed turn. Use the configured fallback text only when Codex
+  explicitly rejects empty-input turns.
 - Preserve each task's latest model, workspace, reasoning, personality,
   approval, and effective permission settings during background resume.
 - Never open a task link, focus Codex, switch the task currently displayed,
@@ -46,14 +48,15 @@ and exit. This is not a second watchdog or a separate retry engine.
 
 When the MCP tools are available, use `get_auto_retry_status` to display the
 embedded panel and return current state. The panel shows all pending and active
-tasks, live countdowns, pause state, and the normal-conversation retry text.
+tasks, live countdowns, pause state, and the compatibility fallback text.
 
-- Use `set_retry_prompt` to change only the normal-conversation text. The
-  default is `继续`, the maximum is 500 characters, and changes apply without
-  restarting the watchdog.
-- Use `set_retry_settings` to change the retry text, consecutive attempt limit
+- Use `set_retry_prompt` to change only the fallback text. The default is
+  `继续`, the maximum is 500 characters, and changes apply without restarting
+  the watchdog. Normal retries do not send this text when silent continuation
+  is supported.
+- Use `set_retry_settings` to change the fallback text, consecutive attempt limit
   (1-20), initial delay, maximum delay, and Windows notification preference.
-- Goal recovery never sends the configured text; it continues to activate the
+- Goal recovery never sends the fallback text; it continues to activate the
   native Codex goal.
 - Use `set_auto_retry_paused` to pause or resume new dispatches. Do not claim
   that pausing terminates a retry that already started.
@@ -88,6 +91,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\renderer-control-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\install.ps1"
 ```
 
@@ -97,8 +101,9 @@ commands. The tray smoke test verifies the native notification-area window,
 visible graphical settings window, heartbeat, and clean final status without touching Codex. The installed-App
 probe reads only a bounded App state summary through the
 production background transport. It must not resume, navigate, or modify a
-task. The isolated protocol test uses a temporary `CODEX_HOME` and does not use
-Codex App UI. The installer preserves and migrates `config.json`, replaces both
+task. The isolated app-server tests use temporary `CODEX_HOME` directories;
+the empty-response test also uses a local fake provider and no real account.
+Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces both
 executables, registers per-user Windows startup for the watchdog only, starts
 the watchdog without a visible window, and verifies its heartbeat. A new Codex
 task is required after plugin reinstall so Codex discovers the updated MCP
@@ -115,10 +120,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 ## Privacy Boundary
 
 The event scanner parses only `event_msg` records whose payload type is
-`task_started`, `task_complete`, or `thread_goal_updated`. Goal parsing retains
-only the target task ID, status, and lifecycle timestamps, and routes by the payload task
-ID even when Codex stores the event in another rollout. It does not retain the
-goal objective or inspect conversation text for intent. Before dispatch, a
+`task_started`, `task_complete`, `turn_aborted`, or `thread_goal_updated`. For
+completions it retains only whether `last_agent_message` was known and non-empty,
+never the message text. For aborts it retains only the turn ID, reason, and
+timestamp. Goal parsing retains only the target task ID, status, and lifecycle
+timestamps, and routes by the payload task ID even when Codex stores the event
+in another rollout. It does not retain the goal objective or inspect
+conversation text for intent. Before dispatch, a
 separate reader extracts only the required execution settings from the latest `turn_context` and
 `thread_settings_applied` records. It does not retain, forward, or log prompts,
 developer instructions, assistant messages, tool arguments, tool results, API
@@ -127,13 +135,14 @@ keys, or response bodies.
 The controller connects only to Codex App on a loopback endpoint and sends a
 fixed structured recovery program. It does not read drafts or automate the
 window, mouse, keyboard, clipboard, composer, or task navigation. It never logs
-the continuation prompt or app-server error bodies.
+the fallback prompt or app-server error bodies.
 
 ## Retry Policy
 
 - Bounded retries, five by default and configurable from 1 to 20: network
   failures, timeouts, HTTP 408/425/429 and 5xx responses, interrupted streams,
-  temporary provider authentication outages, cooldown, and provider overload.
+  HTTP 200 completions with no final model reply, temporary provider
+  authentication outages, cooldown, and provider overload.
 - Lower limited budgets may apply to generic 401/403 authentication failures
   and unknown errors.
 - No retry: user cancellation, invalid request or payload, missing model,

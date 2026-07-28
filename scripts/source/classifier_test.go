@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestClassifyFailure(t *testing.T) {
 	cfg := defaultConfig()
@@ -42,5 +45,35 @@ func TestRetryDelayCaps(t *testing.T) {
 		if got := int(retryDelay(index+1, cfg).Seconds()); got != seconds {
 			t.Fatalf("attempt %d delay = %d, want %d", index+1, got, seconds)
 		}
+	}
+}
+
+func TestClassifyCompletionFailure(t *testing.T) {
+	cfg := defaultConfig()
+	empty := RelevantEvent{FinalKnown: true}
+	decision := classifyCompletionFailure(empty, cfg)
+	if !decision.Retry || decision.Class != classEmptyResponse || !strings.Contains(decision.Reason, "without a final response") {
+		t.Fatalf("empty successful completion was not retryable: %+v", decision)
+	}
+	if completionSucceeded(empty) {
+		t.Fatal("empty successful completion was treated as recovered")
+	}
+
+	completed := RelevantEvent{FinalKnown: true, FinalPresent: true}
+	if decision := classifyCompletionFailure(completed, cfg); decision.Retry || decision.Class != classNone {
+		t.Fatalf("non-empty completion was treated as failed: %+v", decision)
+	}
+	if !completionSucceeded(completed) {
+		t.Fatal("non-empty completion was not treated as recovered")
+	}
+
+	legacy := RelevantEvent{}
+	if !completionSucceeded(legacy) {
+		t.Fatal("legacy completion without final-message metadata was not preserved")
+	}
+
+	explicit := RelevantEvent{ErrorText: "HTTP 503", FinalKnown: true}
+	if decision := classifyCompletionFailure(explicit, cfg); !decision.Retry || decision.Class != classServer {
+		t.Fatalf("explicit error classification changed: %+v", decision)
 	}
 }

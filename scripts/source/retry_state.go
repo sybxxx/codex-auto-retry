@@ -144,6 +144,8 @@ func (d *daemon) handleEventLocked(item scannedEvent, now time.Time) {
 		d.handleTaskStartedLocked(item.ThreadID, event, thread)
 	case "task_complete":
 		d.handleTaskCompleteLocked(item, key, now, thread)
+	case "turn_aborted":
+		d.handleTurnAbortedLocked(item.ThreadID, event, thread)
 	case "thread_goal_updated":
 		d.handleGoalUpdatedLocked(item.ThreadID, event, thread)
 	}
@@ -183,6 +185,7 @@ func (d *daemon) handleGoalUpdatedLocked(threadID string, event RelevantEvent, t
 }
 
 func (d *daemon) handleTaskStartedLocked(threadID string, event RelevantEvent, thread ThreadState) {
+	thread.LastStartedTurnID = event.TurnID
 	if thread.Awaiting != nil {
 		awaiting := thread.Awaiting
 		withinDispatchWindow := !event.Timestamp.Before(awaiting.DispatchStartedAt.Add(-2*time.Second)) &&
@@ -210,15 +213,41 @@ func (d *daemon) handleTaskStartedLocked(threadID string, event RelevantEvent, t
 	d.state.Threads[threadID] = thread
 }
 
+func (d *daemon) handleTurnAbortedLocked(threadID string, event RelevantEvent, thread ThreadState) {
+	abortedTurnID := event.TurnID
+	if abortedTurnID == "" {
+		abortedTurnID = thread.LastStartedTurnID
+	}
+	thread.LastAbortedTurnID = abortedTurnID
+	thread.LastAbortedAt = event.Timestamp
+	if cancel := d.activeCtx[threadID]; cancel != nil {
+		cancel()
+	}
+	hadRetry := thread.Pending != nil || thread.Awaiting != nil || thread.Stopped != nil || thread.ConsecutiveFailures > 0
+	thread.Pending = nil
+	thread.Awaiting = nil
+	thread.Stopped = nil
+	thread.ConsecutiveFailures = 0
+	d.state.Threads[threadID] = thread
+	if hadRetry {
+		d.logger.Printf("retry cancelled thread=%s reason=turn_aborted", shortThreadID(threadID))
+	}
+}
+
 func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now time.Time, thread ThreadState) {
 	event := item.Event
+	if event.TurnID != "" && event.TurnID == thread.LastAbortedTurnID {
+		d.resetRetryStateLocked(item.ThreadID, thread)
+		d.logger.Printf("completion ignored thread=%s reason=turn_aborted", shortThreadID(item.ThreadID))
+		return
+	}
 	if thread.Awaiting != nil {
 		awaiting := thread.Awaiting
 		if awaiting.RetryTurnID == "" || awaiting.RetryTurnID != event.TurnID {
 			d.logger.Printf("completion ignored thread=%s reason=turn_mismatch", shortThreadID(item.ThreadID))
 			return
 		}
-		if event.ErrorText == "" {
+		if completionSucceeded(event) {
 			d.logger.Printf("retry chain recovered thread=%s attempt=%d", shortThreadID(item.ThreadID), awaiting.Attempt)
 			d.resetRetryStateLocked(item.ThreadID, thread)
 			return
@@ -233,13 +262,13 @@ func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now tim
 			d.logger.Printf("completion ignored thread=%s reason=pending_turn_mismatch", shortThreadID(item.ThreadID))
 			return
 		}
-		if event.ErrorText == "" {
+		if completionSucceeded(event) {
 			d.resetRetryStateLocked(item.ThreadID, thread)
 		}
 		return
 	}
 
-	if event.ErrorText == "" {
+	if completionSucceeded(event) {
 		thread.ConsecutiveFailures = 0
 		thread.Stopped = nil
 		d.state.Threads[item.ThreadID] = thread
@@ -262,7 +291,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 			return
 		}
 	}
-	decision := classifyFailure(item.Event.ErrorText, d.config)
+	decision := classifyCompletionFailure(item.Event, d.config)
 	if !decision.Retry {
 		d.resetRetryStateLocked(item.ThreadID, thread)
 		d.logger.Printf("retry skipped thread=%s category=non_retryable reason=%s", shortThreadID(item.ThreadID), decision.Reason)

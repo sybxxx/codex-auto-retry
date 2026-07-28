@@ -18,7 +18,8 @@
 | `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible non-overlapping settings form, concurrent refresh stability, settings-process shutdown, heartbeat, and clean status shutdown. |
 | `scripts/smoke-test.ps1` | Runs an isolated process-level two-task retry and strict-correlation test through a mock background endpoint. |
 | `scripts/renderer-control-smoke-test.ps1` | Probes the installed Codex App's background bridge through production discovery and transport code without changing UI or tasks. |
-| `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal and normal-turn continuation against an isolated app-server and temporary `CODEX_HOME`. |
+| `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery and silent normal-turn continuation against an isolated app-server and temporary `CODEX_HOME`. |
+| `scripts/empty-response-protocol-smoke-test.ps1` | Reproduces an HTTP 200 response with no model output through a local fake provider, then proves silent same-task recovery without adding a user message or replaying the original turn. |
 | `release/windows/deploy.ps1` | One-click deployment engine: validates the package, safely updates the personal marketplace, registers the plugin, installs the runtime, and verifies the result. |
 | `release/windows/uninstall-release.ps1` | Removes Codex registration, startup, and installed source while preserving runtime data unless full removal is explicitly requested. |
 | `release/windows/common.ps1` | Shared path-safety, JSON, executable validation, and Codex CLI discovery helpers for release deployment. |
@@ -39,11 +40,11 @@ Source code lives under `scripts/source`.
 | `tray_windows.go` | Native notification-area icon, live tooltip/countdown, menu controls, and graphical settings-process lifecycle. |
 | `process_windows.go` | Read-only Windows process-liveness verification for stale heartbeat rejection. |
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, rollout paths, and mirrored-session detection. |
-| `events.go` | Privacy-bounded parsing of task start/completion and goal status/time lifecycle events. |
-| `classifier.go` | Provider-independent retry decisions and limited authentication budgets. |
+| `events.go` | Privacy-bounded parsing of task start, completion, abort, and goal lifecycle events; completion parsing retains only final-reply presence booleans. |
+| `classifier.go` | Provider-independent retry decisions, empty-response classification, and limited authentication budgets. |
 | `runner.go` | Controller result validation, privacy-safe failure codes, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
-| `renderer_control.go` | Loopback Codex target discovery, WebSocket transport, fixed background recovery program, live goal-hold checks, native goal resume, and same-task normal turn start. |
+| `renderer_control.go` | Loopback Codex target discovery, WebSocket transport, fixed background recovery program, live goal-hold checks, native goal resume, silent same-task continuation, and the narrow compatibility-text fallback. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
 | `state.go` | Persistent cursors, pending and awaiting retries, turn correlation, migration, deduplication, and pruning. |
 | `config.go` | Versioned defaults, validation, legacy visible-UI migration, and user overrides. |
@@ -91,11 +92,13 @@ local history or remote configuration.
 
 `%LOCALAPPDATA%\CodexAutoRetry\config.json` owns poll and backoff timing,
 provider retry limits, task-start acknowledgement timeout, optional session
-roots, maximum parallel retries, the normal-conversation continuation prompt,
-and the Windows notification preference. The prompt defaults to `继续`, is
-limited to 500 characters, and is reloaded immediately before each
-normal-conversation dispatch. The global consecutive-attempt limit defaults to
-five and accepts values from 1 through 20.
+roots, maximum parallel retries, the normal-conversation fallback prompt, and
+the Windows notification preference. Normal recovery first starts a silent
+empty-input continuation. The fallback prompt defaults to `继续`, is limited to
+500 characters, and is used only when Codex explicitly rejects an empty-input
+turn. It is reloaded immediately before each normal-conversation dispatch. The
+global consecutive-attempt limit defaults to five and accepts values from 1
+through 20.
 
 Configuration version 2 migrated the old forced single UI action to four
 independent background dispatch slots. A version 2 user override from one to

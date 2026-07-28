@@ -10,7 +10,7 @@ import (
 
 func newRuntimeState() RuntimeState {
 	return RuntimeState{
-		Version:         2,
+		Version:         3,
 		Files:           make(map[string]FileCursor),
 		Threads:         make(map[string]ThreadState),
 		ProcessedEvents: make(map[string]time.Time),
@@ -38,7 +38,7 @@ func loadState(path string) (RuntimeState, error) {
 	if state.ProcessedEvents == nil {
 		state.ProcessedEvents = make(map[string]time.Time)
 	}
-	state.Version = 2
+	state.Version = 3
 	for id, thread := range state.Threads {
 		if thread.Pending != nil && thread.Pending.Attempt < 1 {
 			thread.Pending.Attempt = thread.ConsecutiveFailures
@@ -78,6 +78,9 @@ func (s *RuntimeState) prune(now time.Time) {
 		}
 		if thread.GoalObservedAt.After(lastActivity) {
 			lastActivity = thread.GoalObservedAt
+		}
+		if thread.LastAbortedAt.After(lastActivity) {
+			lastActivity = thread.LastAbortedAt
 		}
 		if thread.Stopped != nil && thread.Stopped.StoppedAt.After(lastActivity) {
 			lastActivity = thread.Stopped.StoppedAt

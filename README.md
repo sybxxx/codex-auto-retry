@@ -26,8 +26,12 @@ behavior remains independent of whether either settings surface is open.
   `active` goal update clears the hold.
 - Never converts completed, usage-limited, budget-limited, or unknown goal
   states into a normal-conversation `continue` turn.
-- In a normal conversation, starts a visible `继续` turn in that same
-  task without touching the composer or any draft the user has typed.
+- In a normal conversation, starts an empty-input continuation in that same
+  task. The original request and completed tool results stay in context, while
+  no new user-message bubble is added and the composer draft is untouched.
+- Uses the configured retry text only as a narrow compatibility fallback when
+  Codex explicitly rejects empty-input turns. It never rolls back and resends
+  the failed turn, which avoids intentionally replaying completed side effects.
 - If the failed task is already running, keeps its retry queued and tries again
   later instead of canceling it.
 - Keeps separate retry state for every task and can dispatch up to four due
@@ -43,8 +47,9 @@ behavior remains independent of whether either settings surface is open.
   successful turn cannot falsely mark a retry as recovered.
 
 The watchdog retries network failures, timeouts, rate limits, HTTP 5xx
-responses, interrupted streams, and temporarily unavailable authentication
-services within the configured consecutive-attempt limit. Ambiguous or
+responses, interrupted streams, successful completions with no final model
+reply, and temporarily unavailable authentication services within the
+configured consecutive-attempt limit. Ambiguous or
 persistent authentication failures may have a lower safety limit. A temporary
 inability to reach Codex App delays recovery without consuming an attempt.
 User cancellation, invalid requests, missing models, context length errors,
@@ -59,7 +64,7 @@ countdown. Double-clicking opens the graphical settings window. The right-click
 menu opens settings, pauses or resumes dispatch, and exits the watchdog.
 
 The graphical window shows every waiting, active, and exhausted task using only
-privacy-safe task IDs. It edits the normal-conversation retry text, consecutive
+privacy-safe task IDs. It edits the fallback retry text, consecutive
 attempt limit, first delay, maximum delay, and Windows notification preference.
 An exhausted task can be restarted with a fresh attempt budget. These settings
 are shared with the embedded Codex panel and take effect without restarting the
@@ -75,13 +80,15 @@ starter prompt. The panel opens inside the current Codex task and shows:
 - controls to retry a pending task now or cancel it before it starts;
 - exhausted tasks and a control to restart their attempt budget;
 - a persistent pause switch for new retry dispatches; and
-- the editable normal-conversation retry text, limited to 500 characters;
+- the editable fallback retry text, limited to 500 characters;
 - the consecutive-attempt limit and backoff timing; and
 - the Windows notification preference.
 
-The default normal-conversation text is `继续`. Goal mode does not use this
-text: it still activates Codex's native interrupted goal. Saving the text takes
-effect on the next normal-conversation retry without restarting the watchdog.
+Normal conversations use silent continuation first. The default fallback text
+is `继续` and is used only if the installed Codex version explicitly rejects
+empty-input turns. Goal mode never uses this text: it still activates Codex's
+native interrupted goal. Saving the text takes effect without restarting the
+watchdog.
 
 The panel refreshes approximately every five seconds and computes countdowns
 locally between refreshes. It never opens itself, focuses Codex, or navigates to
@@ -89,8 +96,12 @@ another task. Closing the panel has no effect on the global watchdog.
 
 ## Safety And Privacy
 
-The event scanner accepts only `task_started`, `task_complete`, and
-`thread_goal_updated` lifecycle records. For goal updates it retains only the
+The event scanner accepts only `task_started`, `task_complete`, `turn_aborted`,
+and `thread_goal_updated` lifecycle records. For a completion it retains only
+whether `last_agent_message` was present and non-empty, never its contents. A
+completion with no explicit error and no final reply is treated as a temporary
+empty-response failure. An abort remains authoritative even if a delayed
+completion for that same turn is written afterward. For goal updates it retains only the
 target task ID, status, and lifecycle timestamps; the event can be routed correctly even
 when Codex persists it in another task's rollout. It never reads the goal
 objective or searches conversation text for words such as "review". Immediately
@@ -100,7 +111,7 @@ of the latest `turn_context` and
 and provider, service tier, reasoning effort and summary, personality, approval
 policy and reviewer, and effective permission mode. It discards every other
 field and never forwards or logs developer instructions, conversation
-messages, assistant output, tool input, tool output, credentials, provider
+messages, assistant output text, tool input, tool output, credentials, provider
 URLs, or response bodies.
 
 Recovery uses Codex App's own already-running local app-server connection. The

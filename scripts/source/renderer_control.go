@@ -393,6 +393,13 @@ const rendererDispatchExpression = `(async () => {
         if (message.includes("not initialized") || message.includes("not ready") || message.includes("no appservermanager")) return "codex_app_not_ready";
         return "app_server_request_failed";
     };
+    const emptyInputUnsupported = error => {
+        const message = String(error?.message ?? error).toLowerCase();
+        return message.includes("input must not be empty") ||
+            message.includes("input array must not be empty") ||
+            message.includes("at least one input") ||
+            (message.includes("input") && message.includes("minitems"));
+    };
     try {
         const rpc = await (async () => {` + rendererModuleBootstrap + `})();
         if (!rpc) return retryLater("renderer_rpc_not_found");
@@ -453,11 +460,17 @@ const rendererDispatchExpression = `(async () => {
             return {outcome: "dispatched", action: "goal_resume", reason: "goal_resumed_in_background"};
         }
         if (resumedStatus === "active") return retryLater("thread_active");
-        await request("turn/start", {
-            threadId: payload.thread_id,
-            input: [{type: "text", text: payload.prompt, text_elements: []}]
-        });
-        return {outcome: "dispatched", action: "conversation_continue", reason: "turn_started_in_background"};
+        try {
+            await request("turn/start", {threadId: payload.thread_id, input: []});
+            return {outcome: "dispatched", action: "conversation_continue", reason: "silent_turn_started_in_background"};
+        } catch (error) {
+            if (!emptyInputUnsupported(error)) throw error;
+            await request("turn/start", {
+                threadId: payload.thread_id,
+                input: [{type: "text", text: payload.prompt, text_elements: []}]
+            });
+            return {outcome: "dispatched", action: "conversation_continue", reason: "fallback_turn_started_in_background"};
+        }
     } catch (error) {
         return retryLater(classifyError(error));
     }

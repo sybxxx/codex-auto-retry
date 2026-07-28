@@ -165,7 +165,7 @@ try {
     Send-Request $process @{
         method = 'turn/start'
         id = 6
-        params = @{ threadId = $normalThreadId; input = @(@{ type = 'text'; text = 'Continue.'; text_elements = @() }) }
+        params = @{ threadId = $normalThreadId; input = @() }
     }
     $normalTurn = Read-UntilId $process 6
     $captured += $normalTurn.Lines
@@ -197,7 +197,7 @@ try {
         GoalStatePreserved = $true
         ThreadSettingsPreserved = $true
         GoalNativeContinuationStarted = $true
-        NormalSameTaskTurnStarted = $true
+        SilentNormalSameTaskTurnStarted = $true
         CodexAppUIUsed = $false
     }
 }

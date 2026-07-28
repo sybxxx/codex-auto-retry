@@ -78,6 +78,24 @@ func classifyFailure(errorText string, cfg Config) RetryDecision {
 	return RetryDecision{Retry: true, Class: classUnknown, MaxAttempts: cfg.UnknownMaxAttempts, Reason: "unknown provider failure"}
 }
 
+func classifyCompletionFailure(event RelevantEvent, cfg Config) RetryDecision {
+	if strings.TrimSpace(event.ErrorText) != "" {
+		return classifyFailure(event.ErrorText, cfg)
+	}
+	if event.FinalKnown && !event.FinalPresent {
+		return RetryDecision{
+			Retry:  true,
+			Class:  classEmptyResponse,
+			Reason: "provider completed without a final response",
+		}
+	}
+	return RetryDecision{Class: classNone, Reason: "successful completion"}
+}
+
+func completionSucceeded(event RelevantEvent) bool {
+	return strings.TrimSpace(event.ErrorText) == "" && (!event.FinalKnown || event.FinalPresent)
+}
+
 func containsAny(text string, candidates ...string) bool {
 	for _, candidate := range candidates {
 		if strings.Contains(text, candidate) {

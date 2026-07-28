@@ -29,6 +29,7 @@ try {
         'SHA256SUMS.txt',
         'payload\codex-auto-retry\.codex-plugin\plugin.json',
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
+        'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry.exe',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry-mcp.exe'
     )) {

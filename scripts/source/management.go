@@ -33,7 +33,7 @@ type ManagementSnapshot struct {
 	Running             bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
 	HeartbeatStale      bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
 	Paused              bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
-	RetryPrompt         string         `json:"retry_prompt" jsonschema:"message used for normal conversation retries"`
+	RetryPrompt         string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
 	MaxRetryAttempts    int            `json:"max_retry_attempts" jsonschema:"maximum provider retry attempts per consecutive failure chain"`
 	InitialDelaySeconds int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
 	MaxDelaySeconds     int            `json:"max_delay_seconds" jsonschema:"maximum exponential backoff delay"`

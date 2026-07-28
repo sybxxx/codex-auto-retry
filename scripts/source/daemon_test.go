@@ -533,6 +533,93 @@ func TestOnlyMatchingRetryTurnCanRecoverChain(t *testing.T) {
 	}
 }
 
+func TestEmptySuccessfulCompletionSchedulesRetry(t *testing.T) {
+	threadID := "019fa8a5-c7c5-72b1-ad09-07bbc4f138a7"
+	now := time.Now().UTC()
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	d.handleEventLocked(emptyCompletionScannedEvent(threadID, "empty-turn", now), now)
+	thread := d.state.Threads[threadID]
+	if thread.Pending == nil || thread.Pending.Class != classEmptyResponse ||
+		thread.Pending.Attempt != 1 || thread.ConsecutiveFailures != 1 {
+		t.Fatalf("empty successful completion was not scheduled: %+v", thread)
+	}
+}
+
+func TestEmptyAutomaticRetryDoesNotFalselyRecoverChain(t *testing.T) {
+	threadID := "019fa8a7-8603-73d0-b1cc-4c93cc67955b"
+	now := time.Now().UTC()
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey: "first-empty", FailedTurnID: "original-turn", RetryTurnID: "retry-turn",
+		Class: classEmptyResponse, Attempt: 1, MaxAttempts: 5,
+	}}
+	d.handleEventLocked(emptyCompletionScannedEvent(threadID, "retry-turn", now), now)
+	thread := d.state.Threads[threadID]
+	if thread.Awaiting != nil || thread.Pending == nil || thread.Pending.Attempt != 2 ||
+		thread.Pending.Class != classEmptyResponse || thread.ConsecutiveFailures != 2 {
+		t.Fatalf("empty automatic retry falsely recovered the chain: %+v", thread)
+	}
+
+	thread.Pending = nil
+	thread.Awaiting = &AwaitingRetry{
+		EventKey: "second-empty", FailedTurnID: "retry-turn", RetryTurnID: "recovered-turn",
+		Class: classEmptyResponse, Attempt: 2, MaxAttempts: 5,
+	}
+	d.state.Threads[threadID] = thread
+	recovered := emptyCompletionScannedEvent(threadID, "recovered-turn", now.Add(time.Second))
+	recovered.Event.FinalPresent = true
+	d.handleEventLocked(recovered, now.Add(time.Second))
+	thread = d.state.Threads[threadID]
+	if thread.Pending != nil || thread.Awaiting != nil || thread.ConsecutiveFailures != 0 {
+		t.Fatalf("non-empty matching retry did not recover the chain: %+v", thread)
+	}
+}
+
+func TestTurnAbortCancelsEmptyResponseRetryInEitherEventOrder(t *testing.T) {
+	for _, abortFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "completion_first", true: "abort_first"}[abortFirst], func(t *testing.T) {
+			threadID := map[bool]string{
+				false: "019fa8a8-66ea-79c3-9290-0764cb9e0cef",
+				true:  "019fa8a8-dcfc-78c2-bd76-24096bb19232",
+			}[abortFirst]
+			now := time.Now().UTC()
+			d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+			started := scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+				Kind: "task_started", TurnID: "cancelled-turn", Timestamp: now,
+			}}
+			aborted := scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+				Kind: "turn_aborted", TurnID: "cancelled-turn", AbortReason: "interrupted", Timestamp: now.Add(time.Second),
+			}}
+			completed := emptyCompletionScannedEvent(threadID, "cancelled-turn", now.Add(2*time.Second))
+			d.handleEventLocked(started, now)
+			if abortFirst {
+				d.handleEventLocked(aborted, now.Add(time.Second))
+				d.handleEventLocked(completed, now.Add(2*time.Second))
+			} else {
+				d.handleEventLocked(completed, now.Add(time.Second))
+				d.handleEventLocked(aborted, now.Add(2*time.Second))
+			}
+			thread := d.state.Threads[threadID]
+			if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped != nil ||
+				thread.ConsecutiveFailures != 0 || thread.LastAbortedTurnID != "cancelled-turn" {
+				t.Fatalf("turn abort did not remain authoritative: %+v", thread)
+			}
+		})
+	}
+}
+
+func TestPausedGoalSuppressesEmptySuccessfulCompletion(t *testing.T) {
+	threadID := "019fa8a9-259a-7072-a1f2-28f813696934"
+	now := time.Now().UTC()
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	d.handleEventLocked(goalScannedEvent(threadID, "paused", now), now)
+	d.handleEventLocked(emptyCompletionScannedEvent(threadID, "empty-turn", now.Add(time.Second)), now.Add(time.Second))
+	thread := d.state.Threads[threadID]
+	if !thread.GoalHeld || thread.Pending != nil || thread.Awaiting != nil {
+		t.Fatalf("paused goal did not suppress empty-response recovery: %+v", thread)
+	}
+}
+
 func TestDifferentTaskAfterRetryAcknowledgementCancelsAutomation(t *testing.T) {
 	threadID := "019f9dd2-f4ed-7b12-abee-d790fb22701e"
 	start := time.Now().UTC()
@@ -855,4 +942,15 @@ func failureScannedEvent(threadID, turnID string, failedAt time.Time) scannedEve
 		Kind: "task_complete", TurnID: turnID, Timestamp: failedAt,
 		ErrorText: "HTTP 503 Service Unavailable",
 	}}
+}
+
+func emptyCompletionScannedEvent(threadID, turnID string, completedAt time.Time) scannedEvent {
+	return scannedEvent{
+		ThreadID: threadID,
+		Root:     sessionRoot{CodexHome: filepath.Join("C:\\", "isolated-codex-home")},
+		Event: RelevantEvent{
+			Kind: "task_complete", TurnID: turnID, Timestamp: completedAt,
+			FinalKnown: true, FinalPresent: false,
+		},
+	}
 }
