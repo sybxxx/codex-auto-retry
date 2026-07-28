@@ -49,10 +49,10 @@ function New-Label {
 }
 
 function New-NumberBox {
-    param([int]$X, [int]$Y, [int]$Minimum, [int]$Maximum, [int]$Value)
+    param([int]$X, [int]$Y, [int]$Minimum, [int]$Maximum, [int]$Value, [int]$Width = 130)
     $box = [System.Windows.Forms.NumericUpDown]::new()
     $box.Location = [System.Drawing.Point]::new($X, $Y)
-    $box.Size = [System.Drawing.Size]::new(130, 24)
+    $box.Size = [System.Drawing.Size]::new($Width, 24)
     $box.Minimum = $Minimum
     $box.Maximum = $Maximum
     $box.Value = [Math]::Min($Maximum, [Math]::Max($Minimum, $Value))
@@ -164,18 +164,39 @@ $promptBox.ScrollBars = 'Vertical'
 $promptBox.Text = [string]$config.retry_prompt
 $settingsGroup.Controls.Add($promptBox)
 
-$settingsGroup.Controls.Add((New-Label '最多连续重试次数' 18 151 160 22))
-$attemptBox = New-NumberBox 172 148 1 20 ([int]$config.max_retry_attempts)
+$attemptLabel = New-Label '最多连续重试次数' 18 151 145 22
+$attemptBox = New-NumberBox 168 148 1 20 ([int]$config.max_retry_attempts) 120
+$settingsGroup.Controls.Add($attemptLabel)
 $settingsGroup.Controls.Add($attemptBox)
-$settingsGroup.Controls.Add((New-Label '首次等待（秒）' 320 151 125 22))
-$initialDelayBox = New-NumberBox 430 148 1 3600 ([int]$config.initial_delay_seconds)
+$initialDelayLabel = New-Label '首次等待（秒）' 310 151 110 22
+$initialDelayBox = New-NumberBox 428 148 1 3600 ([int]$config.initial_delay_seconds) 130
+$settingsGroup.Controls.Add($initialDelayLabel)
 $settingsGroup.Controls.Add($initialDelayBox)
-$settingsGroup.Controls.Add((New-Label '最大等待（秒）' 18 193 160 22))
-$maxDelayBox = New-NumberBox 172 190 1 86400 ([int]$config.max_delay_seconds)
+$maxDelayLabel = New-Label '最大等待（秒）' 18 193 145 22
+$maxDelayBox = New-NumberBox 168 190 1 86400 ([int]$config.max_delay_seconds) 120
+$settingsGroup.Controls.Add($maxDelayLabel)
 $settingsGroup.Controls.Add($maxDelayBox)
-$hint = New-Label '目标模式仍使用 Codex 原生恢复，不会发送上面的文字。' 320 193 240 42
+$hint = New-Label '目标模式仍使用 Codex 原生恢复，不会发送上面的文字。' 310 193 248 42
 $hint.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($hint)
+
+function Assert-SettingsLayout {
+    foreach ($pair in @(
+        @($attemptLabel, $attemptBox, '最多连续重试次数'),
+        @($initialDelayLabel, $initialDelayBox, '首次等待'),
+        @($maxDelayLabel, $maxDelayBox, '最大等待')
+    )) {
+        if ($pair[0].Right -gt $pair[1].Left) {
+            throw ("设置布局发生遮挡：" + [string]$pair[2])
+        }
+    }
+    foreach ($box in @($attemptBox, $initialDelayBox, $maxDelayBox)) {
+        if ($box.Left -lt 0 -or $box.Right -gt $settingsGroup.ClientSize.Width) {
+            throw '设置输入框超出可见区域。'
+        }
+    }
+}
+Assert-SettingsLayout
 
 $noticeLabel = New-Label '' 22 637 390 28
 $noticeLabel.ForeColor = [System.Drawing.Color]::SeaGreen
@@ -399,6 +420,11 @@ $form.add_Shown({
         [System.IO.File]::WriteAllText(
             (Join-Path $DataDir 'settings-smoke.ok'),
             'passed',
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        [System.IO.File]::WriteAllText(
+            (Join-Path $DataDir 'settings-layout-smoke.ok'),
+            'separated',
             [System.Text.UTF8Encoding]::new($false)
         )
     }

@@ -103,6 +103,11 @@ try {
     if (-not (Test-Path -LiteralPath $settingsMarker)) {
         throw 'The tray settings window did not initialize.'
     }
+    $settingsLayoutMarker = Join-Path $dataDir 'settings-layout-smoke.ok'
+    if (-not (Test-Path -LiteralPath $settingsLayoutMarker) -or
+        (Get-Content -Raw -Encoding UTF8 -LiteralPath $settingsLayoutMarker).Trim() -ne 'separated') {
+        throw 'The tray settings labels overlap their numeric fields.'
+    }
     $settingsScript = Join-Path $dataDir 'settings.ps1'
     $deadline = (Get-Date).AddSeconds(5)
     $settingsCim = $null
@@ -145,6 +150,7 @@ try {
         TrayWindowCreated = $true
         SettingsWindowInitialized = $true
         SettingsWindowVisible = $true
+        SettingsLayoutSeparated = $true
         SettingsProcessClosed = $true
         HeartbeatPublished = $true
         FinalStateClean = $true
