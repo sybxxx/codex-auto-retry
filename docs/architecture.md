@@ -259,9 +259,13 @@ becoming additional writers for `state.json`.
   and `turn/start` creates a normal continuation in the same task without using
   Codex App UI.
 - `mcp-smoke-test.ps1` launches the console-subsystem MCP binary with isolated
-  data. It verifies all five tools, nested and compatibility UI metadata, the
+  data. It verifies all seven tools, nested and compatibility UI metadata, the
   `text/html;profile=mcp-app` resource, structured status, prompt and pause
   updates, and atomic retry-now/cancel command submission.
+- `tray-smoke-test.ps1` starts an isolated GUI-subsystem watchdog and opens the
+  real Windows Forms settings process through the native tray command. It
+  requires the settings top-level window to be visible, closes it through a
+  test-only signal, and verifies that no stale running status remains.
 - The panel is type-checked, bundled into a single offline HTML resource, and
   inspected with Playwright at desktop and narrow widths. The MCP Apps client
   handles host theme variables, safe-area insets, and automatic iframe sizing.

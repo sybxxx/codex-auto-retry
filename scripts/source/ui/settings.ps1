@@ -13,6 +13,7 @@ $configPath = Join-Path $DataDir 'config.json'
 $controlPath = Join-Path $DataDir 'control.json'
 $statusPath = Join-Path $DataDir 'status.json'
 $statePath = Join-Path $DataDir 'state.json'
+$smokeClosePath = Join-Path $DataDir 'settings-smoke-close.signal'
 
 function Read-JsonFile {
     param([string]$Path)
@@ -381,8 +382,17 @@ $saveButton.add_Click({
 })
 
 $timer = [System.Windows.Forms.Timer]::new()
-$timer.Interval = 1000
-$timer.add_Tick({ Update-RuntimeView })
+$timer.Interval = if ($SmokeTest) { 100 } else { 1000 }
+$smokeDeadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+$timer.add_Tick({
+    if ($SmokeTest) {
+        if ((Test-Path -LiteralPath $smokeClosePath) -or [DateTimeOffset]::UtcNow -ge $smokeDeadline) {
+            $form.Close()
+        }
+        return
+    }
+    Update-RuntimeView
+})
 $form.add_Shown({
     Update-RuntimeView
     if ($SmokeTest) {
@@ -391,9 +401,8 @@ $form.add_Shown({
             'passed',
             [System.Text.UTF8Encoding]::new($false)
         )
-        $form.Close()
     }
-    else { $timer.Start() }
+    $timer.Start()
 })
 $form.add_FormClosed({ $timer.Stop(); $timer.Dispose() })
 [void]$form.ShowDialog()

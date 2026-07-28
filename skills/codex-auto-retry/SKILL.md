@@ -94,7 +94,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 The MCP smoke test uses isolated local data and verifies all management tools,
 the embedded HTML resource, prompt changes, pause state, and atomic control
 commands. The tray smoke test verifies the native notification-area window,
-heartbeat, and clean final status without touching Codex. The installed-App
+visible graphical settings window, heartbeat, and clean final status without touching Codex. The installed-App
 probe reads only a bounded App state summary through the
 production background transport. It must not resume, navigate, or modify a
 task. The isolated protocol test uses a temporary `CODEX_HOME` and does not use

@@ -374,21 +374,25 @@ func (a *trayApp) openSettings() {
 	a.settingsMu.Unlock()
 	scriptPath, err := ensureSettingsScript(a.dataDir)
 	if err != nil {
+		a.logger.Printf("settings open failed category=settings_script")
 		a.settingsFinished()
 		return
 	}
 	config, err := loadOrCreateConfig(filepath.Join(a.dataDir, "config.json"))
 	if err != nil {
+		a.logger.Printf("settings open failed category=settings_config")
 		a.settingsFinished()
 		return
 	}
 	powerShell, err := resolvePowerShellExecutable(config.PowerShellExecutable)
 	if err != nil {
+		a.logger.Printf("settings open failed category=settings_shell")
 		a.settingsFinished()
 		return
 	}
 	executable, err := os.Executable()
 	if err != nil {
+		a.logger.Printf("settings open failed category=settings_executable")
 		a.settingsFinished()
 		return
 	}
@@ -397,12 +401,18 @@ func (a *trayApp) openSettings() {
 		arguments = append(arguments, "-SmokeTest")
 	}
 	command := exec.Command(powerShell, arguments...)
-	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	if err := command.Start(); err != nil {
+		a.logger.Printf("settings open failed category=settings_start")
 		a.settingsFinished()
 		return
 	}
-	go func() { _ = command.Wait(); a.settingsFinished() }()
+	go func() {
+		if err := command.Wait(); err != nil {
+			a.logger.Printf("settings process stopped category=settings_process")
+		}
+		a.settingsFinished()
+	}()
 }
 
 func (a *trayApp) settingsFinished() {

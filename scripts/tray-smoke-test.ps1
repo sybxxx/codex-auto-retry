@@ -6,16 +6,38 @@ $binary = Join-Path $PSScriptRoot 'bin\codex-auto-retry.exe'
 $testRoot = Join-Path $env:TEMP ("codex-auto-retry-tray-" + [guid]::NewGuid().ToString('N'))
 $dataDir = Join-Path $testRoot 'data'
 $process = $null
+$settingsProcess = $null
 $oldSettingsSmoke = $env:CODEX_AUTO_RETRY_SETTINGS_SMOKE
 
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class CodexAutoRetryTrayProbe {
+    private delegate bool EnumWindowsProc(IntPtr window, IntPtr state);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr FindWindow(string className, string windowName);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr state);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool IsWindowVisible(IntPtr window);
+
+    public static IntPtr FindVisibleWindow(uint targetProcessId) {
+        IntPtr match = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr window, IntPtr state) {
+            uint processId;
+            GetWindowThreadProcessId(window, out processId);
+            if (processId == targetProcessId && IsWindowVisible(window)) {
+                match = window;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return match;
+    }
 }
 '@
 
@@ -81,6 +103,30 @@ try {
     if (-not (Test-Path -LiteralPath $settingsMarker)) {
         throw 'The tray settings window did not initialize.'
     }
+    $settingsScript = Join-Path $dataDir 'settings.ps1'
+    $deadline = (Get-Date).AddSeconds(5)
+    $settingsCim = $null
+    do {
+        $settingsCim = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.ParentProcessId -eq $process.Id -and $_.CommandLine -and
+                $_.CommandLine.IndexOf($settingsScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+            } |
+            Select-Object -First 1
+        if (-not $settingsCim) { Start-Sleep -Milliseconds 100 }
+    } while (-not $settingsCim -and (Get-Date) -lt $deadline)
+    if (-not $settingsCim) {
+        throw 'The tray settings process was not found.'
+    }
+    $settingsProcess = Get-Process -Id $settingsCim.ProcessId -ErrorAction Stop
+    $settingsWindow = [CodexAutoRetryTrayProbe]::FindVisibleWindow([uint32]$settingsProcess.Id)
+    if ($settingsWindow -eq [IntPtr]::Zero) {
+        throw 'The tray settings window exists but is not visible.'
+    }
+    New-Item -ItemType File -Force -Path (Join-Path $dataDir 'settings-smoke-close.signal') | Out-Null
+    if (-not $settingsProcess.WaitForExit(10000)) {
+        throw 'The tray settings window did not close cleanly.'
+    }
     $logPath = Join-Path $dataDir 'logs\daemon.log'
     $log = if (Test-Path -LiteralPath $logPath) { Get-Content -Raw -Encoding UTF8 -LiteralPath $logPath } else { '' }
     if ($log -match 'category=tray_error') {
@@ -98,6 +144,8 @@ try {
         Status = 'passed'
         TrayWindowCreated = $true
         SettingsWindowInitialized = $true
+        SettingsWindowVisible = $true
+        SettingsProcessClosed = $true
         HeartbeatPublished = $true
         FinalStateClean = $true
     }
@@ -107,6 +155,9 @@ finally {
     else { Remove-Item Env:CODEX_AUTO_RETRY_SETTINGS_SMOKE -ErrorAction SilentlyContinue }
     if ($process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($settingsProcess -and -not $settingsProcess.HasExited) {
+        Stop-Process -Id $settingsProcess.Id -Force -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)

@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const appVersion = "0.4.0"
+const appVersion = "0.4.1"
 
 type FailureClass string
 

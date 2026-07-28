@@ -7,6 +7,7 @@ $mcpSource = Join-Path $PSScriptRoot 'bin\codex-auto-retry-mcp.exe'
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
 $watchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
+$settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
 $statusPath = Join-Path $installDir 'status.json'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -40,6 +41,15 @@ $mcpProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcpTarget, [System.StringComparison]::OrdinalIgnoreCase) }
 if ($mcpProcesses) {
     $mcpProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 300
+}
+$settingsProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine.IndexOf($settingsTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    }
+if ($settingsProcesses) {
+    $settingsProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 300
 }
 
