@@ -17,8 +17,15 @@ panel is open.
   model and provider, service tier, reasoning settings, personality, approval
   routing, and effective permission profile instead of applying the App's
   defaults.
-- In goal mode, uses Codex's native goal state and activates the interrupted
-  goal. Codex then creates the continuation turn itself.
+- In goal mode, uses Codex's native goal state and activates only a blocked
+  goal that can be attributed to the same provider failure. Codex then creates
+  the continuation turn itself.
+- Treats a user or AI pause, including a goal waiting for review, as
+  authoritative. A pause before failure, during the countdown, or while the
+  controller is starting cancels that recovery; only an explicit later
+  `active` goal update clears the hold.
+- Never converts completed, usage-limited, budget-limited, or unknown goal
+  states into a normal-conversation `continue` turn.
 - In a normal conversation, starts a visible `继续` turn in that same
   task without touching the composer or any draft the user has typed.
 - If the failed task is already running, keeps its retry queued and tries again
@@ -60,9 +67,13 @@ another task. Closing the panel has no effect on the global watchdog.
 
 ## Safety And Privacy
 
-The event scanner accepts only `task_started` and `task_complete` lifecycle
-records. Immediately before recovery, a separate settings reader decodes only
-an allowlisted subset of the latest `turn_context` and
+The event scanner accepts only `task_started`, `task_complete`, and
+`thread_goal_updated` lifecycle records. For goal updates it retains only the
+target task ID, status, and lifecycle timestamps; the event can be routed correctly even
+when Codex persists it in another task's rollout. It never reads the goal
+objective or searches conversation text for words such as "review". Immediately
+before recovery, a separate settings reader decodes only an allowlisted subset
+of the latest `turn_context` and
 `thread_settings_applied` records: working directory, workspace roots, model
 and provider, service tier, reasoning effort and summary, personality, approval
 policy and reviewer, and effective permission mode. It discards every other

@@ -41,25 +41,34 @@ UI surface that caused both reported failures.
 1. Codex writes a JSONL lifecycle event to a session rollout.
 2. The scanner reads only newly appended bytes using a persisted file cursor.
 3. The event parser accepts only `event_msg` records with payload type
-   `task_started` or `task_complete`.
-4. A failed `task_complete` is classified as retryable, limited-retry, or
+   `task_started`, `task_complete`, or `thread_goal_updated`. A goal event is
+   routed by its payload task ID because Codex may persist it in another
+   task's rollout; only its status and lifecycle timestamps are retained.
+4. A non-active goal state creates a durable hold and cancels pending,
+   awaiting, or starting recovery. Only an explicit later `active` goal update
+   clears that hold. A `blocked` state is exempt only when its update time is
+   from two seconds before through five seconds after the matching provider
+   failure, which allows for timestamp precision and event ordering.
+5. A failed `task_complete` is classified as retryable, limited-retry, or
    non-retryable.
-5. A retryable failure is deduplicated and scheduled with exponential backoff
+6. A retryable failure is deduplicated and scheduled with exponential backoff
    in state owned by that task ID.
-6. The controller discovers Codex App's loopback debugging port, verifies an
+7. The controller discovers Codex App's loopback debugging port, verifies an
    exact `app://-/index.html` Codex page, and connects to its renderer.
-7. A reverse reader finds the latest `turn_context` and
+8. A reverse reader finds the latest `turn_context` and
    `thread_settings_applied` records in that task's rollout and decodes only the
    allowlisted execution settings needed by `thread/resume`.
-8. The renderer program locates Codex's internal structured request bridge,
+9. The renderer program locates Codex's internal structured request bridge,
    reads the target task state, hydrates it in the background, and calls
    `thread/resume` with those settings on the existing app-server connection.
-9. Parent-owned subagent rollouts are removed from the independent queue; their
+10. Parent-owned subagent rollouts are removed from the independent queue; their
    lifecycle remains part of the parent task that created them.
-10. For a recoverable goal, an already-active goal continues as part of resume;
-   a paused, blocked, or usage-limited goal is changed to `active`. For a
-   normal task, `turn/start` adds the configured continuation in that task.
-11. The first lifecycle `task_started` in the dispatch window becomes the retry
+11. The renderer reads goal state before and after hydration/resume. A paused
+   goal or a blocked goal that predates the provider failure stops recovery. A
+   provider-attributed blocked goal is changed to `active`; completed,
+   usage-limited, budget-limited, changed, and unknown states fail closed. Only
+   a task with no goal may fall through to the configured normal continuation.
+12. The first lifecycle `task_started` in the dispatch window becomes the retry
    turn ID. Only a `task_complete` with that same ID can recover the chain or
    schedule its next provider retry.
 
@@ -101,6 +110,9 @@ transport, and the fixed renderer program.
   by JSON encoding, not executable string concatenation.
 - The renderer program calls only the fixed background methods needed for
   state read, hydration, resume, goal activation, and turn start.
+- Goal state is checked before hydration and again immediately before the
+  mutating goal/turn action. A goal appearing, disappearing, pausing, or
+  changing to a terminal or limited state during dispatch fails closed.
 - It contains no task deeplink, routing call, window activation, UI Automation,
   mouse, keyboard, clipboard, or composer access.
 - A missing App, incompatible renderer bridge, active target task, or missing
@@ -140,9 +152,9 @@ provider retry from a limited authentication budget.
 ## State And Correlation
 
 `state.json` stores file offsets, processed event keys, task retry counters,
-pending deadlines, failed turn IDs, background actions, retry turn IDs,
-dispatch deadlines, and rollout paths. Atomic replacement prevents partial
-state files.
+pending deadlines, failed turn IDs and times, goal status/timestamps/hold,
+background actions, retry turn IDs, dispatch deadlines, and rollout paths.
+Atomic replacement prevents partial state files.
 
 A pending retry moves to `awaiting` before background dispatch begins, so a
 fast `task_started` cannot be lost. A matching start attaches its turn ID. A
@@ -150,6 +162,13 @@ different task started after acknowledgement cancels automation, and an
 unrelated completion is ignored. On restart, an unacknowledged dispatch is
 rescheduled after its deadline while an acknowledged running turn remains
 tracked.
+
+An intentional goal hold is not inferred from assistant prose. It is driven
+only by Codex goal lifecycle status and update time. A normal task start cannot
+clear it, so a user who briefly resumes and then pauses a goal remains
+protected across later failures and watchdog restarts. Pausing during a queued
+or starting retry clears its state and cancels the controller context; any late
+controller result is treated as stale.
 
 The first installation baselines existing rollout files at their current end.
 Later restarts continue from saved offsets and process failures written while
@@ -163,7 +182,9 @@ writer for `state.json`.
 
 ## Privacy And Security
 
-- Lifecycle scanning parses only start and completion events. The separate
+- Lifecycle scanning parses only start, completion, and goal status/time
+  events. For a goal it retains the payload task ID, status, and update time,
+  but not the objective. The separate
   resume-settings reader inspects only the latest `turn_context` and decodes a
   fixed subset. A second allowlisted record supplies model-provider and service
   tier provenance without forwarding collaboration instructions or messages.
@@ -181,11 +202,13 @@ writer for `state.json`.
 
 ## Verification
 
-- Go unit tests cover classification, privacy filtering, latest-context reverse
-  lookup, allowlisted settings, configuration migration, baselining, restart
-  recovery, mirroring, strict turn correlation, per-task activity delays,
-  bounded parallel dispatch, renderer target validation, fixed-method safety,
-  and two simultaneous tasks with distinct settings.
+- Go unit tests cover classification, privacy filtering, payload-based goal
+  routing, intentional pause before/during retry, blocked-failure attribution,
+  hold persistence across restart, latest-context reverse lookup, allowlisted
+  settings, configuration migration, baselining, mirroring, strict turn
+  correlation, per-task activity delays, bounded parallel dispatch, renderer
+  target validation, fixed-method safety, and two simultaneous tasks with
+  distinct settings.
 - `go test -race` verifies concurrent scanning, dispatch, and controller
   completion. `go vet` checks static correctness.
 - `smoke-test.ps1` runs the compiled GUI-subsystem watchdog with isolated

@@ -29,6 +29,7 @@ type daemon struct {
 	wg        sync.WaitGroup
 	state     RuntimeState
 	active    map[string]RetryJob
+	activeCtx map[string]context.CancelFunc
 	lastScan  time.Time
 	lastError string
 	paused    bool
@@ -58,6 +59,7 @@ func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeR
 		startedAt:   time.Now().UTC(),
 		state:       state,
 		active:      make(map[string]RetryJob),
+		activeCtx:   make(map[string]context.CancelFunc),
 		paused:      control.Paused,
 	}, nil
 }
@@ -200,6 +202,40 @@ func (d *daemon) handleEventLocked(item scannedEvent, now time.Time) {
 		d.handleTaskStartedLocked(item.ThreadID, event, thread)
 	case "task_complete":
 		d.handleTaskCompleteLocked(item, key, now, thread)
+	case "thread_goal_updated":
+		d.handleGoalUpdatedLocked(item.ThreadID, event, thread)
+	}
+}
+
+func (d *daemon) handleGoalUpdatedLocked(threadID string, event RelevantEvent, thread ThreadState) {
+	staleUpdate := !thread.GoalUpdatedAt.IsZero() && event.GoalUpdatedAt.Before(thread.GoalUpdatedAt)
+	staleObservation := event.GoalUpdatedAt.Equal(thread.GoalUpdatedAt) &&
+		!thread.GoalObservedAt.IsZero() && !event.Timestamp.After(thread.GoalObservedAt)
+	if staleUpdate || staleObservation {
+		d.logger.Printf("goal update ignored thread=%s reason=stale_goal_state", shortThreadID(threadID))
+		return
+	}
+	thread.GoalStatus = event.GoalStatus
+	thread.GoalUpdatedAt = event.GoalUpdatedAt
+	thread.GoalObservedAt = event.Timestamp
+	thread.GoalHeld = goalRequiresHold(event.GoalStatus, event.GoalUpdatedAt, thread.LastFailureAt)
+	if !thread.GoalHeld {
+		d.state.Threads[threadID] = thread
+		return
+	}
+	hadRetry := thread.Pending != nil || thread.Awaiting != nil
+	if _, active := d.active[threadID]; active {
+		hadRetry = true
+	}
+	if cancel := d.activeCtx[threadID]; cancel != nil {
+		cancel()
+	}
+	thread.Pending = nil
+	thread.Awaiting = nil
+	thread.ConsecutiveFailures = 0
+	d.state.Threads[threadID] = thread
+	if hadRetry {
+		d.logger.Printf("retry cancelled thread=%s reason=goal_held", shortThreadID(threadID))
 	}
 }
 
@@ -268,6 +304,19 @@ func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now tim
 }
 
 func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.Time, thread ThreadState, attempt int) {
+	if thread.GoalHeld {
+		if thread.GoalStatus == "blocked" && goalBlockedByFailure(thread.GoalUpdatedAt, item.Event.Timestamp) {
+			thread.GoalHeld = false
+		} else {
+			thread.Pending = nil
+			thread.Awaiting = nil
+			thread.ConsecutiveFailures = 0
+			thread.LastFailureAt = item.Event.Timestamp
+			d.state.Threads[item.ThreadID] = thread
+			d.logger.Printf("retry skipped thread=%s category=non_retryable reason=goal_held", shortThreadID(item.ThreadID))
+			return
+		}
+	}
 	decision := classifyFailure(item.Event.ErrorText, d.config)
 	if !decision.Retry {
 		d.resetRetryStateLocked(item.ThreadID, thread)
@@ -291,6 +340,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 	thread.Pending = &PendingRetry{
 		EventKey:     key,
 		FailedTurnID: item.Event.TurnID,
+		FailedAt:     item.Event.Timestamp,
 		Class:        decision.Class,
 		DueAt:        now.Add(delay),
 		CodexHome:    item.Root.CodexHome,
@@ -302,7 +352,28 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 	d.logger.Printf("retry scheduled thread=%s category=%s attempt=%d delay_seconds=%d", shortThreadID(item.ThreadID), decision.Class, attempt, int(delay.Seconds()))
 }
 
+func goalRequiresHold(status string, goalUpdatedAt, failureAt time.Time) bool {
+	if status == "active" {
+		return false
+	}
+	if status == "blocked" {
+		return !goalBlockedByFailure(goalUpdatedAt, failureAt)
+	}
+	return true
+}
+
+func goalBlockedByFailure(goalUpdatedAt, failureAt time.Time) bool {
+	if goalUpdatedAt.IsZero() || failureAt.IsZero() {
+		return false
+	}
+	return !goalUpdatedAt.Before(failureAt.Add(-2*time.Second)) &&
+		!goalUpdatedAt.After(failureAt.Add(5*time.Second))
+}
+
 func (d *daemon) cancelRetryLocked(threadID string, thread ThreadState, reason string) {
+	if cancel := d.activeCtx[threadID]; cancel != nil {
+		cancel()
+	}
 	thread.Pending = nil
 	thread.Awaiting = nil
 	thread.ConsecutiveFailures = 0
@@ -340,6 +411,7 @@ func (d *daemon) rescheduleAwaitingLocked(threadID string, thread ThreadState, n
 	thread.Pending = &PendingRetry{
 		EventKey:         awaiting.EventKey,
 		FailedTurnID:     awaiting.FailedTurnID,
+		FailedAt:         awaiting.FailedAt,
 		Class:            awaiting.Class,
 		DueAt:            now.Add(delay),
 		CodexHome:        awaiting.CodexHome,
@@ -366,6 +438,15 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	}
 	candidates := make([]candidate, 0)
 	for threadID, thread := range d.state.Threads {
+		if thread.GoalHeld {
+			if thread.Pending != nil || thread.Awaiting != nil {
+				thread.Pending = nil
+				thread.Awaiting = nil
+				thread.ConsecutiveFailures = 0
+				d.state.Threads[threadID] = thread
+			}
+			continue
+		}
 		if thread.Pending == nil || thread.Pending.DueAt.After(now) || thread.Awaiting != nil {
 			continue
 		}
@@ -391,6 +472,7 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		thread.Awaiting = &AwaitingRetry{
 			EventKey:          item.pending.EventKey,
 			FailedTurnID:      item.pending.FailedTurnID,
+			FailedAt:          item.pending.FailedAt,
 			Class:             item.pending.Class,
 			Action:            actionDispatching,
 			Attempt:           item.pending.Attempt,
@@ -405,6 +487,7 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		job := RetryJob{
 			ThreadID:         item.threadID,
 			FailedTurnID:     item.pending.FailedTurnID,
+			FailedAt:         item.pending.FailedAt,
 			EventKey:         item.pending.EventKey,
 			Class:            item.pending.Class,
 			CodexHome:        item.pending.CodexHome,
@@ -421,14 +504,28 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 
 func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 	defer d.wg.Done()
+	jobCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	d.mu.Lock()
+	thread := d.state.Threads[job.ThreadID]
+	if thread.Awaiting == nil || thread.Awaiting.EventKey != job.EventKey ||
+		thread.Awaiting.Attempt != job.Attempt || thread.GoalHeld {
+		delete(d.active, job.ThreadID)
+		d.mu.Unlock()
+		d.logger.Printf("retry action ignored thread=%s reason=stale_job", shortThreadID(job.ThreadID))
+		return
+	}
+	d.activeCtx[job.ThreadID] = cancel
+	d.mu.Unlock()
 	d.logger.Printf("retry action started thread=%s category=%s attempt=%d", shortThreadID(job.ThreadID), job.Class, job.Attempt)
-	result, err := d.runner.Resume(ctx, job)
+	result, err := d.runner.Resume(jobCtx, job)
 	finishedAt := time.Now().UTC()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.active, job.ThreadID)
-	thread := d.state.Threads[job.ThreadID]
+	delete(d.activeCtx, job.ThreadID)
+	thread = d.state.Threads[job.ThreadID]
 	if thread.Awaiting == nil || thread.Awaiting.EventKey != job.EventKey || thread.Awaiting.Attempt != job.Attempt {
 		d.logger.Printf("retry action ignored thread=%s reason=stale_result", shortThreadID(job.ThreadID))
 		_ = d.writeStatusLocked(true, len(discoverSessionRoots(d.config)))
@@ -446,6 +543,12 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		thread.ConsecutiveFailures = 0
 		thread.Pending = nil
 		thread.Awaiting = nil
+		if status, held := goalHoldStatusForReason(result.Reason); held {
+			thread.GoalHeld = true
+			if status != "" {
+				thread.GoalStatus = status
+			}
+		}
 		d.state.Threads[job.ThreadID] = thread
 		d.logger.Printf("retry skipped thread=%s reason=%s", shortThreadID(job.ThreadID), result.Reason)
 	} else {
@@ -458,6 +561,25 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		d.lastError = stateErr.Error()
 	}
 	_ = d.writeStatusLocked(true, len(discoverSessionRoots(d.config)))
+}
+
+func goalHoldStatusForReason(reason string) (string, bool) {
+	switch reason {
+	case "goal_paused":
+		return "paused", true
+	case "goal_completed":
+		return "completed", true
+	case "goal_usage_limited":
+		return "usageLimited", true
+	case "goal_budget_limited":
+		return "budgetLimited", true
+	case "goal_blocked_before_failure":
+		return "blocked", true
+	case "goal_status_changed", "goal_status_unsupported":
+		return "", true
+	default:
+		return "", false
+	}
 }
 
 func (d *daemon) waitForJobs() {

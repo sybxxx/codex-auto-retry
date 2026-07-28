@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const appVersion = "0.3.0"
+const appVersion = "0.3.1"
 
 type FailureClass string
 
@@ -24,15 +24,19 @@ type RetryDecision struct {
 }
 
 type RelevantEvent struct {
-	Kind      string
-	TurnID    string
-	Timestamp time.Time
-	ErrorText string
+	Kind          string
+	ThreadID      string
+	TurnID        string
+	Timestamp     time.Time
+	ErrorText     string
+	GoalStatus    string
+	GoalUpdatedAt time.Time
 }
 
 type PendingRetry struct {
 	EventKey         string       `json:"event_key"`
 	FailedTurnID     string       `json:"turn_id"`
+	FailedAt         time.Time    `json:"failed_at,omitempty"`
 	Class            FailureClass `json:"class"`
 	DueAt            time.Time    `json:"due_at"`
 	CodexHome        string       `json:"codex_home"`
@@ -54,6 +58,7 @@ const (
 type AwaitingRetry struct {
 	EventKey          string       `json:"event_key"`
 	FailedTurnID      string       `json:"failed_turn_id"`
+	FailedAt          time.Time    `json:"failed_at,omitempty"`
 	RetryTurnID       string       `json:"retry_turn_id,omitempty"`
 	Class             FailureClass `json:"class"`
 	Action            RetryAction  `json:"action"`
@@ -71,6 +76,10 @@ type ThreadState struct {
 	ConsecutiveFailures int            `json:"consecutive_failures"`
 	LastFailureAt       time.Time      `json:"last_failure_at,omitempty"`
 	LastAutoRetryAt     time.Time      `json:"last_auto_retry_at,omitempty"`
+	GoalStatus          string         `json:"goal_status,omitempty"`
+	GoalUpdatedAt       time.Time      `json:"goal_updated_at,omitempty"`
+	GoalObservedAt      time.Time      `json:"goal_observed_at,omitempty"`
+	GoalHeld            bool           `json:"goal_held,omitempty"`
 	Pending             *PendingRetry  `json:"pending,omitempty"`
 	Awaiting            *AwaitingRetry `json:"awaiting,omitempty"`
 }
@@ -91,6 +100,7 @@ type RuntimeState struct {
 type RetryJob struct {
 	ThreadID         string
 	FailedTurnID     string
+	FailedAt         time.Time
 	EventKey         string
 	Class            FailureClass
 	CodexHome        string

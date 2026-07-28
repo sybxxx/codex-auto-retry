@@ -21,7 +21,7 @@ type fakeResumeRunner struct {
 	once    sync.Once
 }
 
-func (f *fakeResumeRunner) Resume(_ context.Context, job RetryJob) (DispatchResult, error) {
+func (f *fakeResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {
 	f.mu.Lock()
 	f.jobs = append(f.jobs, job)
 	f.mu.Unlock()
@@ -29,7 +29,11 @@ func (f *fakeResumeRunner) Resume(_ context.Context, job RetryJob) (DispatchResu
 		f.once.Do(func() { close(f.entered) })
 	}
 	if f.gate != nil {
-		<-f.gate
+		select {
+		case <-f.gate:
+		case <-ctx.Done():
+			return DispatchResult{}, ctx.Err()
+		}
 	}
 	return f.result, f.err
 }
@@ -188,6 +192,203 @@ func TestManualTaskCancelsPendingRetry(t *testing.T) {
 	}
 }
 
+func TestPausedGoalSkipsProviderFailure(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954b2"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	pausedAt := time.Date(2026, 7, 27, 15, 50, 53, 0, time.UTC)
+	d.handleEventLocked(goalScannedEvent(threadID, "paused", pausedAt), pausedAt)
+	failureAt := pausedAt.Add(69 * time.Second)
+	d.handleEventLocked(failureScannedEvent(threadID, "failed-turn", failureAt), failureAt)
+
+	thread := d.state.Threads[threadID]
+	if !thread.GoalHeld || thread.GoalStatus != "paused" || thread.Pending != nil || thread.Awaiting != nil {
+		t.Fatalf("paused goal was queued for retry: %+v", thread)
+	}
+}
+
+func TestGoalPauseCancelsPendingRetry(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954b3"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{Pending: &PendingRetry{
+		EventKey: "failure", FailedTurnID: "failed-turn", FailedAt: now,
+		Class: classServer, DueAt: now.Add(time.Minute), Attempt: 1,
+	}}
+	d.handleEventLocked(goalScannedEvent(threadID, "paused", now.Add(time.Second)), now.Add(time.Second))
+
+	thread := d.state.Threads[threadID]
+	if !thread.GoalHeld || thread.Pending != nil || thread.Awaiting != nil {
+		t.Fatalf("goal pause did not cancel the countdown: %+v", thread)
+	}
+}
+
+func TestGoalPauseCancelsRunningRetryAndIgnoresStaleResult(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954b4"
+	runner := &fakeResumeRunner{
+		result:  DispatchResult{Outcome: outcomeDispatched, Action: actionGoalResume},
+		gate:    make(chan struct{}),
+		entered: make(chan struct{}),
+	}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{Pending: &PendingRetry{
+		EventKey: "failure", FailedTurnID: "failed-turn", FailedAt: now,
+		Class: classServer, DueAt: now, Attempt: 1,
+	}}
+	jobs := d.dispatchDueLocked(now)
+	if len(jobs) != 1 {
+		t.Fatalf("expected one running retry, got %d", len(jobs))
+	}
+	d.wg.Add(1)
+	go d.runJob(context.Background(), jobs[0])
+	select {
+	case <-runner.entered:
+	case <-time.After(time.Second):
+		t.Fatal("retry runner did not start")
+	}
+
+	d.mu.Lock()
+	d.handleEventLocked(goalScannedEvent(threadID, "paused", now.Add(time.Second)), now.Add(time.Second))
+	d.mu.Unlock()
+	d.waitForJobs()
+
+	thread := daemonThreadSnapshot(d, threadID)
+	d.mu.Lock()
+	activeCount := len(d.active)
+	activeContextCount := len(d.activeCtx)
+	d.mu.Unlock()
+	if !thread.GoalHeld || thread.Pending != nil || thread.Awaiting != nil || activeCount != 0 || activeContextCount != 0 {
+		t.Fatalf("paused running retry was not fully cancelled: thread=%+v active=%d contexts=%d", thread, activeCount, activeContextCount)
+	}
+}
+
+func TestOnlyActiveGoalUpdateClearsPauseHold(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954b5"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	now := time.Now().UTC()
+	d.handleEventLocked(goalScannedEvent(threadID, "paused", now), now)
+	d.handleEventLocked(scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "task_started", TurnID: "manual-turn", Timestamp: now.Add(time.Second),
+	}}, now.Add(time.Second))
+	if !d.state.Threads[threadID].GoalHeld {
+		t.Fatal("a normal task start cleared the explicit goal pause")
+	}
+
+	d.handleEventLocked(goalScannedEvent(threadID, "active", now.Add(2*time.Second)), now.Add(2*time.Second))
+	failureAt := now.Add(3 * time.Second)
+	d.handleEventLocked(failureScannedEvent(threadID, "new-failure", failureAt), failureAt)
+	thread := d.state.Threads[threadID]
+	if thread.GoalHeld || thread.Pending == nil || !thread.Pending.FailedAt.Equal(failureAt) {
+		t.Fatalf("active goal did not re-enable future retries: %+v", thread)
+	}
+}
+
+func TestStaleActiveGoalUpdateCannotClearNewerPause(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954ba"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	pausedAt := time.Now().UTC()
+	d.handleEventLocked(goalScannedEvent(threadID, "paused", pausedAt), pausedAt)
+	d.handleEventLocked(goalScannedEvent(threadID, "active", pausedAt.Add(-time.Minute)), pausedAt.Add(time.Second))
+	thread := d.state.Threads[threadID]
+	if !thread.GoalHeld || thread.GoalStatus != "paused" || !thread.GoalUpdatedAt.Equal(pausedAt) {
+		t.Fatalf("stale active event cleared a newer pause: %+v", thread)
+	}
+}
+
+func TestSameTimestampActiveGoalCannotClearPause(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954bb"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	updatedAt := time.Now().UTC().Truncate(time.Second)
+	d.handleEventLocked(goalScannedEvent(threadID, "paused", updatedAt), updatedAt)
+	d.handleEventLocked(goalScannedEvent(threadID, "active", updatedAt), updatedAt.Add(time.Second))
+	thread := d.state.Threads[threadID]
+	if !thread.GoalHeld || thread.GoalStatus != "paused" {
+		t.Fatalf("ambiguous same-timestamp active event cleared pause: %+v", thread)
+	}
+}
+
+func TestLaterObservedActiveGoalCanClearSameSecondPause(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954bd"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	updatedAt := time.Now().UTC().Truncate(time.Second)
+	paused := goalScannedEvent(threadID, "paused", updatedAt)
+	paused.Event.Timestamp = updatedAt.Add(100 * time.Millisecond)
+	d.handleEventLocked(paused, paused.Event.Timestamp)
+	active := goalScannedEvent(threadID, "active", updatedAt)
+	active.Event.Timestamp = updatedAt.Add(200 * time.Millisecond)
+	d.handleEventLocked(active, active.Event.Timestamp)
+	thread := d.state.Threads[threadID]
+	if thread.GoalHeld || thread.GoalStatus != "active" || !thread.GoalObservedAt.Equal(active.Event.Timestamp) {
+		t.Fatalf("later explicit active event did not clear the pause: %+v", thread)
+	}
+}
+
+func TestBlockedGoalBeforeFailureIsHeldForReview(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954b6"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	blockedAt := time.Now().UTC()
+	d.handleEventLocked(goalScannedEvent(threadID, "blocked", blockedAt), blockedAt)
+	failureAt := blockedAt.Add(10 * time.Second)
+	d.handleEventLocked(failureScannedEvent(threadID, "failed-after-review", failureAt), failureAt)
+	thread := d.state.Threads[threadID]
+	if !thread.GoalHeld || thread.Pending != nil {
+		t.Fatalf("pre-existing blocked goal was mistaken for a provider interruption: %+v", thread)
+	}
+}
+
+func TestProviderBlockedGoalIsRetryableInEitherEventOrder(t *testing.T) {
+	for _, goalFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "goal_first", false: "failure_first"}[goalFirst], func(t *testing.T) {
+			threadID := map[bool]string{
+				true:  "019fa3f6-a793-78a3-8ae6-947340d954b7",
+				false: "019fa3f6-a793-78a3-8ae6-947340d954b8",
+			}[goalFirst]
+			d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+			failureAt := time.Now().UTC()
+			goalEvent := goalScannedEvent(threadID, "blocked", failureAt.Add(time.Second))
+			failureEvent := failureScannedEvent(threadID, "provider-failure", failureAt)
+			if goalFirst {
+				d.handleEventLocked(goalEvent, failureAt.Add(time.Second))
+				d.handleEventLocked(failureEvent, failureAt.Add(2*time.Second))
+			} else {
+				d.handleEventLocked(failureEvent, failureAt)
+				d.handleEventLocked(goalEvent, failureAt.Add(time.Second))
+			}
+			thread := d.state.Threads[threadID]
+			if thread.GoalHeld || thread.Pending == nil {
+				t.Fatalf("provider-caused blocked goal was not retained for retry: %+v", thread)
+			}
+		})
+	}
+}
+
+func TestGoalPauseHoldSurvivesDaemonRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954b9"
+	pausedAt := time.Now().UTC()
+	state := newRuntimeState()
+	state.Initialized = true
+	state.Threads[threadID] = ThreadState{
+		GoalStatus: "paused", GoalUpdatedAt: pausedAt, GoalHeld: true,
+	}
+	if err := writeJSONAtomic(filepath.Join(dataDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	logger, err := newSafeLogger(filepath.Join(dataDir, "restart.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	d, err := newDaemon(isolatedConfig(t.TempDir()), dataDir, logger, successfulRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread := d.state.Threads[threadID]
+	if !thread.GoalHeld || thread.GoalStatus != "paused" || !thread.GoalUpdatedAt.Equal(pausedAt) {
+		t.Fatalf("goal pause was lost across restart: %+v", thread)
+	}
+}
+
 func TestOnlyMatchingRetryTurnCanRecoverChain(t *testing.T) {
 	codexHome := filepath.Join(t.TempDir(), ".codex")
 	sessions := filepath.Join(codexHome, "sessions")
@@ -332,6 +533,29 @@ func TestParentOwnedSubagentDoesNotRemainInIndependentRetryQueue(t *testing.T) {
 	}
 }
 
+func TestLiveRendererGoalHoldPersistsInDaemonState(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954bc"
+	cfg := isolatedConfig(t.TempDir())
+	runner := &fakeResumeRunner{result: DispatchResult{
+		Outcome: outcomeNotApplicable,
+		Reason:  "goal_paused",
+	}}
+	d := newTestDaemon(t, cfg, runner)
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{Pending: &PendingRetry{
+		EventKey: "event", FailedTurnID: "failed", FailedAt: now, Class: classServer,
+		DueAt: now, Attempt: 1,
+	}}
+	jobs := d.dispatchDueLocked(now)
+	d.wg.Add(1)
+	go d.runJob(context.Background(), jobs[0])
+	d.waitForJobs()
+	thread := daemonThreadSnapshot(d, threadID)
+	if !thread.GoalHeld || thread.GoalStatus != "paused" || thread.Pending != nil || thread.Awaiting != nil {
+		t.Fatalf("live renderer hold was not persisted: %+v", thread)
+	}
+}
+
 func TestMissingStartAcknowledgementReschedules(t *testing.T) {
 	threadID := "019f9cfe-4b7f-7223-a298-e60f4c25f14a"
 	cfg := isolatedConfig(t.TempDir())
@@ -378,6 +602,26 @@ func TestDispatchHonorsParallelLimitAndKeepsThreadsIndependent(t *testing.T) {
 	more := d.dispatchDueLocked(now)
 	if len(more) != 1 || more[0].ThreadID == jobs[0].ThreadID || more[0].ThreadID == jobs[1].ThreadID {
 		t.Fatalf("third task did not retain its independent queue entry: %+v", more)
+	}
+}
+
+func TestHeldGoalCannotDispatchPersistedPendingRetry(t *testing.T) {
+	threadID := "019fa3f6-a793-78a3-8ae6-947340d954be"
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{
+		GoalStatus: "paused", GoalUpdatedAt: now.Add(-time.Minute), GoalHeld: true,
+		Pending: &PendingRetry{
+			EventKey: "stale-event", FailedTurnID: "failed", FailedAt: now.Add(-time.Second),
+			Class: classServer, DueAt: now, Attempt: 1,
+		},
+	}
+	if jobs := d.dispatchDueLocked(now); len(jobs) != 0 {
+		t.Fatalf("held goal dispatched a persisted retry: %+v", jobs)
+	}
+	thread := d.state.Threads[threadID]
+	if thread.Pending != nil || thread.Awaiting != nil || !thread.GoalHeld {
+		t.Fatalf("held goal did not clear stale queue state: %+v", thread)
 	}
 }
 
@@ -499,4 +743,18 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition was not met before timeout")
+}
+
+func goalScannedEvent(threadID, status string, updatedAt time.Time) scannedEvent {
+	return scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "thread_goal_updated", Timestamp: updatedAt,
+		GoalStatus: status, GoalUpdatedAt: updatedAt,
+	}}
+}
+
+func failureScannedEvent(threadID, turnID string, failedAt time.Time) scannedEvent {
+	return scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "task_complete", TurnID: turnID, Timestamp: failedAt,
+		ErrorText: "HTTP 503 Service Unavailable",
+	}}
 }

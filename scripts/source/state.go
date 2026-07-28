@@ -45,8 +45,14 @@ func loadState(path string) (RuntimeState, error) {
 			if thread.Pending.Attempt < 1 {
 				thread.Pending.Attempt = 1
 			}
-			state.Threads[id] = thread
 		}
+		if thread.Pending != nil && thread.Pending.FailedAt.IsZero() {
+			thread.Pending.FailedAt = thread.LastFailureAt
+		}
+		if thread.Awaiting != nil && thread.Awaiting.FailedAt.IsZero() {
+			thread.Awaiting.FailedAt = thread.LastFailureAt
+		}
+		state.Threads[id] = thread
 	}
 	return state, nil
 }
@@ -66,7 +72,14 @@ func (s *RuntimeState) prune(now time.Time) {
 	}
 	threadCutoff := now.Add(-30 * 24 * time.Hour)
 	for id, thread := range s.Threads {
-		if thread.Pending == nil && thread.Awaiting == nil && !thread.LastFailureAt.IsZero() && thread.LastFailureAt.Before(threadCutoff) {
+		lastActivity := thread.LastFailureAt
+		if thread.GoalUpdatedAt.After(lastActivity) {
+			lastActivity = thread.GoalUpdatedAt
+		}
+		if thread.GoalObservedAt.After(lastActivity) {
+			lastActivity = thread.GoalObservedAt
+		}
+		if thread.Pending == nil && thread.Awaiting == nil && !lastActivity.IsZero() && lastActivity.Before(threadCutoff) {
 			delete(s.Threads, id)
 		}
 	}

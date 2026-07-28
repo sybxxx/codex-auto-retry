@@ -51,6 +51,7 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 		job.ThreadID,
 		retryPrompt,
 		settings,
+		job.FailedAt,
 	)
 	if err != nil && controllerCtx.Err() != nil {
 		return DispatchResult{}, errControllerTimeout

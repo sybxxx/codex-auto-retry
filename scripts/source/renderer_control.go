@@ -148,12 +148,14 @@ func (c *rendererController) Dispatch(
 	threadID string,
 	prompt string,
 	settings ResumeSettings,
+	failedAt time.Time,
 ) (DispatchResult, error) {
 	payload, err := json.Marshal(struct {
-		ThreadID string         `json:"thread_id"`
-		Prompt   string         `json:"prompt"`
-		Settings ResumeSettings `json:"settings"`
-	}{ThreadID: threadID, Prompt: prompt, Settings: settings})
+		ThreadID       string         `json:"thread_id"`
+		Prompt         string         `json:"prompt"`
+		Settings       ResumeSettings `json:"settings"`
+		FailedAtUnixMS int64          `json:"failed_at_unix_ms"`
+	}{ThreadID: threadID, Prompt: prompt, Settings: settings, FailedAtUnixMS: failedAt.UnixMilli()})
 	if err != nil {
 		return DispatchResult{}, errRendererEvaluation
 	}
@@ -358,6 +360,31 @@ const rendererModuleBootstrap = `
 const rendererDispatchExpression = `(async () => {
     const payload = __PAYLOAD__;
     const retryLater = reason => ({outcome: "retry_later", action: "", reason});
+    const hold = reason => ({outcome: "not_applicable", action: "", reason});
+    const unixSeconds = value => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+        return numeric > 100000000000 ? numeric / 1000 : numeric;
+    };
+    const blockedByFailure = goal => {
+        const failedAt = unixSeconds(payload.failed_at_unix_ms);
+        const updatedAt = unixSeconds(goal?.updatedAt);
+        return failedAt > 0 && updatedAt >= failedAt - 2 && updatedAt <= failedAt + 5;
+    };
+    const goalHoldReason = goal => {
+        if (!goal) return "";
+        const status = goal?.status ?? null;
+        if (!status) return "goal_status_unsupported";
+        if (status === "active") return "";
+        if (status === "blocked") {
+            return blockedByFailure(goal) ? "" : "goal_blocked_before_failure";
+        }
+        if (status === "paused") return "goal_paused";
+        if (status === "completed") return "goal_completed";
+        if (status === "usageLimited") return "goal_usage_limited";
+        if (status === "budgetLimited") return "goal_budget_limited";
+        return "goal_status_unsupported";
+    };
     const classifyError = error => {
         const message = String(error?.message ?? error).toLowerCase();
         if (message.includes("active") || message.includes("already running")) return "thread_active";
@@ -383,7 +410,9 @@ const rendererDispatchExpression = `(async () => {
         const isLoaded = Array.isArray(loadedResponse?.data) &&
             loadedResponse.data.includes(payload.thread_id);
         const goalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
-        const goalStatus = goalResponse?.goal?.status ?? null;
+        const initialGoal = goalResponse?.goal ?? null;
+        const initialHoldReason = goalHoldReason(initialGoal);
+        if (initialHoldReason) return hold(initialHoldReason);
         await rpc("hydrate-background-threads", {
             hostId: "local", threadIds: [payload.thread_id], includeTurns: false
         });
@@ -410,15 +439,19 @@ const rendererDispatchExpression = `(async () => {
             const resumed = await request("thread/resume", resumeParams);
             resumedStatus = resumed?.thread?.status?.type;
         }
-        const goalCanContinue = goalStatus === "active" || goalStatus === "paused" ||
-            goalStatus === "blocked" || goalStatus === "usageLimited";
+        const latestGoalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
+        const latestGoal = latestGoalResponse?.goal ?? null;
+        const latestGoalStatus = latestGoal?.status ?? null;
+        if (Boolean(initialGoal) !== Boolean(latestGoal)) return hold("goal_status_changed");
+        const latestHoldReason = goalHoldReason(latestGoal);
+        if (latestHoldReason) return hold(latestHoldReason);
+        const goalCanContinue = latestGoalStatus === "active" || latestGoalStatus === "blocked";
         if (goalCanContinue) {
-            if (goalStatus !== "active") {
+            if (latestGoalStatus === "blocked") {
                 await request("thread/goal/set", {threadId: payload.thread_id, status: "active"});
             }
             return {outcome: "dispatched", action: "goal_resume", reason: "goal_resumed_in_background"};
         }
-        if (goalStatus === "budgetLimited") return retryLater("goal_budget_limited");
         if (resumedStatus === "active") return retryLater("thread_active");
         await request("turn/start", {
             threadId: payload.thread_id,

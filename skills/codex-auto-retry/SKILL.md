@@ -13,8 +13,15 @@ need to remain open for retries to work.
 ## Recovery Behavior
 
 - Goal mode: rejoin the exact failed task through Codex App's existing
-  background connection and activate its native goal. Codex creates the goal
+  background connection and activate its native goal only when the blocked
+  state is attributable to the same provider failure. Codex creates the goal
   continuation turn itself.
+- A user or AI pause, including a goal waiting for review, overrides recovery.
+  Pauses observed before failure, during the countdown, or while dispatch is
+  starting cancel that retry. Only a later explicit `active` goal update clears
+  the hold.
+- Completed, usage-limited, budget-limited, missing, and unknown goal states
+  must fail closed; never turn them into a normal-conversation continuation.
 - Normal conversation: create the configured continuation turn in the exact
   same task without touching the composer or a user draft.
 - Preserve each task's latest model, workspace, reasoning, personality,
@@ -94,8 +101,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 ## Privacy Boundary
 
 The event scanner parses only `event_msg` records whose payload type is
-`task_started` or `task_complete`. Before dispatch, a separate reader extracts
-only the required execution settings from the latest `turn_context` and
+`task_started`, `task_complete`, or `thread_goal_updated`. Goal parsing retains
+only the target task ID, status, and lifecycle timestamps, and routes by the payload task
+ID even when Codex stores the event in another rollout. It does not retain the
+goal objective or inspect conversation text for intent. Before dispatch, a
+separate reader extracts only the required execution settings from the latest `turn_context` and
 `thread_settings_applied` records. It does not retain, forward, or log prompts,
 developer instructions, assistant messages, tool arguments, tool results, API
 keys, or response bodies.

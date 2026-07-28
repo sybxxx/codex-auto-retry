@@ -96,8 +96,12 @@ func readAppendedEvents(path string, offset int64, threadID string, root session
 		}
 		if len(line) > 0 {
 			if event, ok := parseRelevantEvent(line); ok {
+				eventThreadID := threadID
+				if event.Kind == "thread_goal_updated" {
+					eventThreadID = event.ThreadID
+				}
 				events = append(events, scannedEvent{
-					ThreadID:    threadID,
+					ThreadID:    eventThreadID,
 					Root:        root,
 					RolloutPath: filepath.Clean(path),
 					Event:       event,

@@ -99,8 +99,9 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 		Action:  actionGoalResume,
 		Reason:  "goal_resumed_in_background",
 	})
+	failedAt := time.Date(2026, 7, 27, 15, 52, 2, 123_000_000, time.UTC)
 	result, err := fake.controller().Dispatch(context.Background(),
-		"019f9d46-2924-7a70-8ec9-83b19f5491a9", "Continue.", testResumeSettings())
+		"019f9d46-2924-7a70-8ec9-83b19f5491a9", "Continue.", testResumeSettings(), failedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +111,9 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 	expressions := fake.expressionSnapshot()
 	if len(expressions) != 1 || !strings.Contains(expressions[0], "019f9d46-2924-7a70-8ec9-83b19f5491a9") {
 		t.Fatalf("target task was not encoded in the background request: %v", expressions)
+	}
+	if !strings.Contains(expressions[0], `"failed_at_unix_ms":1785167522123`) {
+		t.Fatal("provider failure time was not encoded for goal-state attribution")
 	}
 	for _, setting := range []string{
 		`"permissions":":danger-full-access"`,
@@ -126,6 +130,69 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 		if strings.Contains(expressions[0], private) {
 			t.Fatalf("background request contains private field %q", private)
 		}
+	}
+}
+
+func TestRendererDispatchProtectsIntentionalGoalHolds(t *testing.T) {
+	for _, required := range []string{
+		`payload.failed_at_unix_ms`,
+		`"goal_paused"`,
+		`"goal_blocked_before_failure"`,
+		`"goal_completed"`,
+		`"goal_usage_limited"`,
+		`"goal_budget_limited"`,
+		`"goal_status_unsupported"`,
+		`if (!goal) return ""`,
+		`if (!status) return "goal_status_unsupported"`,
+		`Boolean(initialGoal) !== Boolean(latestGoal)`,
+		`latestGoalStatus === "active" || latestGoalStatus === "blocked"`,
+	} {
+		if !strings.Contains(rendererDispatchExpression, required) {
+			t.Fatalf("background controller is missing goal hold protection %q", required)
+		}
+	}
+	if strings.Count(rendererDispatchExpression, `request("thread/goal/get"`) != 2 {
+		t.Fatal("background controller must check goal state both before and after hydration/resume")
+	}
+	for _, forbidden := range []string{
+		`latestGoalStatus === "paused"`,
+		`latestGoalStatus === "usageLimited"`,
+		`latestGoalStatus === "budgetLimited"`,
+	} {
+		if strings.Contains(rendererDispatchExpression, forbidden) {
+			t.Fatalf("held goal remains auto-activatable: %q", forbidden)
+		}
+	}
+	secondGoalRead := strings.LastIndex(rendererDispatchExpression, `request("thread/goal/get"`)
+	holdCheck := strings.LastIndex(rendererDispatchExpression, `const latestHoldReason = goalHoldReason(latestGoal)`)
+	turnStart := strings.Index(rendererDispatchExpression, `request("turn/start"`)
+	if secondGoalRead < 0 || holdCheck < secondGoalRead || turnStart < holdCheck {
+		t.Fatal("normal conversation fallback can run before the final goal hold check")
+	}
+}
+
+func TestGoalBlockedByFailureWindow(t *testing.T) {
+	failureAt := time.Date(2026, 7, 27, 15, 52, 2, 500_000_000, time.UTC)
+	for _, test := range []struct {
+		name      string
+		updatedAt time.Time
+		want      bool
+	}{
+		{name: "two_seconds_before", updatedAt: failureAt.Add(-2 * time.Second), want: true},
+		{name: "five_seconds_after", updatedAt: failureAt.Add(5 * time.Second), want: true},
+		{name: "too_early", updatedAt: failureAt.Add(-2*time.Second - time.Nanosecond)},
+		{name: "too_late", updatedAt: failureAt.Add(5*time.Second + time.Nanosecond)},
+		{name: "missing_failure", updatedAt: failureAt},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actual := goalBlockedByFailure(test.updatedAt, failureAt)
+			if test.name == "missing_failure" {
+				actual = goalBlockedByFailure(test.updatedAt, time.Time{})
+			}
+			if actual != test.want {
+				t.Fatalf("goalBlockedByFailure()=%v, want %v", actual, test.want)
+			}
+		})
 	}
 }
 
@@ -157,7 +224,7 @@ func TestRendererControllerSupportsTwoTasksWithoutSharedNavigation(t *testing.T)
 			settings := testResumeSettings()
 			settings.Model = test.model
 			settings.Effort = test.effort
-			_, err := controller.Dispatch(context.Background(), test.threadID, "Continue.", settings)
+			_, err := controller.Dispatch(context.Background(), test.threadID, "Continue.", settings, time.Now().UTC())
 			errorsByThread <- err
 		}(test)
 	}

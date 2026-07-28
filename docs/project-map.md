@@ -30,16 +30,16 @@ Source code lives under `scripts/source`.
 | Module | Ownership |
 | --- | --- |
 | `main.go` | Process startup, shutdown signaling, singleton acquisition, and top-level wiring. |
-| `daemon.go` | Scan loop, strict retry state machine, bounded parallel scheduling, acknowledgement, and status publication. |
+| `daemon.go` | Scan loop, strict retry state machine, intentional-goal hold protection, provider-failure attribution, bounded parallel scheduling, acknowledgement, and status publication. |
 | `control.go` | Persistent pause state and atomic retry-now/cancel command files shared with the management process. |
 | `management.go` | Privacy-bounded queue snapshots, heartbeat freshness, prompt updates, and management command submission. |
 | `mcp_server.go` | Official Go MCP SDK wiring, management tools, and the embedded MCP App resource. |
-| `scanner.go` | Incremental JSONL reads, file cursors, task IDs, rollout paths, and mirrored-session detection. |
-| `events.go` | Privacy-bounded parsing of `task_started` and `task_complete` events. |
+| `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, rollout paths, and mirrored-session detection. |
+| `events.go` | Privacy-bounded parsing of task start/completion and goal status/time lifecycle events. |
 | `classifier.go` | Provider-independent retry decisions and limited authentication budgets. |
 | `runner.go` | Controller result validation, privacy-safe failure codes, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
-| `renderer_control.go` | Loopback Codex target discovery, WebSocket transport, fixed background recovery program, native goal resume, and same-task normal turn start. |
+| `renderer_control.go` | Loopback Codex target discovery, WebSocket transport, fixed background recovery program, live goal-hold checks, native goal resume, and same-task normal turn start. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
 | `state.go` | Persistent cursors, pending and awaiting retries, turn correlation, migration, deduplication, and pruning. |
 | `config.go` | Versioned defaults, validation, legacy visible-UI migration, and user overrides. |
