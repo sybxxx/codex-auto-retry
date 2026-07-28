@@ -61,6 +61,13 @@ Licensed under the ISC License. Some icons are derived from Feather and remain
 licensed under the MIT License, Copyright (c) 2013-present Cole Bemis. Source
 and complete license text: https://github.com/lucide-icons/lucide
 
+## Go System Calls
+
+`golang.org/x/sys/windows` is used for the native Windows notification-area
+controller and is licensed under the BSD 3-Clause License. Copyright (c)
+2009 The Go Authors. Source and license text:
+https://pkg.go.dev/golang.org/x/sys
+
 ## Panel Build Tooling
 
 Vite and vite-plugin-singlefile are used only to build the embedded offline

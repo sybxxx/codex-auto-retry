@@ -22,6 +22,14 @@ type setRetryPromptInput struct {
 	Prompt string `json:"prompt" jsonschema:"new normal-conversation retry text, from 1 to 500 characters"`
 }
 
+type setRetrySettingsInput struct {
+	RetryPrompt         string `json:"retry_prompt" jsonschema:"normal-conversation retry text, from 1 to 500 characters"`
+	MaxRetryAttempts    int    `json:"max_retry_attempts" jsonschema:"maximum consecutive retry attempts, from 1 to 20"`
+	InitialDelaySeconds int    `json:"initial_delay_seconds" jsonschema:"delay before the first retry, from 1 to 3600 seconds"`
+	MaxDelaySeconds     int    `json:"max_delay_seconds" jsonschema:"maximum delay, at least the initial delay and no more than 86400 seconds"`
+	ShowNotifications   bool   `json:"show_notifications" jsonschema:"whether Windows retry notifications are enabled"`
+}
+
 type setPausedInput struct {
 	Paused bool `json:"paused" jsonschema:"true to pause new retry dispatches, false to resume them"`
 }
@@ -83,6 +91,17 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Meta:        managementToolMeta(),
+		Name:        "set_retry_settings",
+		Title:       "修改自动重试设置",
+		Description: "同时修改普通对话重试文字、连续重试上限、等待时间和 Windows 通知设置。",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "修改自动重试设置"},
+	}, func(_ context.Context, _ *mcp.CallToolRequest, input setRetrySettingsInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
+		snapshot, err := service.setRetrySettings(RetrySettings(input), time.Now().UTC())
+		return nil, snapshot, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Meta:        managementToolMeta(),
 		Name:        "set_auto_retry_paused",
 		Title:       "暂停或恢复自动重试",
 		Description: "暂停或恢复新的自动重试；已开始的 Codex 任务不会被强制终止。",
@@ -111,6 +130,17 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "取消等待中的重试"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input threadControlInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
 		snapshot, err := service.cancelRetry(input.ThreadID, time.Now().UTC())
+		return nil, snapshot, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Meta:        managementToolMeta(),
+		Name:        "restart_retry",
+		Title:       "重新开始重试",
+		Description: "为已经达到连续失败上限的任务重新开始计数并立即重试。",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), OpenWorldHint: boolPointer(false), Title: "重新开始重试"},
+	}, func(_ context.Context, _ *mcp.CallToolRequest, input threadControlInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
+		snapshot, err := service.restartRetry(input.ThreadID, time.Now().UTC())
 		return nil, snapshot, err
 	})
 

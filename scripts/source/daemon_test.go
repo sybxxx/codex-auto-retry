@@ -88,6 +88,104 @@ func TestDaemonPauseAndQueuedControls(t *testing.T) {
 	}
 }
 
+func TestDaemonStopsAfterConfiguredRetryLimitAndCanRestart(t *testing.T) {
+	config := isolatedConfig(filepath.Join(t.TempDir(), ".codex"))
+	config.MaxRetryAttempts = 2
+	d := newTestDaemon(t, config, successfulRunner())
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
+	now := time.Date(2026, 7, 28, 7, 0, 0, 0, time.UTC)
+	first := failureScannedEvent(threadID, "failed-1", now)
+	d.handleEventLocked(first, now)
+	thread := d.state.Threads[threadID]
+	if thread.Pending == nil || thread.Pending.Attempt != 1 || thread.Pending.MaxAttempts != 2 {
+		t.Fatalf("first retry was not scheduled with the global limit: %+v", thread)
+	}
+	exhausted := failureScannedEvent(threadID, "failed-3", now.Add(time.Minute))
+	d.scheduleFailureLocked(exhausted, "event-3", now.Add(time.Minute), thread, 3)
+	thread = d.state.Threads[threadID]
+	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil ||
+		thread.Stopped.Attempts != 2 || thread.ConsecutiveFailures != 2 {
+		t.Fatalf("retry chain did not stop at its limit: %+v", thread)
+	}
+	d.applyControlCommandLocked(ControlCommand{
+		Version:   currentControlVersion,
+		Action:    commandRestartRetry,
+		ThreadID:  threadID,
+		CreatedAt: now.Add(2 * time.Minute),
+	}, now.Add(2*time.Minute))
+	thread = d.state.Threads[threadID]
+	if thread.Stopped != nil || thread.Pending == nil || thread.Pending.Attempt != 1 ||
+		thread.Pending.MaxAttempts != 2 {
+		t.Fatalf("stopped retry was not restarted with a fresh budget: %+v", thread)
+	}
+}
+
+func TestDaemonRestoresOnlyUnacknowledgedStartingRetriesOnStartup(t *testing.T) {
+	dataDir := t.TempDir()
+	now := time.Now().UTC()
+	state := newRuntimeState()
+	startingID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
+	runningID := "019f9d5d-9c82-75b1-b7c0-20a658af0424"
+	state.Threads[startingID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey:          "starting-event",
+		FailedTurnID:      "failed",
+		Class:             classServer,
+		Attempt:           2,
+		MaxAttempts:       5,
+		DispatchStartedAt: now.Add(-time.Minute),
+	}}
+	state.Threads[runningID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey:          "running-event",
+		FailedTurnID:      "failed",
+		RetryTurnID:       "retry-turn",
+		Class:             classServer,
+		Attempt:           1,
+		MaxAttempts:       5,
+		DispatchStartedAt: now.Add(-time.Minute),
+	}}
+	if err := writeJSONAtomic(filepath.Join(dataDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	logger, err := newSafeLogger(filepath.Join(dataDir, "test.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	d, err := newDaemon(defaultConfig(), dataDir, logger, successfulRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	starting := d.state.Threads[startingID]
+	running := d.state.Threads[runningID]
+	if starting.Awaiting != nil || starting.Pending == nil || starting.Pending.Attempt != 2 {
+		t.Fatalf("stale starting retry was not restored to pending: %+v", starting)
+	}
+	if running.Awaiting == nil || running.Awaiting.RetryTurnID != "retry-turn" {
+		t.Fatalf("acknowledged running retry was incorrectly rewritten: %+v", running)
+	}
+}
+
+func TestDaemonLoweringRetryLimitStopsAnOverBudgetPendingRetry(t *testing.T) {
+	config := isolatedConfig(filepath.Join(t.TempDir(), ".codex"))
+	config.MaxRetryAttempts = 5
+	d := newTestDaemon(t, config, successfulRunner())
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
+	d.state.Threads[threadID] = ThreadState{Pending: &PendingRetry{
+		EventKey: "event", FailedTurnID: "failed", Class: classServer,
+		Attempt: 5, MaxAttempts: 5,
+	}}
+	config.MaxRetryAttempts = 3
+	if err := writeJSONAtomic(filepath.Join(d.dataDir, "config.json"), config); err != nil {
+		t.Fatal(err)
+	}
+	d.reloadConfigLocked()
+	thread := d.state.Threads[threadID]
+	if thread.Pending != nil || thread.Stopped == nil || thread.Stopped.Attempts != 3 ||
+		thread.Stopped.MaxAttempts != 3 {
+		t.Fatalf("lowered retry limit did not stop the over-budget retry cleanly: %+v", thread)
+	}
+}
+
 func isolatedConfig(codexHome string) Config {
 	cfg := defaultConfig()
 	cfg.SessionRoots = []string{codexHome}

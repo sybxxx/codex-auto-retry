@@ -36,7 +36,8 @@ if (Test-Path -LiteralPath $installDir) {
             $mcpTarget,
             $stopSignal,
             (Join-Path $installDir 'daemon.lock'),
-            (Join-Path $installDir 'status.json')
+            (Join-Path $installDir 'status.json'),
+            (Join-Path $installDir 'settings.ps1')
         )) {
             Remove-Item -LiteralPath $runtimeFile -Force -ErrorAction SilentlyContinue
         }

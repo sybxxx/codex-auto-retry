@@ -14,18 +14,21 @@ $status = $null
 if (Test-Path -LiteralPath $statusPath) {
     try { $status = Get-Content -Raw -Encoding UTF8 -LiteralPath $statusPath | ConvertFrom-Json } catch { $status = $null }
 }
+$runtimeRunning = $null -ne $process
+$pendingRetries = if ($runtimeRunning -and $status) { $status.pending_retries } else { 0 }
+$activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } else { 0 }
 
 [pscustomobject]@{
     Installed = Test-Path -LiteralPath $watchdogTarget
     MCPServerInstalled = Test-Path -LiteralPath $mcpTarget
     MCPServerProcesses = $mcpProcesses.Count
-    ProcessRunning = $null -ne $process
+    ProcessRunning = $runtimeRunning
     PID = if ($process) { $process.ProcessId } else { $null }
     Version = if ($status) { $status.version } else { $null }
     LastScanAt = if ($status) { $status.last_scan_at } else { $null }
     WatchedRoots = if ($status) { $status.watched_roots } else { 0 }
-    PendingRetries = if ($status) { $status.pending_retries } else { 0 }
-    ActiveRetries = if ($status) { $status.active_retries } else { 0 }
+    PendingRetries = $pendingRetries
+    ActiveRetries = $activeRetries
     Paused = if ($status) { [bool]$status.paused } else { $false }
     LastError = if ($status) { $status.last_error } else { $null }
     LogPath = Join-Path $installDir 'logs\daemon.log'

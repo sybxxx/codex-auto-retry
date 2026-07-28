@@ -8,6 +8,15 @@ $uiDir = Join-Path $sourceDir 'ui'
 $binDir = Join-Path $PSScriptRoot 'bin'
 $watchdogOutput = Join-Path $binDir 'codex-auto-retry.exe'
 $mcpOutput = Join-Path $binDir 'codex-auto-retry-mcp.exe'
+$settingsScript = Join-Path $sourceDir 'ui\settings.ps1'
+
+$settingsSource = [System.IO.File]::ReadAllText($settingsScript, [System.Text.UTF8Encoding]::new($false))
+$tokens = $null
+$parseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput($settingsSource, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count -gt 0) {
+    throw "Tray settings script has a PowerShell parse error: $($parseErrors[0].Message)"
+}
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Push-Location $uiDir

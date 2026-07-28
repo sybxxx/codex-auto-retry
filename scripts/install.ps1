@@ -48,6 +48,7 @@ Copy-Item -LiteralPath $mcpSource -Destination $mcpTarget -Force
 New-Item -Path $runKey -Force | Out-Null
 Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" run' -f $watchdogTarget)
 Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
 $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList 'run' -WindowStyle Hidden -PassThru
 
 $deadline = (Get-Date).AddSeconds(15)

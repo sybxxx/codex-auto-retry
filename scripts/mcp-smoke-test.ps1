@@ -55,6 +55,7 @@ try {
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
     $threadId = '019f9d5d-9c82-75b1-b7c0-20a658af0423'
+    $stoppedThreadId = '019f9d5d-9c82-75b1-b7c0-20a658af0424'
     $state = @{
         version = 2
         initialized = $true
@@ -72,12 +73,41 @@ try {
                     attempt = 1
                 }
             }
+            $stoppedThreadId = @{
+                consecutive_failures = 5
+                stopped = @{
+                    event_key = 'stopped-event'
+                    failed_turn_id = 'failed-turn'
+                    class = 'server'
+                    stopped_at = [DateTime]::UtcNow.ToString('o')
+                    attempts = 5
+                    max_attempts = 5
+                    reason = 'attempt_limit'
+                }
+            }
         }
     }
     $stateJson = $state | ConvertTo-Json -Depth 20
     [System.IO.File]::WriteAllText(
         (Join-Path $dataDir 'state.json'),
         $stateJson,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $status = @{
+        version = '0.4.0'
+        running = $true
+        pid = $PID
+        started_at = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
+        last_scan_at = [DateTime]::UtcNow.ToString('o')
+        watched_roots = 1
+        pending_retries = 1
+        active_retries = 0
+        paused = $false
+        log_path = (Join-Path $dataDir 'logs\daemon.log')
+    }
+    [System.IO.File]::WriteAllText(
+        (Join-Path $dataDir 'status.json'),
+        ($status | ConvertTo-Json -Depth 5),
         [System.Text.UTF8Encoding]::new($false)
     )
 
@@ -110,7 +140,15 @@ try {
 
     Send-MCPMessage $process @{ jsonrpc = '2.0'; id = 2; method = 'tools/list'; params = @{} }
     $tools = Read-MCPResponse $process 2
-    $expectedTools = @('get_auto_retry_status', 'set_retry_prompt', 'set_auto_retry_paused', 'retry_now', 'cancel_retry')
+    $expectedTools = @(
+        'get_auto_retry_status',
+        'set_retry_prompt',
+        'set_retry_settings',
+        'set_auto_retry_paused',
+        'retry_now',
+        'cancel_retry',
+        'restart_retry'
+    )
     foreach ($name in $expectedTools) {
         $tool = @($tools.tools | Where-Object name -eq $name)
         if ($tool.Count -ne 1) { throw "MCP tool missing: $name" }
@@ -133,23 +171,41 @@ try {
     $defaultPrompt = ([char]0x7ee7).ToString() + [char]0x7eed
     $updatedPrompt = $defaultPrompt + [char]0x5904 + [char]0x7406
     $status = Call-MCPTool $process 4 'get_auto_retry_status'
-    if ($status.structuredContent.retry_prompt -ne $defaultPrompt -or $status.structuredContent.pending_retries -ne 1) {
+    if ($status.structuredContent.retry_prompt -ne $defaultPrompt -or
+        $status.structuredContent.pending_retries -ne 1 -or
+        $status.structuredContent.stopped_retries -ne 1 -or
+        $status.structuredContent.max_retry_attempts -ne 5) {
         throw "Status tool returned unexpected management state (prompt=$($status.structuredContent.retry_prompt), pending=$($status.structuredContent.pending_retries))."
     }
     $updated = Call-MCPTool $process 5 'set_retry_prompt' @{ prompt = $updatedPrompt }
     if ($updated.structuredContent.retry_prompt -ne $updatedPrompt) { throw 'Prompt update did not take effect.' }
-    $paused = Call-MCPTool $process 6 'set_auto_retry_paused' @{ paused = $true }
+    $settings = Call-MCPTool $process 6 'set_retry_settings' @{
+        retry_prompt = $updatedPrompt
+        max_retry_attempts = 7
+        initial_delay_seconds = 9
+        max_delay_seconds = 120
+        show_notifications = $false
+    }
+    if ($settings.structuredContent.max_retry_attempts -ne 7 -or
+        $settings.structuredContent.initial_delay_seconds -ne 9 -or
+        $settings.structuredContent.max_delay_seconds -ne 120 -or
+        $settings.structuredContent.show_notifications) {
+        throw 'Full settings update did not take effect.'
+    }
+    $paused = Call-MCPTool $process 7 'set_auto_retry_paused' @{ paused = $true }
     if (-not $paused.structuredContent.paused) { throw 'Pause control did not take effect.' }
-    $null = Call-MCPTool $process 7 'retry_now' @{ thread_id = $threadId }
-    $null = Call-MCPTool $process 8 'cancel_retry' @{ thread_id = $threadId }
+    $null = Call-MCPTool $process 8 'retry_now' @{ thread_id = $threadId }
+    $null = Call-MCPTool $process 9 'cancel_retry' @{ thread_id = $threadId }
+    $null = Call-MCPTool $process 10 'restart_retry' @{ thread_id = $stoppedThreadId }
     $commands = @(Get-ChildItem -LiteralPath (Join-Path $dataDir 'commands') -Filter '*.json' -File)
-    if ($commands.Count -ne 2) { throw 'Thread controls were not queued atomically.' }
+    if ($commands.Count -ne 3) { throw 'Thread controls were not queued atomically.' }
 
     [pscustomobject]@{
         Status = 'passed'
         Tools = $expectedTools.Count
         EmbeddedPanel = $true
         PromptUpdated = $true
+        SettingsUpdated = $true
         PauseUpdated = $true
         CommandsQueued = $commands.Count
     }

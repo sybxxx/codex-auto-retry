@@ -24,8 +24,9 @@ type ControlState struct {
 type ControlCommandAction string
 
 const (
-	commandRetryNow    ControlCommandAction = "retry_now"
-	commandCancelRetry ControlCommandAction = "cancel_retry"
+	commandRetryNow     ControlCommandAction = "retry_now"
+	commandCancelRetry  ControlCommandAction = "cancel_retry"
+	commandRestartRetry ControlCommandAction = "restart_retry"
 )
 
 type ControlCommand struct {
@@ -106,7 +107,7 @@ func (c ControlCommand) validate() error {
 	if c.Version != currentControlVersion {
 		return fmt.Errorf("command version must be %d", currentControlVersion)
 	}
-	if c.Action != commandRetryNow && c.Action != commandCancelRetry {
+	if c.Action != commandRetryNow && c.Action != commandCancelRetry && c.Action != commandRestartRetry {
 		return errors.New("unsupported control command")
 	}
 	if threadIDFromPath(c.ThreadID+".jsonl") != strings.ToLower(c.ThreadID) {

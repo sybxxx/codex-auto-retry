@@ -33,14 +33,18 @@ func TestControlCommandQueueValidatesAndOrdersCommands(t *testing.T) {
 	if _, err := queueControlCommand(directory, commandCancelRetry, threadID, now); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := queueControlCommand(directory, commandRestartRetry, threadID, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	commands, invalid, err := loadControlCommandFiles(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(invalid) != 0 || len(commands) != 2 {
+	if len(invalid) != 0 || len(commands) != 3 {
 		t.Fatalf("unexpected queued commands: valid=%d invalid=%d", len(commands), len(invalid))
 	}
-	if commands[0].Command.Action != commandCancelRetry || commands[1].Command.Action != commandRetryNow {
+	if commands[0].Command.Action != commandCancelRetry || commands[1].Command.Action != commandRetryNow ||
+		commands[2].Command.Action != commandRestartRetry {
 		t.Fatalf("commands were not ordered by creation filename: %+v", commands)
 	}
 	if _, err := queueControlCommand(directory, commandRetryNow, "not-a-thread", now); err == nil {

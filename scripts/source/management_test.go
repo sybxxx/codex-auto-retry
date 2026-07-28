@@ -29,6 +29,7 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
 		Version:      appVersion,
 		Running:      true,
+		PID:          os.Getpid(),
 		LastScanAt:   now.Add(-time.Second),
 		WatchedRoots: 2,
 	}); err != nil {
@@ -43,6 +44,108 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	}
 	if snapshot.Retries[0].State != "running" || snapshot.Retries[1].SecondsRemaining != 6 {
 		t.Fatalf("queue state or countdown is incorrect: %+v", snapshot.Retries)
+	}
+}
+
+func TestManagementShowsStoppedRetryAndQueuesRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	service := newManagementService(dataDir)
+	now := time.Date(2026, 7, 28, 6, 0, 0, 0, time.UTC)
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
+	state := newRuntimeState()
+	state.Threads[threadID] = ThreadState{Stopped: &StoppedRetry{
+		Class:       classServer,
+		Attempts:    5,
+		MaxAttempts: 5,
+		StoppedAt:   now,
+		Reason:      "attempt_limit",
+	}}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.StoppedRetries != 1 || len(snapshot.Retries) != 1 ||
+		snapshot.Retries[0].State != "stopped" || !snapshot.Retries[0].CanRestart {
+		t.Fatalf("stopped retry was not exposed: %+v", snapshot)
+	}
+	if _, err := service.restartRetry(threadID, now); err != nil {
+		t.Fatal(err)
+	}
+	commands, _, err := loadControlCommandFiles(service.commandDir)
+	if err != nil || len(commands) != 1 || commands[0].Command.Action != commandRestartRetry {
+		t.Fatalf("restart command missing: commands=%+v err=%v", commands, err)
+	}
+}
+
+func TestManagementRejectsStaleRunningStatus(t *testing.T) {
+	service := newManagementService(t.TempDir())
+	now := time.Now().UTC()
+	state := newRuntimeState()
+	state.Threads["019f9d5d-9c82-75b1-b7c0-20a658af0423"] = ThreadState{Awaiting: &AwaitingRetry{
+		Class: classServer, Attempt: 1, RetryTurnID: "stale-turn",
+	}}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
+		Version:    "stale-version",
+		Running:    true,
+		PID:        999999,
+		LastScanAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Running || snapshot.Version != appVersion || snapshot.ActiveRetries != 0 || len(snapshot.Retries) != 0 {
+		t.Fatalf("dead process was reported as running: %+v", snapshot)
+	}
+}
+
+func TestManagementUpdatesAllRetrySettings(t *testing.T) {
+	service := newManagementService(t.TempDir())
+	now := time.Now().UTC()
+	snapshot, err := service.setRetrySettings(RetrySettings{
+		RetryPrompt:         "继续检查",
+		MaxRetryAttempts:    7,
+		InitialDelaySeconds: 9,
+		MaxDelaySeconds:     120,
+		ShowNotifications:   false,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.RetryPrompt != "继续检查" || snapshot.MaxRetryAttempts != 7 ||
+		snapshot.InitialDelaySeconds != 9 || snapshot.MaxDelaySeconds != 120 ||
+		snapshot.ShowNotifications {
+		t.Fatalf("retry settings did not round trip: %+v", snapshot)
+	}
+}
+
+func TestManagementUpdatesCombinedLocalSettingsAndPause(t *testing.T) {
+	service := newManagementService(t.TempDir())
+	settings := RetrySettings{
+		RetryPrompt:         "继续",
+		MaxRetryAttempts:    4,
+		InitialDelaySeconds: 6,
+		MaxDelaySeconds:     90,
+		ShowNotifications:   true,
+	}
+	if err := service.setLocalSettings(settings, true, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Paused || snapshot.MaxRetryAttempts != 4 || snapshot.InitialDelaySeconds != 6 ||
+		snapshot.MaxDelaySeconds != 90 || !snapshot.ShowNotifications {
+		t.Fatalf("combined local settings did not round trip: %+v", snapshot)
 	}
 }
 

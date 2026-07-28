@@ -79,6 +79,9 @@ func (s *RuntimeState) prune(now time.Time) {
 		if thread.GoalObservedAt.After(lastActivity) {
 			lastActivity = thread.GoalObservedAt
 		}
+		if thread.Stopped != nil && thread.Stopped.StoppedAt.After(lastActivity) {
+			lastActivity = thread.Stopped.StoppedAt
+		}
 		if thread.Pending == nil && thread.Awaiting == nil && !lastActivity.IsZero() && lastActivity.Before(threadCutoff) {
 			delete(s.Threads, id)
 		}

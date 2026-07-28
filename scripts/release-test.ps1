@@ -28,6 +28,7 @@ try {
         'release-manifest.json',
         'SHA256SUMS.txt',
         'payload\codex-auto-retry\.codex-plugin\plugin.json',
+        'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry.exe',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry-mcp.exe'
     )) {
@@ -71,6 +72,18 @@ try {
         if ($errors.Count -gt 0) {
             throw "PowerShell parse error in $script`: $($errors[0].Message)"
         }
+    }
+    $settingsPath = Join-Path $root 'payload\codex-auto-retry\scripts\source\ui\settings.ps1'
+    $settingsSource = [System.IO.File]::ReadAllText($settingsPath, [System.Text.UTF8Encoding]::new($false))
+    $settingsTokens = $null
+    $settingsErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput(
+        $settingsSource,
+        [ref]$settingsTokens,
+        [ref]$settingsErrors
+    )
+    if ($settingsErrors.Count -gt 0) {
+        throw "PowerShell parse error in tray settings script: $($settingsErrors[0].Message)"
     }
 
     $savedPreference = $ErrorActionPreference

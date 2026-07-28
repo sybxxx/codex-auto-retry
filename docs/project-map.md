@@ -15,6 +15,7 @@
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
 | `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs mutation-free installer/uninstaller checks. |
 | `scripts/mcp-smoke-test.ps1` | Verifies MCP discovery, app resource metadata, isolated settings updates, and queued controls. |
+| `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window and heartbeat, then confirms clean status shutdown. |
 | `scripts/smoke-test.ps1` | Runs an isolated process-level two-task retry and strict-correlation test through a mock background endpoint. |
 | `scripts/renderer-control-smoke-test.ps1` | Probes the installed Codex App's background bridge through production discovery and transport code without changing UI or tasks. |
 | `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal and normal-turn continuation against an isolated app-server and temporary `CODEX_HOME`. |
@@ -29,11 +30,14 @@ Source code lives under `scripts/source`.
 
 | Module | Ownership |
 | --- | --- |
-| `main.go` | Process startup, shutdown signaling, singleton acquisition, and top-level wiring. |
-| `daemon.go` | Scan loop, strict retry state machine, intentional-goal hold protection, provider-failure attribution, bounded parallel scheduling, acknowledgement, and status publication. |
-| `control.go` | Persistent pause state and atomic retry-now/cancel command files shared with the management process. |
-| `management.go` | Privacy-bounded queue snapshots, heartbeat freshness, prompt updates, and management command submission. |
+| `main.go` | Process startup, shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
+| `daemon.go` | Scan loop, bounded parallel dispatch, controller lifecycle, acknowledgement timeouts, and status publication. |
+| `retry_state.go` | Strict retry transitions, attempt limits, startup reconciliation, intentional-goal hold protection, provider-failure attribution, and management command application. |
+| `control.go` | Persistent pause state and atomic retry-now/cancel/restart command files shared with management surfaces. |
+| `management.go` | Privacy-bounded queue snapshots, process-backed heartbeat freshness, settings updates, and management command submission. |
 | `mcp_server.go` | Official Go MCP SDK wiring, management tools, and the embedded MCP App resource. |
+| `tray_windows.go` | Native notification-area icon, live tooltip/countdown, menu controls, and graphical settings-process lifecycle. |
+| `process_windows.go` | Read-only Windows process-liveness verification for stale heartbeat rejection. |
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, rollout paths, and mirrored-session detection. |
 | `events.go` | Privacy-bounded parsing of task start/completion and goal status/time lifecycle events. |
 | `classifier.go` | Provider-independent retry decisions and limited authentication budgets. |
@@ -46,6 +50,7 @@ Source code lives under `scripts/source`.
 | `jsonio.go` | Atomic JSON persistence. |
 | `logger.go` | Size-limited, privacy-safe operational logging. |
 | `lock_windows.go` | Per-user single-instance file lock. |
+| `ui/settings.ps1` | Embedded Windows Forms status and settings window launched from the tray icon. |
 | `cmd/mock-cdp/main.go` | Test-only loopback DevTools endpoint used by the compiled process smoke test. |
 | `*_test.go` | Classification, parsing, privacy, migration, restart, mirroring, correlation, concurrency, and background-controller regression tests. |
 
@@ -86,23 +91,27 @@ local history or remote configuration.
 
 `%LOCALAPPDATA%\CodexAutoRetry\config.json` owns poll and backoff timing,
 provider retry limits, task-start acknowledgement timeout, optional session
-roots, maximum parallel retries, and the normal-conversation continuation
-prompt. The prompt defaults to `继续`, is limited to 500 characters, and is
-reloaded immediately before each normal-conversation dispatch.
+roots, maximum parallel retries, the normal-conversation continuation prompt,
+and the Windows notification preference. The prompt defaults to `继续`, is
+limited to 500 characters, and is reloaded immediately before each
+normal-conversation dispatch. The global consecutive-attempt limit defaults to
+five and accepts values from 1 through 20.
 
-Configuration version 2 migrates the old forced single UI action to four
+Configuration version 2 migrated the old forced single UI action to four
 independent background dispatch slots. A version 2 user override from one to
-sixteen slots is preserved. `include_default_home` and
+sixteen slots is preserved. Configuration version 3 adds the bounded retry and
+notification defaults without replacing existing timing, prompt, roots, or
+parallelism settings. `include_default_home` and
 `include_cockpit_homes` control automatic root discovery.
 `powershell_executable` optionally overrides Windows PowerShell discovery.
 `renderer_debug_port` is a diagnostic/test-only fixed-port override; normal
 installations discover Codex App automatically.
 
 `control.json` stores the persistent pause switch separately from
-`config.json`. One-use files under `commands` request `retry_now` or
-`cancel_retry`; the watchdog consumes them while it owns the retry-state lock.
-This keeps the MCP process from editing `state.json` concurrently with the
-scanner.
+`config.json`. One-use files under `commands` request `retry_now`,
+`cancel_retry`, or `restart_retry`; the watchdog consumes them while it owns
+the retry-state lock. This keeps both graphical management surfaces from
+editing `state.json` concurrently with the scanner.
 
 ## Extension Points
 

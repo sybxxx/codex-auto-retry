@@ -139,7 +139,7 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
 
-    $process = Start-Process -FilePath $binary -ArgumentList @('run', '--data-dir', $dataDir) -WindowStyle Hidden -PassThru
+    $process = Start-Process -FilePath $binary -ArgumentList @('run', '--data-dir', $dataDir, '--no-tray') -WindowStyle Hidden -PassThru
     $deadline = (Get-Date).AddSeconds(15)
     do {
         Start-Sleep -Milliseconds 200

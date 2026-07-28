@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const appVersion = "0.3.1"
+const appVersion = "0.4.0"
 
 type FailureClass string
 
@@ -72,6 +72,19 @@ type AwaitingRetry struct {
 	RolloutPath       string       `json:"rollout_path,omitempty"`
 }
 
+type StoppedRetry struct {
+	EventKey     string       `json:"event_key"`
+	FailedTurnID string       `json:"failed_turn_id"`
+	FailedAt     time.Time    `json:"failed_at,omitempty"`
+	Class        FailureClass `json:"class"`
+	StoppedAt    time.Time    `json:"stopped_at"`
+	CodexHome    string       `json:"codex_home"`
+	RolloutPath  string       `json:"rollout_path,omitempty"`
+	Attempts     int          `json:"attempts"`
+	MaxAttempts  int          `json:"max_attempts"`
+	Reason       string       `json:"reason"`
+}
+
 type ThreadState struct {
 	ConsecutiveFailures int            `json:"consecutive_failures"`
 	LastFailureAt       time.Time      `json:"last_failure_at,omitempty"`
@@ -82,6 +95,7 @@ type ThreadState struct {
 	GoalHeld            bool           `json:"goal_held,omitempty"`
 	Pending             *PendingRetry  `json:"pending,omitempty"`
 	Awaiting            *AwaitingRetry `json:"awaiting,omitempty"`
+	Stopped             *StoppedRetry  `json:"stopped,omitempty"`
 }
 
 type FileCursor struct {

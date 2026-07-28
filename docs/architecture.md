@@ -17,6 +17,8 @@ The user-facing management panel and the watchdog are deliberately separate
 processes. Codex starts the MCP server only when it needs plugin tools or the
 embedded panel; Windows starts the watchdog at sign-in. Closing Codex, closing
 the panel, or ending the MCP stdio connection does not disable the watchdog.
+The Windows tray icon is owned by the watchdog itself, so it adds no second
+resident service and cannot disagree about process lifetime.
 
 ## Recovery Channel Decision
 
@@ -89,12 +91,31 @@ UI surface that caused both reported failures.
 6. `retry_now` and `cancel_retry` create unique atomic command files. During its
    next scan tick, the watchdog consumes those commands while holding the same
    lock that owns `state.json`.
+7. `set_retry_settings` atomically updates the prompt, global consecutive
+   attempt limit, first delay, maximum delay, and notification preference.
+   `restart_retry` converts only an exhausted entry into an immediate first
+   attempt with a fresh budget.
 
 The MCP process never edits retry state directly. A retry-now command applies
 only while the task remains pending. Cancellation also applies only before
 dispatch; an already-started Codex turn is not terminated or falsely reported
 as cancelled. These rules make management commands race-safe even when several
 Codex tasks have panels open.
+
+## Tray Data Flow
+
+`tray_windows.go` owns the notification-area icon and hidden message window on
+the watchdog's UI thread. It reads the same management snapshot once per
+second, derives the nearest countdown, and updates only its tooltip and menu.
+The icon does not inspect Codex windows, activate Codex, or navigate tasks.
+
+Double-click launches the embedded `ui/settings.ps1` as one visible Windows
+Forms settings process. The form reads the same privacy-bounded status,
+configuration, control, and retry-state files. It sends validated settings and
+one-use retry commands back through the watchdog executable; it never writes
+`state.json`. The script is embedded in the build input and materialized with
+an explicit UTF-8 BOM so Windows PowerShell renders Chinese labels correctly.
+Only one settings process is launched from a watchdog instance at a time.
 
 ## Background Controller Safety
 
@@ -127,14 +148,17 @@ PowerShell otherwise may exit before executing its final compound statement.
 
 ## Concurrency And Retry Policy
 
-Transient failures receive continuing retries with delays from five seconds up
-to five minutes. These include network and stream interruptions, timeouts,
-HTTP 408/425/429, HTTP 5xx, provider overload, cooldown, and temporarily
-unavailable authentication services.
+Transient failures receive bounded retries with delays from five seconds up to
+five minutes. The default is five automatic attempts per consecutive failure
+chain and the user may select 1 through 20. These failures include network and
+stream interruptions, timeouts, HTTP 408/425/429, HTTP 5xx, provider overload,
+cooldown, and temporarily unavailable authentication services.
 
 Generic 401/403 authentication errors and unknown provider errors have limited
-budgets. Invalid payloads, context limits, missing models, policy errors,
-approval failures, permissions, and user cancellation are never retried.
+budgets that can only lower the global limit. Invalid payloads, context limits,
+missing models, policy errors, approval failures, permissions, and user
+cancellation are never retried. Controller transport failures are tracked
+separately and never consume the provider attempt budget.
 
 Every task has separate pending, awaiting, attempt, and dispatch-failure state.
 Due tasks are dispatched up to `max_parallel_retries` instead of competing for
@@ -153,7 +177,8 @@ provider retry from a limited authentication budget.
 
 `state.json` stores file offsets, processed event keys, task retry counters,
 pending deadlines, failed turn IDs and times, goal status/timestamps/hold,
-background actions, retry turn IDs, dispatch deadlines, and rollout paths.
+background actions, retry turn IDs, dispatch deadlines, exhausted retry
+records, and rollout paths.
 Atomic replacement prevents partial state files.
 
 A pending retry moves to `awaiting` before background dispatch begins, so a
@@ -170,15 +195,23 @@ protected across later failures and watchdog restarts. Pausing during a queued
 or starting retry clears its state and cancels the controller context; any late
 controller result is treated as stale.
 
+On startup, an interrupted controller dispatch that never received a
+`task_started` acknowledgement is moved back to pending immediately. An
+acknowledged retry turn remains correlated so a completion written while the
+watchdog was stopped can still resolve it. A clean shutdown publishes zero
+active and pending counts, and every management reader verifies the recorded
+PID before accepting a `running` heartbeat.
+
 The first installation baselines existing rollout files at their current end.
 Later restarts continue from saved offsets and process failures written while
 the watchdog was stopped. Mirrored Cockpit session files are recognized by
 task ID and cannot replay old events.
 
-`control.json` owns the durable pause switch. One-use command files are kept in
-`commands` only until a watchdog tick consumes them. The management MCP server
-can therefore run concurrently with the watchdog without becoming a second
-writer for `state.json`.
+`control.json` owns the durable pause switch. One-use `retry_now`,
+`cancel_retry`, and `restart_retry` command files are kept in `commands` only
+until a watchdog tick consumes them. The management MCP server and tray
+settings process can therefore run concurrently with the watchdog without
+becoming additional writers for `state.json`.
 
 ## Privacy And Security
 

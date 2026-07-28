@@ -96,6 +96,24 @@
               </button>
             </div>
           </div>
+          <div class="numeric-settings">
+            <label for="max-attempts">最多连续重试次数</label>
+            <input id="max-attempts" type="number" min="1" max="20" inputmode="numeric" />
+            <label for="initial-delay">首次等待（秒）</label>
+            <input id="initial-delay" type="number" min="1" max="3600" inputmode="numeric" />
+            <label for="max-delay">最大等待（秒）</label>
+            <input id="max-delay" type="number" min="1" max="86400" inputmode="numeric" />
+          </div>
+          <div class="settings-footer">
+            <label class="checkbox-setting">
+              <input id="notifications-toggle" type="checkbox" />
+              <span>达到上限时显示 Windows 通知</span>
+            </label>
+            <button class="command-button" id="save-settings" type="button" disabled>
+              <i data-lucide="save"></i>
+              <span>保存全部设置</span>
+            </button>
+          </div>
         </div>
       </section>
     </main>

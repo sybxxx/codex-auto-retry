@@ -10,6 +10,7 @@ import {
   Clock,
   Play,
   RefreshCw,
+  RotateCcw,
   Save,
   X,
   createIcons,
@@ -28,7 +29,7 @@ type FailureClass =
 type ManagedRetry = {
   thread_id: string;
   label: string;
-  state: "pending" | "starting" | "running";
+  state: "pending" | "starting" | "running" | "stopped";
   class: FailureClass;
   due_at?: string;
   seconds_remaining: number;
@@ -37,6 +38,8 @@ type ManagedRetry = {
   action?: string;
   can_retry_now: boolean;
   can_cancel: boolean;
+  can_restart: boolean;
+  stop_reason?: string;
 };
 
 type ManagementSnapshot = {
@@ -45,10 +48,15 @@ type ManagementSnapshot = {
   heartbeat_stale: boolean;
   paused: boolean;
   retry_prompt: string;
+  max_retry_attempts: number;
+  initial_delay_seconds: number;
+  max_delay_seconds: number;
+  show_notifications: boolean;
   now: string;
   last_scan_at?: string;
   pending_retries: number;
   active_retries: number;
+  stopped_retries: number;
   watched_roots: number;
   last_error?: string;
   notice?: string;
@@ -61,7 +69,7 @@ type ToolResult = {
   content?: Array<{ type: string; text?: string }>;
 };
 
-const iconSet = { Activity, Clock, Play, RefreshCw, Save, X };
+const iconSet = { Activity, Clock, Play, RefreshCw, RotateCcw, Save, X };
 const elements = {
   shell: required<HTMLElement>("app-shell"),
   serviceLine: required<HTMLElement>("service-line"),
@@ -80,11 +88,17 @@ const elements = {
   promptCount: required<HTMLElement>("prompt-count"),
   promptError: required<HTMLElement>("prompt-error"),
   savePrompt: required<HTMLButtonElement>("save-prompt"),
+  maxAttempts: required<HTMLInputElement>("max-attempts"),
+  initialDelay: required<HTMLInputElement>("initial-delay"),
+  maxDelay: required<HTMLInputElement>("max-delay"),
+  notificationsToggle: required<HTMLInputElement>("notifications-toggle"),
+  saveSettings: required<HTMLButtonElement>("save-settings"),
 };
 
 let app: App | null = null;
 let snapshot: ManagementSnapshot | null = null;
 let savedPrompt = "";
+let savedSettings = "";
 let busyCount = 0;
 let noticeTimer = 0;
 
@@ -120,13 +134,20 @@ function extractSnapshot(result: ToolResult): ManagementSnapshot | null {
 }
 
 function render(next: ManagementSnapshot): void {
-  const keepPromptDraft = snapshot !== null && elements.retryPrompt.value !== savedPrompt;
+  const keepSettingsDraft = snapshot !== null && currentSettings() !== savedSettings;
   snapshot = next;
   savedPrompt = next.retry_prompt;
   elements.version.textContent = next.version ? `v${next.version}` : "";
   elements.retryPrompt.disabled = false;
   elements.pauseToggle.disabled = false;
-  if (!keepPromptDraft) elements.retryPrompt.value = next.retry_prompt;
+  if (!keepSettingsDraft) {
+    elements.retryPrompt.value = next.retry_prompt;
+    elements.maxAttempts.value = String(next.max_retry_attempts);
+    elements.initialDelay.value = String(next.initial_delay_seconds);
+    elements.maxDelay.value = String(next.max_delay_seconds);
+    elements.notificationsToggle.checked = next.show_notifications;
+  }
+  savedSettings = serializedSettings(next);
   elements.pauseToggle.checked = !next.paused;
   updatePromptState();
   renderService(next);
@@ -159,7 +180,7 @@ function renderService(next: ManagementSnapshot): void {
 }
 
 function renderMetrics(next: ManagementSnapshot): void {
-  const total = next.pending_retries + next.active_retries;
+  const total = next.pending_retries + next.active_retries + next.stopped_retries;
   elements.queueCount.textContent = String(total);
   const pending = next.retries
     .filter((retry) => retry.state === "pending" && retry.due_at)
@@ -179,7 +200,7 @@ function renderMetrics(next: ManagementSnapshot): void {
   if (total === 0) {
     elements.queueSummary.textContent = "当前没有等待中的任务";
   } else {
-    elements.queueSummary.textContent = `${next.pending_retries} 个等待中，${next.active_retries} 个执行中`;
+    elements.queueSummary.textContent = `${next.pending_retries} 个等待中，${next.active_retries} 个执行中，${next.stopped_retries} 个已停止`;
   }
 }
 
@@ -205,8 +226,8 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
   const main = document.createElement("div");
   main.className = "queue-main";
   const queueIcon = document.createElement("span");
-  queueIcon.className = `queue-icon${retry.state === "pending" ? "" : " active"}`;
-  queueIcon.append(icon(retry.state === "pending" ? "clock" : "refresh-cw"));
+  queueIcon.className = `queue-icon${retry.state === "pending" ? "" : retry.state === "stopped" ? " stopped" : " active"}`;
+  queueIcon.append(icon(retry.state === "pending" ? "clock" : retry.state === "stopped" ? "x" : "refresh-cw"));
   const copy = document.createElement("div");
   copy.className = "queue-copy";
   const title = document.createElement("div");
@@ -221,7 +242,7 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
   meta.append(
     textSpan(classLabel(retry.class)),
     textSpan(attempt),
-    textSpan(retry.state === "pending" ? "等待中" : actionLabel(retry.action)),
+    textSpan(retry.state === "pending" ? "等待中" : retry.state === "stopped" ? "达到上限" : actionLabel(retry.action)),
   );
   copy.append(title, meta);
   main.append(queueIcon, copy);
@@ -234,6 +255,9 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
     primary.dataset.dueAt = retry.due_at;
     updateCountdownElement(primary);
     secondary.textContent = paused ? "恢复后执行" : "后重试";
+  } else if (retry.state === "stopped") {
+    primary.textContent = "已停止";
+    secondary.textContent = `${retry.attempt}/${retry.max_attempts ?? retry.attempt} 次失败`;
   } else {
     primary.textContent = retry.state === "running" ? "执行中" : "启动中";
     secondary.textContent = actionLabel(retry.action);
@@ -247,6 +271,9 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
   }
   if (retry.can_cancel) {
     actions.append(actionButton("x", "取消这次重试", "cancel-action", () => runThreadAction("cancel_retry", retry.thread_id)));
+  }
+  if (retry.can_restart) {
+    actions.append(actionButton("rotate-ccw", "重新开始计数并重试", "retry-action", () => runThreadAction("restart_retry", retry.thread_id)));
   }
   row.append(main, state, actions);
   return row;
@@ -339,6 +366,33 @@ function updatePromptState(): void {
   else if (count > 500) error = "最多 500 个字符";
   elements.promptError.textContent = error;
   elements.savePrompt.disabled = Boolean(error) || value === savedPrompt || busyCount > 0;
+  const initialDelay = Number(elements.initialDelay.value);
+  const maxDelay = Number(elements.maxDelay.value);
+  const attempts = Number(elements.maxAttempts.value);
+  const settingsError = Boolean(error) || !Number.isInteger(attempts) || attempts < 1 || attempts > 20
+    || !Number.isInteger(initialDelay) || initialDelay < 1 || initialDelay > 3600
+    || !Number.isInteger(maxDelay) || maxDelay < initialDelay || maxDelay > 86400;
+  elements.saveSettings.disabled = settingsError || currentSettings() === savedSettings || busyCount > 0;
+}
+
+function currentSettings(): string {
+  return JSON.stringify({
+    retry_prompt: elements.retryPrompt.value,
+    max_retry_attempts: Number(elements.maxAttempts.value),
+    initial_delay_seconds: Number(elements.initialDelay.value),
+    max_delay_seconds: Number(elements.maxDelay.value),
+    show_notifications: elements.notificationsToggle.checked,
+  });
+}
+
+function serializedSettings(value: ManagementSnapshot): string {
+  return JSON.stringify({
+    retry_prompt: value.retry_prompt,
+    max_retry_attempts: value.max_retry_attempts,
+    initial_delay_seconds: value.initial_delay_seconds,
+    max_delay_seconds: value.max_delay_seconds,
+    show_notifications: value.show_notifications,
+  });
 }
 
 function setBusy(active: boolean): void {
@@ -371,7 +425,7 @@ async function callTool(name: string, args: Record<string, unknown> = {}, quiet 
   }
 }
 
-async function runThreadAction(name: "retry_now" | "cancel_retry", threadId: string): Promise<void> {
+async function runThreadAction(name: "retry_now" | "cancel_retry" | "restart_retry", threadId: string): Promise<void> {
   await callTool(name, { thread_id: threadId });
   window.setTimeout(() => void callTool("get_auto_retry_status"), 1200);
 }
@@ -389,7 +443,12 @@ function showNotice(message: string, isError: boolean): void {
 elements.refreshButton.addEventListener("click", () => void callTool("get_auto_retry_status"));
 elements.pauseToggle.addEventListener("change", () => void callTool("set_auto_retry_paused", { paused: !elements.pauseToggle.checked }));
 elements.retryPrompt.addEventListener("input", updatePromptState);
+elements.maxAttempts.addEventListener("input", updatePromptState);
+elements.initialDelay.addEventListener("input", updatePromptState);
+elements.maxDelay.addEventListener("input", updatePromptState);
+elements.notificationsToggle.addEventListener("change", updatePromptState);
 elements.savePrompt.addEventListener("click", () => void callTool("set_retry_prompt", { prompt: elements.retryPrompt.value }));
+elements.saveSettings.addEventListener("click", () => void callTool("set_retry_settings", JSON.parse(currentSettings()) as Record<string, unknown>));
 
 refreshIcons();
 window.setInterval(updateCountdowns, 1000);
@@ -400,7 +459,7 @@ window.setInterval(() => {
 if (new URLSearchParams(window.location.search).has("preview")) {
   render(previewSnapshot());
 } else {
-  app = new App({ name: "Codex Auto Retry", version: "0.3.1" });
+  app = new App({ name: "Codex Auto Retry", version: "0.4.0" });
   app.onerror = (error) => showNotice(error instanceof Error ? error.message : "连接失败", true);
   app.onhostcontextchanged = handleHostContext;
   app.ontoolresult = (result) => {
@@ -419,15 +478,20 @@ if (new URLSearchParams(window.location.search).has("preview")) {
 function previewSnapshot(): ManagementSnapshot {
   const now = Date.now();
   return {
-    version: "0.3.1",
+    version: "0.4.0",
     running: true,
     heartbeat_stale: false,
     paused: false,
     retry_prompt: "继续",
+    max_retry_attempts: 5,
+    initial_delay_seconds: 5,
+    max_delay_seconds: 300,
+    show_notifications: true,
     now: new Date(now).toISOString(),
     last_scan_at: new Date(now - 1300).toISOString(),
     pending_retries: 2,
     active_retries: 1,
+    stopped_retries: 1,
     watched_roots: 3,
     retries: [
       {
@@ -440,6 +504,7 @@ function previewSnapshot(): ManagementSnapshot {
         action: "goal_resume",
         can_retry_now: false,
         can_cancel: false,
+        can_restart: false,
       },
       {
         thread_id: "019f9d5d-9c82-75b1-b7c0-20a658af0424",
@@ -449,9 +514,10 @@ function previewSnapshot(): ManagementSnapshot {
         due_at: new Date(now + 42_000).toISOString(),
         seconds_remaining: 42,
         attempt: 2,
-        max_attempts: 6,
+        max_attempts: 5,
         can_retry_now: true,
         can_cancel: true,
+        can_restart: false,
       },
       {
         thread_id: "019f9d5d-9c82-75b1-b7c0-20a658af0425",
@@ -463,6 +529,19 @@ function previewSnapshot(): ManagementSnapshot {
         attempt: 3,
         can_retry_now: true,
         can_cancel: true,
+        can_restart: false,
+      },
+      {
+        thread_id: "019f9d5d-9c82-75b1-b7c0-20a658af0426",
+        label: "任务 019f9d60",
+        state: "stopped",
+        class: "server",
+        seconds_remaining: 0,
+        attempt: 5,
+        max_attempts: 5,
+        can_retry_now: false,
+        can_cancel: false,
+        can_restart: true,
       },
     ],
   };

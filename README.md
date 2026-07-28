@@ -3,8 +3,8 @@
 Codex Auto Retry is a personal Codex plugin with a local Windows watchdog. Once
 installed, the watchdog runs globally at Windows sign-in; the plugin does not
 need to be mentioned in each Codex task. The plugin also exposes an embedded
-Codex management panel, while the watchdog remains independent of whether that
-panel is open.
+Codex management panel and a Windows notification-area controller. Retry
+behavior remains independent of whether either settings surface is open.
 
 ## Behavior
 
@@ -35,16 +35,35 @@ panel is open.
 - Internal subagent rollouts are owned by their parent task. They are not
   opened or resumed as independent user tasks, so one parent workflow cannot
   create duplicate retry entries for its internal workers.
+- Stops a consecutive provider-failure chain after five automatic attempts by
+  default. The limit can be set from 1 to 20; a successful completion or a new
+  user turn resets it.
 - Uses increasing delays up to five minutes and correlates the new
   `task_started` turn ID with its matching `task_complete`. An unrelated
   successful turn cannot falsely mark a retry as recovered.
 
 The watchdog retries network failures, timeouts, rate limits, HTTP 5xx
 responses, interrupted streams, and temporarily unavailable authentication
-services. Ambiguous or persistent authentication failures have a limited retry
-budget. User cancellation, invalid requests, missing models, context length
-errors, policy failures, permission failures, and approval failures are not
-retried.
+services within the configured consecutive-attempt limit. Ambiguous or
+persistent authentication failures may have a lower safety limit. A temporary
+inability to reach Codex App delays recovery without consuming an attempt.
+User cancellation, invalid requests, missing models, context length errors,
+policy failures, permission failures, and approval failures are not retried.
+
+## Windows Tray Controller
+
+The watchdog owns one notification-area icon; it does not install or start a
+second background application. Hovering the icon shows whether retry is
+running, paused, waiting, active, or stopped, including the nearest live
+countdown. Double-clicking opens the graphical settings window. The right-click
+menu opens settings, pauses or resumes dispatch, and exits the watchdog.
+
+The graphical window shows every waiting, active, and exhausted task using only
+privacy-safe task IDs. It edits the normal-conversation retry text, consecutive
+attempt limit, first delay, maximum delay, and Windows notification preference.
+An exhausted task can be restarted with a fresh attempt budget. These settings
+are shared with the embedded Codex panel and take effect without restarting the
+watchdog.
 
 ## Management Panel
 
@@ -54,8 +73,11 @@ starter prompt. The panel opens inside the current Codex task and shows:
 - the watchdog state, watched locations, and last scan;
 - every pending or active retry, including a live countdown per task;
 - controls to retry a pending task now or cancel it before it starts;
+- exhausted tasks and a control to restart their attempt budget;
 - a persistent pause switch for new retry dispatches; and
-- the editable normal-conversation retry text, limited to 500 characters.
+- the editable normal-conversation retry text, limited to 500 characters;
+- the consecutive-attempt limit and backoff timing; and
+- the Windows notification preference.
 
 The default normal-conversation text is `继续`. Goal mode does not use this
 text: it still activates Codex's native interrupted goal. Saving the text takes
@@ -99,8 +121,8 @@ runtime heartbeat. It requires neither administrator rights nor Go or Node.js.
 and state by default.
 
 The watchdog and MCP management server are installed under
-`%LOCALAPPDATA%\CodexAutoRetry`. Only the watchdog starts at the current user's
-Windows sign-in. The MCP server starts on demand through Codex and exits with
+`%LOCALAPPDATA%\CodexAutoRetry`. Only the watchdog and its tray icon start at
+the current user's Windows sign-in. The MCP server starts on demand through Codex and exits with
 its Codex connection. Runtime state, heartbeat, configuration, controls, and
 privacy-safe logs remain in the same local directory. Plugin management
 commands live in `skills/codex-auto-retry/SKILL.md`.
@@ -123,6 +145,9 @@ A permanently expired or revoked login still requires authentication. Codex
 App must be running for a retry to start. If an App update removes or changes
 the local background bridge, recovery fails closed and remains queued with
 backoff; it never falls back to opening or focusing a task.
+
+The tray controller requires Windows 10 or 11. Closing it through the tray menu
+also stops automatic retry until the next Windows sign-in or reinstall/start.
 
 If the failed rollout does not contain valid settings records, recovery also
 remains queued instead of resuming the task with replacement defaults.
