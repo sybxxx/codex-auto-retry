@@ -10,7 +10,7 @@ import (
 
 func newRuntimeState() RuntimeState {
 	return RuntimeState{
-		Version:         4,
+		Version:         5,
 		Files:           make(map[string]FileCursor),
 		Threads:         make(map[string]ThreadState),
 		ProcessedEvents: make(map[string]time.Time),
@@ -38,7 +38,7 @@ func loadState(path string) (RuntimeState, error) {
 	if state.ProcessedEvents == nil {
 		state.ProcessedEvents = make(map[string]time.Time)
 	}
-	state.Version = 4
+	state.Version = 5
 	for id, thread := range state.Threads {
 		if thread.RecoveryAttempts < 1 && thread.LegacyFailures > 0 {
 			thread.RecoveryAttempts = thread.LegacyFailures
@@ -83,6 +83,9 @@ func loadState(path string) (RuntimeState, error) {
 		if thread.Awaiting != nil && thread.Awaiting.FailedAt.IsZero() {
 			thread.Awaiting.FailedAt = thread.LastFailureAt
 		}
+		if thread.GoalStop != nil && (thread.Stopped == nil || thread.GoalStop.EventKey != thread.Stopped.EventKey) {
+			thread.GoalStop = nil
+		}
 		state.Threads[id] = thread
 	}
 	return state, nil
@@ -115,6 +118,9 @@ func (s *RuntimeState) prune(now time.Time) {
 		}
 		if thread.Stopped != nil && thread.Stopped.StoppedAt.After(lastActivity) {
 			lastActivity = thread.Stopped.StoppedAt
+		}
+		if thread.GoalStop != nil && thread.GoalStop.RequestedAt.After(lastActivity) {
+			lastActivity = thread.GoalStop.RequestedAt
 		}
 		if thread.Pending == nil && thread.Awaiting == nil && !lastActivity.IsZero() && lastActivity.Before(threadCutoff) {
 			delete(s.Threads, id)

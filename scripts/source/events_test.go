@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,12 +115,68 @@ func TestParseProgressWithoutRetainingContent(t *testing.T) {
 func TestIgnoreNonVisibleResponseItems(t *testing.T) {
 	for _, payload := range []string{
 		`{"type":"message","role":"user","content":"private user message"}`,
+		`{"type":"message","role":"user","content":"private user message","internal_chat_message_metadata_passthrough":{"turn_id":"019fa94e-0103-7183-b405-36bd307b6db6"}}`,
 		`{"type":"reasoning","summary":"private reasoning"}`,
 	} {
 		line := []byte(`{"timestamp":"2026-07-26T09:00:00Z","type":"response_item","payload":` + payload + `}`)
 		if _, ok := parseRelevantEvent(line); ok {
 			t.Fatalf("non-visible progress was accepted: %s", payload)
 		}
+	}
+}
+
+func TestParseExplicitUserInputMarkerWithoutRetainingContent(t *testing.T) {
+	line, err := json.Marshal(map[string]any{
+		"timestamp": "2026-07-26T09:00:00Z",
+		"type":      "event_msg",
+		"payload": map[string]any{
+			"type": "user_message", "message": "private user input",
+			"images": []any{"private-image"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := parseRelevantEvent(append(line, '\n'))
+	if !ok || event.Kind != "task_user_input" || event.TurnID != "" || event.ErrorText != "" ||
+		event.ParentThreadID != "" || event.RecoveryEventID != "" {
+		t.Fatalf("user marker was not privacy-bounded: %+v, ok=%v", event, ok)
+	}
+}
+
+func TestParseSubagentRecoveryNotice(t *testing.T) {
+	parentID := "019fa94e-0103-7183-b405-36bd307b6db7"
+	childID := "019fa94e-0103-7183-b405-36bd307b6db8"
+	eventID := "car-0123456789abcdef01234567"
+	notice := recoveryNoticePrefix + `{"parent_thread_id":"` + parentID + `","child_thread_id":"` + childID +
+		`","recovery_event_id":"` + eventID + `","action":"resume_existing_child","spawn_replacement":false}`
+	line, err := json.Marshal(map[string]any{
+		"timestamp": "2026-07-26T09:00:00Z", "type": "response_item",
+		"payload": map[string]any{
+			"type": "message", "role": "developer",
+			"content": []any{map[string]any{"type": "input_text", "text": notice}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := parseRelevantEvent(append(line, '\n'))
+	if !ok || event.Kind != "subagent_recovery_notice" || event.ThreadID != childID ||
+		event.ParentThreadID != parentID || event.RecoveryEventID != eventID {
+		t.Fatalf("recovery notice was not parsed: %+v, ok=%v", event, ok)
+	}
+	invalidLine, err := json.Marshal(map[string]any{
+		"timestamp": "2026-07-26T09:00:00Z", "type": "response_item",
+		"payload": map[string]any{
+			"type": "message", "role": "developer",
+			"content": []any{map[string]any{"type": "input_text", "text": strings.Replace(notice, `"spawn_replacement":false`, `"spawn_replacement":true`, 1)}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parseRelevantEvent(invalidLine); ok {
+		t.Fatal("replacement-spawning notice was accepted")
 	}
 }
 

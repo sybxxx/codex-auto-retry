@@ -97,7 +97,10 @@ func readAppendedEvents(path string, offset int64, threadID string, root session
 		if len(line) > 0 {
 			if event, ok := parseRelevantEvent(line); ok {
 				eventThreadID := threadID
-				if event.Kind == "thread_goal_updated" {
+				if event.Kind == "subagent_recovery_notice" && event.ParentThreadID != threadID {
+					continue
+				}
+				if event.ThreadID != "" {
 					eventThreadID = event.ThreadID
 				}
 				events = append(events, scannedEvent{

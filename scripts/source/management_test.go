@@ -79,6 +79,55 @@ func TestManagementShowsStoppedRetryAndQueuesRestart(t *testing.T) {
 	}
 }
 
+func TestManagementExposesGoalEmptyResponseStopReason(t *testing.T) {
+	dataDir := t.TempDir()
+	service := newManagementService(dataDir)
+	now := time.Date(2026, 7, 29, 9, 30, 0, 0, time.UTC)
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0425"
+	state := newRuntimeState()
+	state.Threads[threadID] = ThreadState{Stopped: &StoppedRetry{
+		Class: classEmptyResponse, Attempts: 4, MaxAttempts: 15,
+		ConsecutiveRetries: 5, MaxConsecutive: 5,
+		StoppedAt: now, Reason: goalEmptyResponseStopReason,
+	}}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.StoppedRetries != 1 || len(snapshot.Retries) != 1 ||
+		snapshot.Retries[0].StopReason != goalEmptyResponseStopReason ||
+		snapshot.Retries[0].Class != classEmptyResponse || !snapshot.Retries[0].CanRestart {
+		t.Fatalf("goal stop reason was not exposed to management surfaces: %+v", snapshot)
+	}
+}
+
+func TestManagementExposesGoalBlockFailureReason(t *testing.T) {
+	dataDir := t.TempDir()
+	service := newManagementService(dataDir)
+	now := time.Date(2026, 7, 29, 9, 35, 0, 0, time.UTC)
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0426"
+	state := newRuntimeState()
+	state.Threads[threadID] = ThreadState{Stopped: &StoppedRetry{
+		Class: classEmptyResponse, Attempts: 4, MaxAttempts: 15,
+		ConsecutiveRetries: 5, MaxConsecutive: 5,
+		StoppedAt: now, Reason: goalEmptyResponseBlockFailReason,
+	}}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.StoppedRetries != 1 || len(snapshot.Retries) != 1 ||
+		snapshot.Retries[0].StopReason != goalEmptyResponseBlockFailReason || !snapshot.Retries[0].CanRestart {
+		t.Fatalf("goal-block failure reason was not exposed: %+v", snapshot)
+	}
+}
+
 func TestManagementRejectsStaleRunningStatus(t *testing.T) {
 	service := newManagementService(t.TempDir())
 	now := time.Now().UTC()

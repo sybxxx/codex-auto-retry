@@ -19,7 +19,10 @@ and exit. This is not a second watchdog or a separate retry engine.
 - Goal mode: rejoin the exact failed task through Codex App's existing
   background connection and activate its native goal only when the blocked
   state is attributable to the same provider failure. Codex creates the goal
-  continuation turn itself.
+  continuation turn itself. An immediate native turn after an empty reply is
+  adopted into the same recovery chain, so its counters are not reset as
+  manual work. At either limit, the goal is changed to `blocked` and the panel
+  reports that repeated empty replies stopped it.
 - A user or AI pause, including a goal waiting for review, overrides goal
   recovery. Pauses during the failed turn, countdown, or dispatch cancel that
   retry. Only a later explicit `active` goal update clears the goal hold.
@@ -39,8 +42,11 @@ and exit. This is not a second watchdog or a separate retry engine.
   launch `codex exec resume`, or create a hidden external Codex task.
 - If one target task is already active, delay only that task. Other failed
   tasks retain their own queue entries and can retry independently.
-- Treat an internal subagent rollout as part of its parent task, not as another
-  independent user task to resume.
+- For an internal subagent empty reply, inject one deterministic recovery event
+  into its parent and continue the exact existing child thread. The watchdog is
+  the sole wake-up owner for that event: never spawn a replacement, replay the
+  failed turn, or start a second child turn while the original child is active.
+  Other subagent failure categories remain owned by the parent workflow.
 - Count recovery only when the App-created `task_started` ID has a matching
   successful `task_complete`.
 - Stop at either independent safety limit: `max_recovery_attempts` bounds all
@@ -132,15 +138,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 
 ## Privacy Boundary
 
-The event scanner parses lifecycle records plus `response_item` metadata only
-when it identifies a visible assistant message or completed tool result. For
+The event scanner parses lifecycle records plus privacy-bounded `response_item`
+metadata. For
 completions it retains only whether `last_agent_message` was known and non-empty,
 never the message text. For aborts it retains only the turn ID, reason, and
 timestamp. Goal parsing retains only the target task ID, status, and lifecycle
 timestamps, and routes by the payload task ID even when Codex stores the event
 in another rollout. It does not retain the goal objective or inspect
-conversation text for intent. Progress records retain only a boolean and never
-decode or save message/tool-result content. Before dispatch, a
+conversation text for intent. Progress records retain only a boolean. A
+dedicated user-input lifecycle record contributes only a content-free marker
+for the currently started turn; user-role context items from automatic goal
+turns are ignored. The one text exception is the watchdog's own fixed,
+schema-validated subagent recovery event, from which only parent, child, and
+deterministic event IDs are retained; all other message/tool-result content
+remains undecoded and unsaved. Before dispatch, a
 separate reader extracts only the required execution settings from the latest `turn_context` and
 `thread_settings_applied` records. It does not retain, forward, or log prompts,
 developer instructions, assistant messages, tool arguments, tool results, API
@@ -158,6 +169,11 @@ the fallback prompt or app-server error bodies.
   failures, timeouts, HTTP 408/425/429 and 5xx responses, interrupted streams,
   HTTP 200 completions with no final model reply, temporary provider
   authentication outages, cooldown, and provider overload.
+- Repeated empty replies from an active goal share one chain. Exhaustion leaves
+  a visible stopped entry and changes the native goal from `active` to
+  `blocked`; failure of that local control action retries up to 100 times with
+  backoff without changing the provider counters, then remains stopped with an
+  explicit goal-block failure reason.
 - Lower limited budgets may apply to generic 401/403 authentication failures
   and unknown errors.
 - No retry: user cancellation, invalid request or payload, missing model,

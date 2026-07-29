@@ -150,6 +150,10 @@ func (c *rendererController) Dispatch(
 	settings ResumeSettings,
 	failedAt time.Time,
 	originTurnStartedAt time.Time,
+	recoveryEventID string,
+	parentNotified bool,
+	goalLimitRestart bool,
+	failureClass FailureClass,
 ) (DispatchResult, error) {
 	payload, err := json.Marshal(struct {
 		ThreadID                string         `json:"thread_id"`
@@ -157,14 +161,42 @@ func (c *rendererController) Dispatch(
 		Settings                ResumeSettings `json:"settings"`
 		FailedAtUnixMS          int64          `json:"failed_at_unix_ms"`
 		OriginTurnStartedUnixMS int64          `json:"origin_turn_started_at_unix_ms,omitempty"`
+		RecoveryEventID         string         `json:"recovery_event_id,omitempty"`
+		ParentNotified          bool           `json:"parent_notified,omitempty"`
+		GoalLimitRestart        bool           `json:"goal_limit_restart,omitempty"`
+		FailureClass            FailureClass   `json:"failure_class"`
 	}{
 		ThreadID: threadID, Prompt: prompt, Settings: settings, FailedAtUnixMS: failedAt.UnixMilli(),
 		OriginTurnStartedUnixMS: timeToUnixMilli(originTurnStartedAt),
+		RecoveryEventID:         recoveryEventID, ParentNotified: parentNotified, GoalLimitRestart: goalLimitRestart,
+		FailureClass: failureClass,
 	})
 	if err != nil {
 		return DispatchResult{}, errRendererEvaluation
 	}
 	expression := strings.Replace(rendererDispatchExpression, "__PAYLOAD__", string(payload), 1)
+	value, err := c.evaluate(ctx, expression)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	var result DispatchResult
+	if err := json.Unmarshal(value, &result); err != nil {
+		return DispatchResult{}, errControllerInvalidResult
+	}
+	return result, nil
+}
+
+func (c *rendererController) BlockGoal(ctx context.Context, threadID string) (DispatchResult, error) {
+	if !threadIDPattern.MatchString(threadID + ".jsonl") {
+		return DispatchResult{}, errRendererEvaluation
+	}
+	payload, err := json.Marshal(struct {
+		ThreadID string `json:"thread_id"`
+	}{ThreadID: threadID})
+	if err != nil {
+		return DispatchResult{}, errRendererEvaluation
+	}
+	expression := strings.Replace(rendererGoalBlockExpression, "__PAYLOAD__", string(payload), 1)
 	value, err := c.evaluate(ctx, expression)
 	if err != nil {
 		return DispatchResult{}, err
@@ -371,14 +403,16 @@ const rendererModuleBootstrap = `
 
 const rendererDispatchExpression = `(async () => {
     const payload = __PAYLOAD__;
-    const retryLater = reason => ({outcome: "retry_later", action: "", reason});
-    const hold = reason => ({outcome: "not_applicable", action: "", reason});
+	let parentNotified = Boolean(payload.parent_notified);
+	const retryLater = reason => ({outcome: "retry_later", action: "", reason, parent_notified: parentNotified});
+	const hold = reason => ({outcome: "not_applicable", action: "", reason, parent_notified: parentNotified});
     const unixSeconds = value => {
         const numeric = Number(value);
         if (!Number.isFinite(numeric) || numeric <= 0) return 0;
         return numeric > 100000000000 ? numeric / 1000 : numeric;
     };
     const blockedByFailure = goal => {
+		if (payload.goal_limit_restart && goal?.status === "blocked") return true;
         const failedAt = unixSeconds(payload.failed_at_unix_ms);
         const updatedAt = unixSeconds(goal?.updatedAt);
         return failedAt > 0 && updatedAt >= failedAt - 2 && updatedAt <= failedAt + 5;
@@ -442,6 +476,10 @@ const rendererDispatchExpression = `(async () => {
 			};
 		}
 	};
+	const startSubagent = async request => {
+		await request("turn/start", {threadId: payload.thread_id, input: []});
+		return {outcome: "dispatched", action: "subagent_continue", reason: "subagent_resumed_in_background", parent_notified: parentNotified};
+	};
     try {
         const rpc = await (async () => {` + rendererModuleBootstrap + `})();
         if (!rpc) return retryLater("renderer_rpc_not_found");
@@ -452,18 +490,23 @@ const rendererDispatchExpression = `(async () => {
         const initialStatus = initial?.thread?.status?.type;
         if (initialStatus === "active") return retryLater("thread_active");
         if (!initialStatus) return retryLater("thread_state_unavailable");
-        if (initial?.thread?.parentThreadId || initial?.thread?.source?.subAgent) {
-            return {outcome: "not_applicable", action: "", reason: "subagent_owned_by_parent"};
-        }
-        const loadedResponse = await request("thread/loaded/list", {});
+		const isSubagent = Boolean(initial?.thread?.parentThreadId || initial?.thread?.source?.subAgent);
+		const parentThreadId = initial?.thread?.parentThreadId ??
+			initial?.thread?.source?.subAgent?.thread_spawn?.parent_thread_id ?? null;
+		const loadedResponse = await request("thread/loaded/list", {});
         const isLoaded = Array.isArray(loadedResponse?.data) &&
             loadedResponse.data.includes(payload.thread_id);
-        const goalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
-        const initialGoal = goalResponse?.goal ?? null;
-        const initialHoldReason = goalHoldReason(initialGoal);
-		const continuingWhileGoalHeld = heldConversationAllowed(initialGoal);
-		if (initialHoldReason && !continuingWhileGoalHeld) return hold(initialHoldReason);
-		const initialGoalRevision = goalRevision(initialGoal);
+		let initialGoal = null;
+		let continuingWhileGoalHeld = false;
+		let initialGoalRevision = "";
+		if (!isSubagent) {
+			const goalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
+			initialGoal = goalResponse?.goal ?? null;
+			const initialHoldReason = goalHoldReason(initialGoal);
+			continuingWhileGoalHeld = heldConversationAllowed(initialGoal);
+			if (initialHoldReason && !continuingWhileGoalHeld) return hold(initialHoldReason);
+			initialGoalRevision = goalRevision(initialGoal);
+		}
         await rpc("hydrate-background-threads", {
             hostId: "local", threadIds: [payload.thread_id], includeTurns: false
         });
@@ -486,11 +529,43 @@ const rendererDispatchExpression = `(async () => {
         if (payload.settings.service_tier) resumeParams.serviceTier = payload.settings.service_tier;
         if (payload.settings.personality) resumeParams.personality = payload.settings.personality;
         let resumedStatus = initialStatus;
-        if (!isLoaded) {
+		if (!isLoaded) {
             const resumed = await request("thread/resume", resumeParams);
-            resumedStatus = resumed?.thread?.status?.type;
-        }
-        const latestGoalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
+			resumedStatus = resumed?.thread?.status?.type;
+		}
+		if (isSubagent) {
+			if (payload.failure_class !== "empty_response") return hold("subagent_non_empty_failure");
+			if (!parentThreadId) return retryLater("subagent_parent_unavailable");
+			if (!parentNotified) {
+				if (!/^car-[0-9a-f]{24}$/.test(String(payload.recovery_event_id ?? ""))) {
+					return retryLater("subagent_recovery_event_unavailable");
+				}
+				const notice = "codex-auto-retry:subagent-empty-response-recovery:v1:" + JSON.stringify({
+					parent_thread_id: parentThreadId,
+					child_thread_id: payload.thread_id,
+					recovery_event_id: payload.recovery_event_id,
+					action: "resume_existing_child",
+					spawn_replacement: false,
+					instruction: "The watchdog is resuming the exact existing child. Do not resume or spawn any child for this recovery event."
+				});
+				await request("thread/inject_items", {
+					threadId: parentThreadId,
+					items: [{
+						type: "message",
+						id: "msg_codex_auto_retry_" + payload.recovery_event_id.slice(4),
+						role: "developer",
+						content: [{type: "input_text", text: notice}]
+					}]
+				});
+				parentNotified = true;
+			}
+			const latestChild = await request("thread/read", {threadId: payload.thread_id, includeTurns: false});
+			if (latestChild?.thread?.status?.type === "active" || resumedStatus === "active") {
+				return retryLater("thread_active");
+			}
+			return await startSubagent(request);
+		}
+		const latestGoalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
         const latestGoal = latestGoalResponse?.goal ?? null;
         const latestGoalStatus = latestGoal?.status ?? null;
         if (Boolean(initialGoal) !== Boolean(latestGoal)) return hold("goal_status_changed");
@@ -515,6 +590,33 @@ const rendererDispatchExpression = `(async () => {
     } catch (error) {
         return retryLater(classifyError(error));
     }
+})()`
+
+const rendererGoalBlockExpression = `(async () => {
+	const payload = __PAYLOAD__;
+	const retryLater = reason => ({outcome: "retry_later", action: "", reason});
+	const stopped = reason => ({outcome: "dispatched", action: "goal_block", reason});
+	try {
+		const rpc = await (async () => {` + rendererModuleBootstrap + `})();
+		if (!rpc) return retryLater("renderer_rpc_not_found");
+		const request = (method, params) => rpc("send-cli-request-for-host", {
+			hostId: "local", method, params, source: "codex_auto_retry"
+		});
+		const goalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
+		const status = goalResponse?.goal?.status ?? null;
+		if (status === "active") {
+			await request("thread/goal/set", {threadId: payload.thread_id, status: "blocked"});
+			return stopped("goal_blocked_after_empty_response_limit");
+		}
+		if (status === "blocked") return stopped("goal_already_blocked");
+		if (status === "paused") return stopped("goal_already_paused");
+		if (status === "completed" || status === "complete") return stopped("goal_already_completed");
+		if (status === "usageLimited") return stopped("goal_already_usage_limited");
+		if (status === "budgetLimited") return stopped("goal_already_budget_limited");
+		return retryLater("goal_state_unavailable");
+	} catch {
+		return retryLater("app_server_request_failed");
+	}
 })()`
 
 const rendererProbeExpression = `(async () => {

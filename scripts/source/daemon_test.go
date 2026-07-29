@@ -101,7 +101,7 @@ func TestDaemonStopsAfterConfiguredRetryLimitAndCanRestart(t *testing.T) {
 		t.Fatalf("first retry was not scheduled with the global limit: %+v", thread)
 	}
 	exhausted := failureScannedEvent(threadID, "failed-3", now.Add(time.Minute))
-	d.scheduleFailureLocked(exhausted, "event-3", now.Add(time.Minute), thread, 3, 3, time.Time{})
+	d.scheduleFailureLocked(exhausted, "event-3", now.Add(time.Minute), thread, 3, 3, time.Time{}, false)
 	thread = d.state.Threads[threadID]
 	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil ||
 		thread.Stopped.Attempts != 2 || thread.RecoveryAttempts != 2 {
@@ -694,19 +694,19 @@ func TestControllerFailureReschedulesSameProviderAttempt(t *testing.T) {
 	}
 }
 
-func TestParentOwnedSubagentDoesNotRemainInIndependentRetryQueue(t *testing.T) {
+func TestParentOwnedSubagentResumesExactRetryChain(t *testing.T) {
 	threadID := "019fa17c-1e5f-7dc3-bae5-e84666ffc201"
 	cfg := isolatedConfig(t.TempDir())
 	runner := &fakeResumeRunner{result: DispatchResult{
-		Outcome: outcomeNotApplicable,
-		Reason:  "subagent_owned_by_parent",
+		Outcome: outcomeDispatched, Action: actionSubagentContinue,
+		Reason: "subagent_resumed_in_background", ParentNotified: true,
 	}}
 	d := newTestDaemon(t, cfg, runner)
 	now := time.Now().UTC()
 	d.state.Threads[threadID] = ThreadState{
 		RecoveryAttempts: 1,
 		Pending: &PendingRetry{
-			EventKey: "event", FailedTurnID: "failed", Class: classServer,
+			EventKey: "event", FailedTurnID: "failed", Class: classEmptyResponse,
 			DueAt: now, Attempt: 1,
 		},
 	}
@@ -715,8 +715,59 @@ func TestParentOwnedSubagentDoesNotRemainInIndependentRetryQueue(t *testing.T) {
 	go d.runJob(context.Background(), jobs[0])
 	d.waitForJobs()
 	thread := daemonThreadSnapshot(d, threadID)
-	if thread.Pending != nil || thread.Awaiting != nil || thread.RecoveryAttempts != 0 {
-		t.Fatalf("parent-owned subagent remained independently queued: %+v", thread)
+	if thread.Pending != nil || thread.Awaiting == nil || thread.Awaiting.Action != actionSubagentContinue ||
+		!thread.Awaiting.ParentNotified {
+		t.Fatalf("parent-owned subagent recovery was not retained: %+v", thread)
+	}
+	jobsRun := runner.snapshot()
+	if len(jobsRun) != 1 || jobsRun[0].RecoveryEventID != recoveryEventID(threadID, "event") {
+		t.Fatalf("subagent recovery did not carry a deterministic event ID: %+v", jobsRun)
+	}
+	d.handleEventLocked(scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "task_started", TurnID: "same-child-turn", Timestamp: now.Add(time.Second),
+	}}, now.Add(time.Second))
+	thread = d.state.Threads[threadID]
+	if thread.Awaiting == nil || thread.Awaiting.RetryTurnID != "same-child-turn" {
+		t.Fatalf("the resumed child turn was not correlated: %+v", thread)
+	}
+}
+
+func TestConfirmedSubagentNoticePreventsDuplicateParentNotification(t *testing.T) {
+	threadID := "019fa17c-1e5f-7dc3-bae5-e84666ffc202"
+	now := time.Now().UTC()
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	d.state.Threads[threadID] = ThreadState{Pending: &PendingRetry{
+		EventKey: "subagent-empty", FailedTurnID: "failed", Class: classEmptyResponse,
+		DueAt: now, Attempt: 1,
+	}}
+	d.handleEventLocked(scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "subagent_recovery_notice", ThreadID: threadID,
+		RecoveryEventID: recoveryEventID(threadID, "subagent-empty"), Timestamp: now,
+	}}, now)
+	thread := d.state.Threads[threadID]
+	if thread.Pending == nil || !thread.Pending.ParentNotified {
+		t.Fatalf("confirmed parent notice was not persisted: %+v", thread)
+	}
+	jobs := d.dispatchDueLocked(now)
+	if len(jobs) != 1 || !jobs[0].ParentNotified {
+		t.Fatalf("retry would duplicate the confirmed parent notice: %+v", jobs)
+	}
+}
+
+func TestSubagentRecoveryCannotAdoptTaskStartBeforeFailure(t *testing.T) {
+	now := time.Now().UTC()
+	thread := ThreadState{Pending: &PendingRetry{
+		Class: classEmptyResponse, ParentNotified: true, FailedAt: now,
+	}}
+	if canAdoptSubagentTurn(thread, RelevantEvent{
+		Kind: "task_started", TurnID: "stale-child-turn", Timestamp: now.Add(-time.Second),
+	}) {
+		t.Fatal("subagent recovery adopted a task start that predates its failure")
+	}
+	if !canAdoptSubagentTurn(thread, RelevantEvent{
+		Kind: "task_started", TurnID: "recovered-child-turn", Timestamp: now.Add(time.Second),
+	}) {
+		t.Fatal("subagent recovery rejected a later start for the exact child")
 	}
 }
 

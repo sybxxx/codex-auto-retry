@@ -38,7 +38,7 @@ func TestLoadStateMigratesLegacyRetryCounter(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread := state.Threads["019fa94e-0103-7183-b405-36bd307b6db2"]
-	if state.Version != 4 || thread.RecoveryAttempts != 4 || thread.ConsecutiveRetries != 4 ||
+	if state.Version != 5 || thread.RecoveryAttempts != 4 || thread.ConsecutiveRetries != 4 ||
 		thread.LegacyFailures != 0 || thread.Pending == nil || thread.Pending.ConsecutiveRetry != 4 ||
 		thread.Pending.MaxConsecutive != 15 {
 		t.Fatalf("legacy retry counter was not migrated into both conservative counters: %+v", thread)

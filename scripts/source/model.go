@@ -25,16 +25,18 @@ type RetryDecision struct {
 }
 
 type RelevantEvent struct {
-	Kind          string
-	ThreadID      string
-	TurnID        string
-	Timestamp     time.Time
-	ErrorText     string
-	FinalKnown    bool
-	FinalPresent  bool
-	AbortReason   string
-	GoalStatus    string
-	GoalUpdatedAt time.Time
+	Kind            string
+	ThreadID        string
+	TurnID          string
+	Timestamp       time.Time
+	ErrorText       string
+	FinalKnown      bool
+	FinalPresent    bool
+	AbortReason     string
+	GoalStatus      string
+	GoalUpdatedAt   time.Time
+	ParentThreadID  string
+	RecoveryEventID string
 }
 
 type PendingRetry struct {
@@ -51,6 +53,8 @@ type PendingRetry struct {
 	ConsecutiveRetry    int          `json:"consecutive_retry"`
 	MaxConsecutive      int          `json:"max_consecutive_retries,omitempty"`
 	DispatchFailures    int          `json:"dispatch_failures,omitempty"`
+	ParentNotified      bool         `json:"parent_notified,omitempty"`
+	GoalLimitRestart    bool         `json:"goal_limit_restart,omitempty"`
 }
 
 type RetryAction string
@@ -60,6 +64,8 @@ const (
 	actionGoalResume           RetryAction = "goal_resume"
 	actionGoalActive           RetryAction = "goal_active"
 	actionConversationContinue RetryAction = "conversation_continue"
+	actionSubagentContinue     RetryAction = "subagent_continue"
+	actionGoalBlock            RetryAction = "goal_block"
 )
 
 type AwaitingRetry struct {
@@ -75,11 +81,21 @@ type AwaitingRetry struct {
 	ConsecutiveRetry    int          `json:"consecutive_retry"`
 	MaxConsecutive      int          `json:"max_consecutive_retries,omitempty"`
 	DispatchFailures    int          `json:"dispatch_failures,omitempty"`
+	ParentNotified      bool         `json:"parent_notified,omitempty"`
+	GoalLimitRestart    bool         `json:"goal_limit_restart,omitempty"`
 	DispatchStartedAt   time.Time    `json:"dispatch_started_at"`
 	StartDeadline       time.Time    `json:"start_deadline"`
 	StartedAt           time.Time    `json:"started_at,omitempty"`
 	CodexHome           string       `json:"codex_home"`
 	RolloutPath         string       `json:"rollout_path,omitempty"`
+}
+
+type GoalStopRequest struct {
+	EventKey         string    `json:"event_key"`
+	Reason           string    `json:"reason"`
+	RequestedAt      time.Time `json:"requested_at"`
+	DueAt            time.Time `json:"due_at"`
+	DispatchFailures int       `json:"dispatch_failures,omitempty"`
 }
 
 type StoppedRetry struct {
@@ -99,25 +115,26 @@ type StoppedRetry struct {
 }
 
 type ThreadState struct {
-	RecoveryAttempts    int            `json:"recovery_attempts,omitempty"`
-	ConsecutiveRetries  int            `json:"consecutive_retries,omitempty"`
-	LegacyFailures      int            `json:"consecutive_failures,omitempty"`
-	LastFailureAt       time.Time      `json:"last_failure_at,omitempty"`
-	LastAutoRetryAt     time.Time      `json:"last_auto_retry_at,omitempty"`
-	GoalStatus          string         `json:"goal_status,omitempty"`
-	GoalUpdatedAt       time.Time      `json:"goal_updated_at,omitempty"`
-	GoalObservedAt      time.Time      `json:"goal_observed_at,omitempty"`
-	GoalHeld            bool           `json:"goal_held,omitempty"`
-	LastStartedTurnID   string         `json:"last_started_turn_id,omitempty"`
-	LastStartedAt       time.Time      `json:"last_started_at,omitempty"`
-	LastExternalTurnID  string         `json:"last_external_turn_id,omitempty"`
-	LastExternalTurnAt  time.Time      `json:"last_external_turn_at,omitempty"`
-	CurrentTurnProgress bool           `json:"current_turn_progress,omitempty"`
-	LastAbortedTurnID   string         `json:"last_aborted_turn_id,omitempty"`
-	LastAbortedAt       time.Time      `json:"last_aborted_at,omitempty"`
-	Pending             *PendingRetry  `json:"pending,omitempty"`
-	Awaiting            *AwaitingRetry `json:"awaiting,omitempty"`
-	Stopped             *StoppedRetry  `json:"stopped,omitempty"`
+	RecoveryAttempts    int              `json:"recovery_attempts,omitempty"`
+	ConsecutiveRetries  int              `json:"consecutive_retries,omitempty"`
+	LegacyFailures      int              `json:"consecutive_failures,omitempty"`
+	LastFailureAt       time.Time        `json:"last_failure_at,omitempty"`
+	LastAutoRetryAt     time.Time        `json:"last_auto_retry_at,omitempty"`
+	GoalStatus          string           `json:"goal_status,omitempty"`
+	GoalUpdatedAt       time.Time        `json:"goal_updated_at,omitempty"`
+	GoalObservedAt      time.Time        `json:"goal_observed_at,omitempty"`
+	GoalHeld            bool             `json:"goal_held,omitempty"`
+	LastStartedTurnID   string           `json:"last_started_turn_id,omitempty"`
+	LastStartedAt       time.Time        `json:"last_started_at,omitempty"`
+	LastExternalTurnID  string           `json:"last_external_turn_id,omitempty"`
+	LastExternalTurnAt  time.Time        `json:"last_external_turn_at,omitempty"`
+	CurrentTurnProgress bool             `json:"current_turn_progress,omitempty"`
+	LastAbortedTurnID   string           `json:"last_aborted_turn_id,omitempty"`
+	LastAbortedAt       time.Time        `json:"last_aborted_at,omitempty"`
+	Pending             *PendingRetry    `json:"pending,omitempty"`
+	Awaiting            *AwaitingRetry   `json:"awaiting,omitempty"`
+	Stopped             *StoppedRetry    `json:"stopped,omitempty"`
+	GoalStop            *GoalStopRequest `json:"goal_stop,omitempty"`
 }
 
 type FileCursor struct {
@@ -134,6 +151,7 @@ type RuntimeState struct {
 }
 
 type RetryJob struct {
+	Kind                RetryJobKind
 	ThreadID            string
 	FailedTurnID        string
 	FailedAt            time.Time
@@ -147,7 +165,17 @@ type RetryJob struct {
 	ConsecutiveRetry    int
 	MaxConsecutive      int
 	DispatchFailures    int
+	ParentNotified      bool
+	GoalLimitRestart    bool
+	RecoveryEventID     string
 }
+
+type RetryJobKind string
+
+const (
+	jobRecovery  RetryJobKind = "recovery"
+	jobGoalBlock RetryJobKind = "goal_block"
+)
 
 type DispatchOutcome string
 
@@ -160,9 +188,10 @@ const (
 )
 
 type DispatchResult struct {
-	Outcome DispatchOutcome `json:"outcome"`
-	Action  RetryAction     `json:"action"`
-	Reason  string          `json:"reason,omitempty"`
+	Outcome        DispatchOutcome `json:"outcome"`
+	Action         RetryAction     `json:"action"`
+	Reason         string          `json:"reason,omitempty"`
+	ParentNotified bool            `json:"parent_notified,omitempty"`
 }
 
 type StatusSnapshot struct {

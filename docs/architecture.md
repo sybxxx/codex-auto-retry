@@ -43,14 +43,15 @@ UI surface that caused both reported failures.
 1. Codex writes a JSONL lifecycle event to a session rollout.
 2. The scanner reads only newly appended bytes using a persisted file cursor.
 3. The event parser accepts `event_msg` records with payload type
-   `task_started`, `task_complete`, `turn_aborted`, or
+   `task_started`, `task_complete`, `turn_aborted`, `user_message`, or
    `thread_goal_updated`. For a completion it derives only whether
    `last_agent_message` is known and non-empty, then discards the value. A goal
    event is routed by its payload task ID because Codex may persist it in
    another task's rollout; only its status and lifecycle timestamps are retained.
-   It also accepts `response_item` records only when their metadata identifies
-   a visible assistant message or completed tool result. Those items become one
-   boolean progress marker; their content is never decoded or retained.
+   A `user_message` becomes a content-free explicit-input marker for the current
+   started turn. `response_item` records become either a boolean visible-progress
+   marker or, for the watchdog's fixed developer event only, a validated
+   subagent-recovery marker containing parent, child, and event IDs.
 4. A non-active goal state creates a durable hold and cancels goal recovery.
    Only an explicit later `active` goal update clears that hold. A `blocked`
    state is exempt when its update time is from two seconds before through five
@@ -64,32 +65,48 @@ UI surface that caused both reported failures.
    completion for the same turn cannot override user cancellation.
 6. A retryable failure is deduplicated and scheduled with either a fixed wait
    or a doubling wait capped at the configured maximum, in state owned by that task ID.
-7. The controller discovers Codex App's loopback debugging port, verifies an
+7. When an active goal creates a new `task_started` within five seconds of its
+   empty completion, that native continuation adopts the pending retry instead
+   of resetting its two counters. User-role context items in that native turn
+   are ignored; only the separate `user_message` lifecycle event proves that a
+   person superseded the automatic chain.
+8. The controller discovers Codex App's loopback debugging port, verifies an
    exact `app://-/index.html` Codex page, and connects to its renderer.
-8. A reverse reader finds the latest `turn_context` and
+9. A reverse reader finds the latest `turn_context` and
    `thread_settings_applied` records in that task's rollout and decodes only the
    allowlisted execution settings needed by `thread/resume`.
-9. The renderer program locates Codex's internal structured request bridge,
+10. The renderer program locates Codex's internal structured request bridge,
    reads the target task state, hydrates it in the background, and calls
    `thread/resume` with those settings on the existing app-server connection.
-10. Parent-owned subagent rollouts are removed from the independent queue; their
-   lifecycle remains part of the parent task that created them.
-11. The renderer reads goal state before and after hydration/resume. A
-   provider-attributed blocked goal is changed to `active`. Completed,
-   usage-limited, budget-limited, changed, and unknown states fail closed. A
-   paused or pre-existing blocked goal normally stops recovery. It permits only
-   a later externally started conversation turn whose recorded start time is
-   after the held goal update; both reads must return the same held revision.
-12. Normal continuation, including the held-goal exception, first calls
-   `turn/start` with an empty input array. It
+11. For a subagent empty reply, the renderer derives the parent from the child
+    thread, injects one deterministic recovery event into that parent, and
+    persists the acknowledgement. It then re-reads the exact child and starts an
+    empty-input continuation only if the child is still inactive. The fixed path
+    has no spawn, replacement-thread, failed-turn replay, or parent-turn start;
+    other subagent failure classes remain with the parent workflow.
+12. The renderer reads goal state before and after hydration/resume. A
+    provider-attributed blocked goal is changed to `active`. Completed,
+    usage-limited, budget-limited, changed, and unknown states fail closed. A
+    paused or pre-existing blocked goal normally stops recovery. It permits only
+    a later externally started conversation turn whose recorded start time is
+    after the held goal update; both reads must return the same held revision.
+13. Normal continuation, including the held-goal exception, first calls
+    `turn/start` with an empty input array. It
    starts another model inference in the same task without a user-message item,
    while preserving the original request and completed tool results. The
    configured text is used only when the App returns an explicit empty-input
    validation error. The held-goal path never calls `thread/goal/set`, and the
    controller never rolls back or replays a completed turn.
-13. The first lifecycle `task_started` in the dispatch window becomes the retry
-   turn ID. Only a `task_complete` with that same ID can recover the chain or
-   schedule its next provider retry.
+14. If repeated empty replies from an active goal exceed either retry limit, a
+    durable stopped entry is retained and a separate control job calls only
+    `thread/goal/get` and `thread/goal/set status=blocked`. This safety closure
+    runs even while ordinary retry dispatch is paused; controller failures back
+    off without consuming provider-attempt counters. It stops after 100 local
+    control failures and exposes a distinct terminal reason instead of looping
+    indefinitely or claiming the goal was blocked.
+15. The first lifecycle `task_started` in the dispatch window becomes the retry
+    turn ID. Only a `task_complete` with that same ID can recover the chain or
+    schedule its next provider retry.
 
 ## Management Data Flow
 
@@ -147,7 +164,8 @@ transport, and the fixed renderer program.
 - Task IDs, fallback prompts, and allowlisted resume settings are inserted
   by JSON encoding, not executable string concatenation.
 - The renderer program calls only the fixed background methods needed for
-  state read, hydration, resume, goal activation, and turn start.
+  state read, hydration, resume, parent recovery-event injection, goal status
+  changes, and turn start.
 - Goal state is checked before hydration and again immediately before the
   mutating goal/turn action. A goal appearing, disappearing, pausing, or
   changing to a terminal or limited state during dispatch fails closed.
@@ -157,6 +175,12 @@ transport, and the fixed renderer program.
   lifecycle acknowledgement is rescheduled with backoff.
 - Missing or invalid persisted task settings fail closed and reschedule only
   that task; App defaults are never substituted during recovery.
+- Subagent recovery validates a deterministic event ID, notifies the declared
+  parent once, rechecks the original child's live status, and calls
+  `turn/start` only on that child. It contains no `spawn_agent` or `thread/start`
+  request and cannot create a replacement thread.
+- Goal-limit closure uses a separate fixed program that cannot hydrate, resume,
+  inject items, or start a turn.
 - There is deliberately no visible-UI or navigation fallback. The compatibility
   prompt fallback is still a structured background request and runs only after
   an explicit empty-input validation rejection.
@@ -192,9 +216,20 @@ Due tasks are dispatched up to `max_parallel_retries` instead of competing for
 one navigation surface. Activity in one task delays only that task. It cannot
 cancel or block another task's queue entry.
 
-An internal subagent is not a second user task. Its persisted `parentThreadId`
-or `subAgent` source is detected before dispatch and the independent retry entry
-is cleared, leaving recovery ownership with the parent workflow.
+An internal subagent is not treated as a replacement user task. For an empty
+reply, its persisted `parentThreadId` or `subAgent` source selects the exact
+parent and child pair. A deterministic event ID lets the parent observe one
+recovery event and lets scanner state confirm that notification after a restart.
+The watchdog is the sole wake-up owner for that event and rechecks child
+activity before continuing it. Non-empty subagent failures remain owned by the
+parent workflow.
+
+An active goal's native post-failure turns remain in the same bounded chain.
+Reaching either limit leaves a durable stopped record and schedules goal
+closure independently of the ordinary retry queue and pause switch. This keeps
+the user-visible reason available after the native goal becomes `blocked`. The
+local closure path is separately bounded; exhaustion preserves the provider
+counters and reports that automatic blocking itself failed.
 
 Provider retry attempts and controller dispatch failures are tracked
 separately. A temporary inability to reach Codex App does not consume a
@@ -205,8 +240,8 @@ provider retry from a limited authentication budget.
 `state.json` stores file offsets, processed event keys, task retry counters,
 pending deadlines, failed turn IDs and times, goal status/timestamps/hold,
 last-started and last-aborted turn IDs, background actions, retry turn IDs,
-dispatch deadlines, exhausted retry
-records, and rollout paths.
+dispatch deadlines, parent-notification acknowledgement, durable goal-stop
+requests, exhausted retry records, and rollout paths.
 Atomic replacement prevents partial state files.
 
 A pending retry moves to `awaiting` before background dispatch begins, so a
@@ -215,6 +250,14 @@ different task started after acknowledgement cancels automation, and an
 unrelated completion is ignored. On restart, an unacknowledged dispatch is
 rescheduled after its deadline while an acknowledged running turn remains
 tracked.
+
+An immediate native goal turn can move a pending empty-response retry directly
+to `awaiting` before the controller fires. The counters and original fault stay
+attached to it. A later explicit `user_message` lifecycle marker cancels that
+adoption, while automatic user-role context items do not. Once the goal limit
+is exhausted, later native starts, completions, or stale active-goal records
+cannot clear the stopped reason; only a later observed explicit activation or a
+management restart begins a fresh budget.
 
 An intentional goal hold is not inferred from assistant prose. It is driven
 only by Codex goal lifecycle status and update time. A normal task start cannot
@@ -245,17 +288,19 @@ becoming additional writers for `state.json`.
 
 ## Privacy And Security
 
-- Lifecycle scanning parses only start, completion, abort, and goal status/time
-  events, plus assistant/tool metadata needed to derive a progress boolean. For
+- Lifecycle scanning parses only start, completion, abort, explicit user-input,
+  and goal status/time events, plus assistant/tool metadata needed to derive a progress boolean. For
   a completion it retains only known/non-empty booleans for the
   final message. For a goal it retains the payload task ID, status, and update time,
-  but not the objective. The separate
+  but not the objective. The explicit-input event retains no message fields.
+  User-role `response_item` context is ignored. The separate
   resume-settings reader inspects only the latest `turn_context` and decodes a
   fixed subset. A second allowlisted record supplies model-provider and service
   tier provenance without forwarding collaboration instructions or messages.
 - Conversation messages, prompts, developer instructions, assistant output text,
   tool arguments, and tool results are never retained or forwarded by either
-  parser.
+  parser, except that the watchdog parses its own fixed subagent recovery event
+  and retains only its validated parent, child, and deterministic event IDs.
 - Logs contain short task identifiers, retry categories, attempt numbers,
   delays, background action categories, and privacy-safe reason codes only.
 - API keys, bearer tokens, provider URLs, request bodies, error bodies, drafts,
@@ -268,8 +313,9 @@ becoming additional writers for `state.json`.
 ## Verification
 
 - Go unit tests cover classification, privacy filtering, payload-based goal
-  routing, intentional pause before/during retry, later external conversation
-  turns beside a held goal, blocked-failure attribution, dual retry limits,
+  routing, explicit-input versus native-goal correlation, deterministic
+  subagent event routing, intentional pause before/during retry, later external
+  conversation turns beside a held goal, blocked-failure attribution, dual retry limits,
   visible-progress resets, hold persistence across restart, latest-context reverse lookup, allowlisted
   settings, configuration migration, baselining, mirroring, strict turn
   correlation, per-task activity delays, bounded parallel dispatch, renderer
@@ -290,8 +336,9 @@ becoming additional writers for `state.json`.
   that model, provider, service tier, workspace, approvals, permissions, and
   reasoning effort survive resume; goal activation starts native continuation;
   empty-input `turn/start` creates a normal continuation in the same task; and
-  the same continuation can start beside an unchanged paused goal without
-  activating it or using Codex App UI.
+  the same continuation can start beside an unchanged paused goal; it also
+  proves `thread/inject_items` persists the fixed parent recovery event and an
+  active goal can be changed to `blocked`, all without using Codex App UI.
 - `empty-response-protocol-smoke-test.ps1` uses a local fake Responses API and
   temporary `CODEX_HOME` to reproduce an HTTP 200 completion with zero model
   output. It proves that silent continuation sends exactly one additional

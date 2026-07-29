@@ -25,3 +25,25 @@ func TestEmbeddedSettingsScriptHasOneUTF8BOM(t *testing.T) {
 		t.Fatal("embedded settings script contains a duplicate UTF-8 BOM")
 	}
 }
+
+func TestGoalEmptyResponseStoppedCount(t *testing.T) {
+	retries := []ManagedRetry{
+		{State: "stopped", StopReason: goalEmptyResponseStopReason},
+		{State: "stopped", StopReason: "recovery_attempt_limit"},
+		{State: "pending", StopReason: goalEmptyResponseStopReason},
+	}
+	if got := goalEmptyResponseStoppedCount(retries); got != 1 {
+		t.Fatalf("goal-specific tray notification count = %d, want 1", got)
+	}
+}
+
+func TestGoalEmptyResponseBlockFailedCount(t *testing.T) {
+	retries := []ManagedRetry{
+		{State: "stopped", StopReason: goalEmptyResponseBlockFailReason},
+		{State: "stopped", StopReason: goalEmptyResponseStopReason},
+		{State: "pending", StopReason: goalEmptyResponseBlockFailReason},
+	}
+	if got := goalEmptyResponseBlockFailedCount(retries); got != 1 {
+		t.Fatalf("goal-block failure tray notification count = %d, want 1", got)
+	}
+}

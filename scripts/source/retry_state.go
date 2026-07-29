@@ -26,6 +26,8 @@ func (d *daemon) reconcileStartupState(now time.Time) {
 			ConsecutiveRetry:    awaiting.ConsecutiveRetry,
 			MaxConsecutive:      awaiting.MaxConsecutive,
 			DispatchFailures:    awaiting.DispatchFailures,
+			ParentNotified:      awaiting.ParentNotified,
+			GoalLimitRestart:    awaiting.GoalLimitRestart,
 		}
 		d.state.Threads[threadID] = thread
 		d.logger.Printf("stale starting retry restored thread=%s", shortThreadID(threadID))
@@ -73,12 +75,18 @@ func (d *daemon) stopPendingRetryLocked(threadID string, thread ThreadState, now
 	thread.RecoveryAttempts = completedAttempts
 	thread.ConsecutiveRetries = completedConsecutive
 	reason := retryStopReason(pending.Attempt, pending.MaxAttempts, pending.ConsecutiveRetry, pending.MaxConsecutive)
+	if pending.Class == classEmptyResponse && thread.GoalStatus == "active" {
+		reason = goalEmptyResponseStopReason
+	}
 	thread.Stopped = &StoppedRetry{
 		EventKey: pending.EventKey, FailedTurnID: pending.FailedTurnID, FailedAt: pending.FailedAt,
 		OriginTurnStartedAt: pending.OriginTurnStartedAt,
 		Class:               pending.Class, StoppedAt: now, CodexHome: pending.CodexHome, RolloutPath: pending.RolloutPath,
 		Attempts: completedAttempts, MaxAttempts: pending.MaxAttempts,
 		ConsecutiveRetries: completedConsecutive, MaxConsecutive: pending.MaxConsecutive, Reason: reason,
+	}
+	if reason == goalEmptyResponseStopReason {
+		thread.GoalStop = &GoalStopRequest{EventKey: pending.EventKey, Reason: reason, RequestedAt: now, DueAt: now}
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry exhausted thread=%s category=%s recovery_attempts=%d consecutive_retries=%d reason=%s", shortThreadID(threadID), pending.Class, completedAttempts, completedConsecutive, reason)
@@ -108,6 +116,7 @@ func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time
 		thread.RecoveryAttempts = 0
 		thread.ConsecutiveRetries = 0
 		thread.CurrentTurnProgress = false
+		thread.GoalStop = nil
 		d.state.Threads[command.ThreadID] = thread
 		d.logger.Printf("retry cancelled thread=%s reason=user_control", shortThreadID(command.ThreadID))
 	case commandRestartRetry:
@@ -116,7 +125,12 @@ func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time
 			return
 		}
 		stopped := thread.Stopped
+		if cancel := d.activeCtx[command.ThreadID]; cancel != nil {
+			cancel()
+		}
 		thread.Stopped = nil
+		thread.GoalStop = nil
+		thread.GoalHeld = false
 		thread.RecoveryAttempts = 1
 		thread.ConsecutiveRetries = 1
 		recoveryLimit, consecutiveLimit := retryLimits(stopped.Class, d.config)
@@ -133,6 +147,7 @@ func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time
 			MaxAttempts:         recoveryLimit,
 			ConsecutiveRetry:    1,
 			MaxConsecutive:      consecutiveLimit,
+			GoalLimitRestart:    isGoalEmptyResponseStopReason(stopped.Reason),
 		}
 		d.state.Threads[command.ThreadID] = thread
 		d.logger.Printf("retry restarted thread=%s", shortThreadID(command.ThreadID))
@@ -151,6 +166,8 @@ func (d *daemon) handleEventLocked(item scannedEvent, now time.Time) {
 	switch event.Kind {
 	case "task_started":
 		d.handleTaskStartedLocked(item.ThreadID, event, thread)
+	case "task_user_input":
+		d.handleTaskUserInputLocked(item.ThreadID, event, thread)
 	case "task_progress":
 		d.handleTaskProgressLocked(item.ThreadID, event, thread)
 	case "task_complete":
@@ -159,45 +176,8 @@ func (d *daemon) handleEventLocked(item scannedEvent, now time.Time) {
 		d.handleTurnAbortedLocked(item.ThreadID, event, thread)
 	case "thread_goal_updated":
 		d.handleGoalUpdatedLocked(item.ThreadID, event, thread)
-	}
-}
-
-func (d *daemon) handleGoalUpdatedLocked(threadID string, event RelevantEvent, thread ThreadState) {
-	staleUpdate := !thread.GoalUpdatedAt.IsZero() && event.GoalUpdatedAt.Before(thread.GoalUpdatedAt)
-	staleObservation := event.GoalUpdatedAt.Equal(thread.GoalUpdatedAt) &&
-		!thread.GoalObservedAt.IsZero() && !event.Timestamp.After(thread.GoalObservedAt)
-	if staleUpdate || staleObservation {
-		d.logger.Printf("goal update ignored thread=%s reason=stale_goal_state", shortThreadID(threadID))
-		return
-	}
-	thread.GoalStatus = event.GoalStatus
-	thread.GoalUpdatedAt = event.GoalUpdatedAt
-	thread.GoalObservedAt = event.Timestamp
-	thread.GoalHeld = goalRequiresHold(event.GoalStatus, event.GoalUpdatedAt, thread.LastFailureAt)
-	if !thread.GoalHeld {
-		d.state.Threads[threadID] = thread
-		return
-	}
-	if heldConversationStillAllowed(thread, event.GoalStatus, event.GoalUpdatedAt) {
-		d.state.Threads[threadID] = thread
-		return
-	}
-	hadRetry := thread.Pending != nil || thread.Awaiting != nil
-	if _, active := d.active[threadID]; active {
-		hadRetry = true
-	}
-	if cancel := d.activeCtx[threadID]; cancel != nil {
-		cancel()
-	}
-	thread.Pending = nil
-	thread.Awaiting = nil
-	thread.RecoveryAttempts = 0
-	thread.ConsecutiveRetries = 0
-	thread.CurrentTurnProgress = false
-	thread.Stopped = nil
-	d.state.Threads[threadID] = thread
-	if hadRetry {
-		d.logger.Printf("retry cancelled thread=%s reason=goal_held", shortThreadID(threadID))
+	case "subagent_recovery_notice":
+		d.handleSubagentRecoveryNoticeLocked(item.ThreadID, event, thread)
 	}
 }
 
@@ -205,6 +185,11 @@ func (d *daemon) handleTaskStartedLocked(threadID string, event RelevantEvent, t
 	thread.LastStartedTurnID = event.TurnID
 	thread.LastStartedAt = event.Timestamp
 	thread.CurrentTurnProgress = false
+	if automaticGoalLimitStopped(thread) {
+		d.state.Threads[threadID] = thread
+		d.logger.Printf("goal turn ignored thread=%s reason=%s", shortThreadID(threadID), thread.Stopped.Reason)
+		return
+	}
 	if thread.Awaiting != nil {
 		awaiting := thread.Awaiting
 		withinDispatchWindow := !event.Timestamp.Before(awaiting.DispatchStartedAt.Add(-2*time.Second)) &&
@@ -226,6 +211,30 @@ func (d *daemon) handleTaskStartedLocked(threadID string, event RelevantEvent, t
 		return
 	}
 	if thread.Pending != nil {
+		action := RetryAction("")
+		if canAdoptNativeGoalTurn(thread, event) {
+			action = actionGoalActive
+		} else if canAdoptSubagentTurn(thread, event) {
+			action = actionSubagentContinue
+		}
+		if action != "" {
+			pending := thread.Pending
+			thread.Pending = nil
+			thread.LastAutoRetryAt = event.Timestamp
+			thread.Awaiting = &AwaitingRetry{
+				EventKey: pending.EventKey, FailedTurnID: pending.FailedTurnID,
+				FailedAt: pending.FailedAt, OriginTurnStartedAt: pending.OriginTurnStartedAt,
+				RetryTurnID: event.TurnID, Class: pending.Class, Action: action,
+				Attempt: pending.Attempt, MaxAttempts: pending.MaxAttempts,
+				ConsecutiveRetry: pending.ConsecutiveRetry, MaxConsecutive: pending.MaxConsecutive,
+				DispatchFailures: pending.DispatchFailures, ParentNotified: pending.ParentNotified,
+				GoalLimitRestart: pending.GoalLimitRestart, DispatchStartedAt: event.Timestamp,
+				StartedAt: event.Timestamp, CodexHome: pending.CodexHome, RolloutPath: pending.RolloutPath,
+			}
+			d.state.Threads[threadID] = thread
+			d.logger.Printf("automatic retry turn adopted thread=%s action=%s attempt=%d", shortThreadID(threadID), action, pending.Attempt)
+			return
+		}
 		thread.LastExternalTurnID = event.TurnID
 		thread.LastExternalTurnAt = event.Timestamp
 		d.cancelRetryLocked(threadID, thread, "manual_task_started")
@@ -236,7 +245,28 @@ func (d *daemon) handleTaskStartedLocked(threadID string, event RelevantEvent, t
 	thread.RecoveryAttempts = 0
 	thread.ConsecutiveRetries = 0
 	thread.Stopped = nil
+	thread.GoalStop = nil
 	d.state.Threads[threadID] = thread
+}
+
+func (d *daemon) handleTaskUserInputLocked(threadID string, event RelevantEvent, thread ThreadState) {
+	if automaticGoalLimitStopped(thread) {
+		return
+	}
+	turnID := event.TurnID
+	if turnID == "" {
+		turnID = thread.LastStartedTurnID
+	}
+	if thread.Awaiting != nil && thread.Awaiting.RetryTurnID == turnID {
+		if thread.Awaiting.Action != actionGoalActive && thread.Awaiting.Action != actionGoalResume {
+			return
+		}
+		d.cancelRetryLocked(threadID, thread, "manual_task_input")
+		return
+	}
+	if thread.Pending != nil && turnID != "" && turnID == thread.LastStartedTurnID {
+		d.cancelRetryLocked(threadID, thread, "manual_task_input")
+	}
 }
 
 func (d *daemon) handleTaskProgressLocked(threadID string, event RelevantEvent, thread ThreadState) {
@@ -259,6 +289,10 @@ func (d *daemon) handleTurnAbortedLocked(threadID string, event RelevantEvent, t
 	}
 	thread.LastAbortedTurnID = abortedTurnID
 	thread.LastAbortedAt = event.Timestamp
+	if automaticGoalLimitStopped(thread) {
+		d.state.Threads[threadID] = thread
+		return
+	}
 	if cancel := d.activeCtx[threadID]; cancel != nil {
 		cancel()
 	}
@@ -267,6 +301,7 @@ func (d *daemon) handleTurnAbortedLocked(threadID string, event RelevantEvent, t
 	thread.Pending = nil
 	thread.Awaiting = nil
 	thread.Stopped = nil
+	thread.GoalStop = nil
 	thread.RecoveryAttempts = 0
 	thread.ConsecutiveRetries = 0
 	thread.CurrentTurnProgress = false
@@ -278,6 +313,11 @@ func (d *daemon) handleTurnAbortedLocked(threadID string, event RelevantEvent, t
 
 func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now time.Time, thread ThreadState) {
 	event := item.Event
+	if automaticGoalLimitStopped(thread) {
+		d.state.Threads[item.ThreadID] = thread
+		d.logger.Printf("completion ignored thread=%s reason=%s", shortThreadID(item.ThreadID), thread.Stopped.Reason)
+		return
+	}
 	if event.TurnID != "" && event.TurnID == thread.LastAbortedTurnID {
 		d.resetRetryStateLocked(item.ThreadID, thread)
 		d.logger.Printf("completion ignored thread=%s reason=turn_aborted", shortThreadID(item.ThreadID))
@@ -300,7 +340,7 @@ func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now tim
 		}
 		thread.CurrentTurnProgress = false
 		thread.Awaiting = nil
-		d.scheduleFailureLocked(item, key, now, thread, awaiting.Attempt+1, nextConsecutive, awaiting.OriginTurnStartedAt)
+		d.scheduleFailureLocked(item, key, now, thread, awaiting.Attempt+1, nextConsecutive, awaiting.OriginTurnStartedAt, awaiting.ParentNotified)
 		return
 	}
 
@@ -320,10 +360,10 @@ func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now tim
 		return
 	}
 	thread.CurrentTurnProgress = false
-	d.scheduleFailureLocked(item, key, now, thread, 1, 1, externalTurnOrigin(thread, event))
+	d.scheduleFailureLocked(item, key, now, thread, 1, 1, externalTurnOrigin(thread, event), false)
 }
 
-func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.Time, thread ThreadState, recoveryAttempt, consecutiveRetry int, originTurnStartedAt time.Time) {
+func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.Time, thread ThreadState, recoveryAttempt, consecutiveRetry int, originTurnStartedAt time.Time, parentNotified bool) {
 	if thread.GoalHeld {
 		if thread.GoalStatus == "blocked" && goalBlockedByFailure(thread.GoalUpdatedAt, item.Event.Timestamp) {
 			thread.GoalHeld = false
@@ -350,6 +390,9 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		completedAttempts := completedRetryCount(recoveryAttempt, recoveryLimit)
 		completedConsecutive := completedRetryCount(consecutiveRetry, consecutiveLimit)
 		reason := retryStopReason(recoveryAttempt, recoveryLimit, consecutiveRetry, consecutiveLimit)
+		if decision.Class == classEmptyResponse && thread.GoalStatus == "active" {
+			reason = goalEmptyResponseStopReason
+		}
 		thread.Pending = nil
 		thread.Awaiting = nil
 		thread.RecoveryAttempts = completedAttempts
@@ -363,6 +406,9 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 			Attempts: completedAttempts, MaxAttempts: recoveryLimit,
 			ConsecutiveRetries: completedConsecutive, MaxConsecutive: consecutiveLimit, Reason: reason,
 		}
+		if reason == goalEmptyResponseStopReason {
+			thread.GoalStop = &GoalStopRequest{EventKey: key, Reason: reason, RequestedAt: now, DueAt: now}
+		}
 		d.state.Threads[item.ThreadID] = thread
 		d.logger.Printf("retry exhausted thread=%s category=%s recovery_attempts=%d consecutive_retries=%d reason=%s", shortThreadID(item.ThreadID), decision.Class, completedAttempts, completedConsecutive, reason)
 		return
@@ -375,6 +421,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 	thread.LastFailureAt = item.Event.Timestamp
 	thread.Awaiting = nil
 	thread.Stopped = nil
+	thread.GoalStop = nil
 	thread.Pending = &PendingRetry{
 		EventKey:            key,
 		FailedTurnID:        item.Event.TurnID,
@@ -386,6 +433,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		RolloutPath:         item.RolloutPath,
 		Attempt:             recoveryAttempt, MaxAttempts: recoveryLimit,
 		ConsecutiveRetry: consecutiveRetry, MaxConsecutive: consecutiveLimit,
+		ParentNotified: parentNotified,
 	}
 	d.state.Threads[item.ThreadID] = thread
 	d.logger.Printf("retry scheduled thread=%s category=%s recovery_attempt=%d consecutive_retry=%d delay_seconds=%d", shortThreadID(item.ThreadID), decision.Class, recoveryAttempt, consecutiveRetry, int(delay.Seconds()))
@@ -397,26 +445,6 @@ func externalTurnOrigin(thread ThreadState, event RelevantEvent) time.Time {
 		return time.Time{}
 	}
 	return thread.LastExternalTurnAt
-}
-
-func heldConversationAllowed(status string, goalUpdatedAt, originTurnStartedAt time.Time) bool {
-	if originTurnStartedAt.IsZero() || (status != "paused" && status != "blocked") {
-		return false
-	}
-	// Older state can know that the goal is held without having its timestamp.
-	// The live controller performs the authoritative timestamp check before any
-	// continuation starts.
-	return goalUpdatedAt.IsZero() || !goalUpdatedAt.After(originTurnStartedAt)
-}
-
-func heldConversationStillAllowed(thread ThreadState, status string, goalUpdatedAt time.Time) bool {
-	origin := time.Time{}
-	if thread.Pending != nil {
-		origin = thread.Pending.OriginTurnStartedAt
-	} else if thread.Awaiting != nil {
-		origin = thread.Awaiting.OriginTurnStartedAt
-	}
-	return heldConversationAllowed(status, goalUpdatedAt, origin)
 }
 
 func retryLimitsForDecision(decision RetryDecision, config Config) (int, int) {
@@ -465,24 +493,6 @@ func retryStopReason(recoveryAttempt, recoveryLimit, consecutiveRetry, consecuti
 	return "retry_limit"
 }
 
-func goalRequiresHold(status string, goalUpdatedAt, failureAt time.Time) bool {
-	if status == "active" {
-		return false
-	}
-	if status == "blocked" {
-		return !goalBlockedByFailure(goalUpdatedAt, failureAt)
-	}
-	return true
-}
-
-func goalBlockedByFailure(goalUpdatedAt, failureAt time.Time) bool {
-	if goalUpdatedAt.IsZero() || failureAt.IsZero() {
-		return false
-	}
-	return !goalUpdatedAt.Before(failureAt.Add(-2*time.Second)) &&
-		!goalUpdatedAt.After(failureAt.Add(5*time.Second))
-}
-
 func (d *daemon) cancelRetryLocked(threadID string, thread ThreadState, reason string) {
 	if cancel := d.activeCtx[threadID]; cancel != nil {
 		cancel()
@@ -493,6 +503,7 @@ func (d *daemon) cancelRetryLocked(threadID string, thread ThreadState, reason s
 	thread.ConsecutiveRetries = 0
 	thread.CurrentTurnProgress = false
 	thread.Stopped = nil
+	thread.GoalStop = nil
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry cancelled thread=%s reason=%s", shortThreadID(threadID), reason)
 }
@@ -504,5 +515,6 @@ func (d *daemon) resetRetryStateLocked(threadID string, thread ThreadState) {
 	thread.ConsecutiveRetries = 0
 	thread.CurrentTurnProgress = false
 	thread.Stopped = nil
+	thread.GoalStop = nil
 	d.state.Threads[threadID] = thread
 }

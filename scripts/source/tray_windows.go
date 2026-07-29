@@ -124,18 +124,20 @@ var (
 )
 
 type trayApp struct {
-	hwnd         uintptr
-	dataDir      string
-	logger       *safeLogger
-	cancel       context.CancelFunc
-	service      *managementService
-	icons        map[string]uintptr
-	lastTip      string
-	lastIcon     string
-	lastStopped  int
-	initialized  bool
-	settingsMu   sync.Mutex
-	settingsOpen bool
+	hwnd            uintptr
+	dataDir         string
+	logger          *safeLogger
+	cancel          context.CancelFunc
+	service         *managementService
+	icons           map[string]uintptr
+	lastTip         string
+	lastIcon        string
+	lastStopped     int
+	lastGoalStopped int
+	lastGoalFailed  int
+	initialized     bool
+	settingsMu      sync.Mutex
+	settingsOpen    bool
 }
 
 func runTray(ctx context.Context, cancel context.CancelFunc, dataDir string, logger *safeLogger) error {
@@ -256,11 +258,39 @@ func (a *trayApp) refresh() {
 		iconState = "stopped"
 	}
 	a.setVisual(iconState, tip)
-	if a.initialized && snapshot.ShowNotifications && snapshot.StoppedRetries > a.lastStopped {
+	goalStopped := goalEmptyResponseStoppedCount(snapshot.Retries)
+	goalFailed := goalEmptyResponseBlockFailedCount(snapshot.Retries)
+	if a.initialized && snapshot.ShowNotifications && goalFailed > a.lastGoalFailed {
+		a.notify("目标停止失败", "目标恢复已停止，但自动设为受阻失败。请从面板重新开始或检查 Codex 状态。")
+	} else if a.initialized && snapshot.ShowNotifications && goalStopped > a.lastGoalStopped {
+		a.notify("目标已自动停止", "目标连续空回复达到上限，目标恢复已停止。")
+	} else if a.initialized && snapshot.ShowNotifications && snapshot.StoppedRetries > a.lastStopped {
 		a.notify("自动重试已停止", fmt.Sprintf("有 %d 个任务已达到重试上限。", snapshot.StoppedRetries))
 	}
 	a.lastStopped = snapshot.StoppedRetries
+	a.lastGoalStopped = goalStopped
+	a.lastGoalFailed = goalFailed
 	a.initialized = true
+}
+
+func goalEmptyResponseStoppedCount(retries []ManagedRetry) int {
+	count := 0
+	for _, retry := range retries {
+		if retry.State == "stopped" && retry.StopReason == goalEmptyResponseStopReason {
+			count++
+		}
+	}
+	return count
+}
+
+func goalEmptyResponseBlockFailedCount(retries []ManagedRetry) int {
+	count := 0
+	for _, retry := range retries {
+		if retry.State == "stopped" && retry.StopReason == goalEmptyResponseBlockFailReason {
+			count++
+		}
+	}
+	return count
 }
 
 func nextRetrySeconds(retries []ManagedRetry) (int64, bool) {

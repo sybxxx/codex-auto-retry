@@ -102,7 +102,8 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 	failedAt := time.Date(2026, 7, 27, 15, 52, 2, 123_000_000, time.UTC)
 	originAt := failedAt.Add(-5 * time.Minute)
 	result, err := fake.controller().Dispatch(context.Background(),
-		"019f9d46-2924-7a70-8ec9-83b19f5491a9", "Continue.", testResumeSettings(), failedAt, originAt)
+		"019f9d46-2924-7a70-8ec9-83b19f5491a9", "Continue.", testResumeSettings(), failedAt, originAt,
+		"car-0123456789abcdef01234567", false, false, classEmptyResponse)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +119,9 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 	}
 	if !strings.Contains(expressions[0], `"origin_turn_started_at_unix_ms":1785167222123`) {
 		t.Fatal("originating user turn time was not encoded for held-goal continuation")
+	}
+	if !strings.Contains(expressions[0], `"recovery_event_id":"car-0123456789abcdef01234567"`) {
+		t.Fatal("deterministic recovery event ID was not encoded")
 	}
 	for _, setting := range []string{
 		`"permissions":":danger-full-access"`,
@@ -206,6 +210,74 @@ func TestRendererDispatchUsesSilentContinuationWithNarrowFallback(t *testing.T) 
 	}
 }
 
+func TestRendererDispatchNotifiesParentAndResumesExactSubagent(t *testing.T) {
+	for _, required := range []string{
+		`initial?.thread?.parentThreadId`,
+		`request("thread/inject_items"`,
+		`parent_thread_id: parentThreadId`,
+		`child_thread_id: payload.thread_id`,
+		`recovery_event_id: payload.recovery_event_id`,
+		`action: "resume_existing_child"`,
+		`spawn_replacement: false`,
+		`Do not resume or spawn any child for this recovery event.`,
+		`parent_notified: parentNotified`,
+		`request("thread/read", {threadId: payload.thread_id, includeTurns: false})`,
+		`return await startSubagent(request)`,
+	} {
+		if !strings.Contains(rendererDispatchExpression, required) {
+			t.Fatalf("subagent recovery is missing %q", required)
+		}
+	}
+	if strings.Count(rendererDispatchExpression, `request("thread/inject_items"`) != 1 {
+		t.Fatal("subagent recovery has more than one parent-notification path")
+	}
+	injectAt := strings.Index(rendererDispatchExpression, `request("thread/inject_items"`)
+	finalReadAt := strings.Index(rendererDispatchExpression[injectAt:], `request("thread/read", {threadId: payload.thread_id`)
+	startAt := strings.Index(rendererDispatchExpression[injectAt:], `return await startSubagent(request)`)
+	if injectAt < 0 || finalReadAt < 0 || startAt < 0 || finalReadAt > startAt {
+		t.Fatal("subagent is not rechecked for live activity before continuation")
+	}
+	for _, forbidden := range []string{"spawn_agent", `request("thread/start"`, "codex://", "location.assign"} {
+		if strings.Contains(rendererDispatchExpression, forbidden) {
+			t.Fatalf("subagent recovery can create or navigate to another task: %q", forbidden)
+		}
+	}
+}
+
+func TestRendererGoalBlockUsesOnlyGoalStatusRequest(t *testing.T) {
+	for _, required := range []string{
+		`request("thread/goal/get", {threadId: payload.thread_id})`,
+		`request("thread/goal/set", {threadId: payload.thread_id, status: "blocked"})`,
+		`action: "goal_block"`,
+	} {
+		if !strings.Contains(rendererGoalBlockExpression, required) {
+			t.Fatalf("goal-block controller is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"thread/resume", "turn/start", "thread/inject_items", "hydrate-background-threads", "codex://"} {
+		if strings.Contains(rendererGoalBlockExpression, forbidden) {
+			t.Fatalf("goal-block controller performs unrelated action %q", forbidden)
+		}
+	}
+}
+
+func TestRendererControllerBlocksGoalWithStructuredResult(t *testing.T) {
+	fake := newFakeCDPServer(t, DispatchResult{
+		Outcome: outcomeDispatched, Action: actionGoalBlock,
+		Reason: "goal_blocked_after_empty_response_limit",
+	})
+	threadID := "019f9d46-2924-7a70-8ec9-83b19f5491aa"
+	result, err := fake.controller().BlockGoal(context.Background(), threadID)
+	if err != nil || result.Action != actionGoalBlock {
+		t.Fatalf("unexpected goal-block result: result=%+v err=%v", result, err)
+	}
+	expressions := fake.expressionSnapshot()
+	if len(expressions) != 1 || !strings.Contains(expressions[0], threadID) ||
+		!strings.Contains(expressions[0], `status: "blocked"`) {
+		t.Fatalf("goal-block expression did not target the requested goal: %v", expressions)
+	}
+}
+
 func TestGoalBlockedByFailureWindow(t *testing.T) {
 	failureAt := time.Date(2026, 7, 27, 15, 52, 2, 500_000_000, time.UTC)
 	for _, test := range []struct {
@@ -259,7 +331,8 @@ func TestRendererControllerSupportsTwoTasksWithoutSharedNavigation(t *testing.T)
 			settings := testResumeSettings()
 			settings.Model = test.model
 			settings.Effort = test.effort
-			_, err := controller.Dispatch(context.Background(), test.threadID, "Continue.", settings, time.Now().UTC(), time.Time{})
+			_, err := controller.Dispatch(context.Background(), test.threadID, "Continue.", settings, time.Now().UTC(), time.Time{},
+				"car-0123456789abcdef01234567", false, false, classEmptyResponse)
 			errorsByThread <- err
 		}(test)
 	}

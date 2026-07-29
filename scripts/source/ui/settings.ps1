@@ -140,11 +140,11 @@ $taskList.FullRowSelect = $true
 $taskList.GridLines = $true
 $taskList.HideSelection = $false
 [void]$taskList.Columns.Add('任务', 76)
-[void]$taskList.Columns.Add('状态', 66)
-[void]$taskList.Columns.Add('倒计时', 76)
-[void]$taskList.Columns.Add('本次恢复', 96)
-[void]$taskList.Columns.Add('连续无进展', 96)
-[void]$taskList.Columns.Add('故障类型', 100)
+[void]$taskList.Columns.Add('状态', 116)
+[void]$taskList.Columns.Add('倒计时', 60)
+[void]$taskList.Columns.Add('本次恢复', 80)
+[void]$taskList.Columns.Add('连续无进展', 90)
+[void]$taskList.Columns.Add('故障类型', 90)
 $queueGroup.Controls.Add($taskList)
 $retryNowButton = [System.Windows.Forms.Button]::new()
 $retryNowButton.Text = '立即重试'
@@ -296,6 +296,13 @@ function Get-StateText {
     }
 }
 
+function Get-StoppedStateText {
+    param([string]$Reason)
+    if ($Reason -eq 'goal_empty_response_limit_block_failed') { return '目标停止失败' }
+    if ($Reason -eq 'goal_empty_response_limit') { return '目标空回复已停止' }
+    return '达到上限'
+}
+
 function Get-ClassText {
     param([string]$Class)
     switch ($Class) {
@@ -362,6 +369,7 @@ function Update-RuntimeView {
             $consecutive = 0
             $maxConsecutive = 0
             $seconds = $null
+            $stopReason = ''
             if (-not $running -and ($thread.pending -or $thread.awaiting)) { continue }
             if ($thread.pending) {
                 $rowState = 'pending'
@@ -392,13 +400,15 @@ function Update-RuntimeView {
                 $maximum = [int]$thread.stopped.max_attempts
                 $consecutive = [int]$thread.stopped.consecutive_retries
                 $maxConsecutive = [int]$thread.stopped.max_consecutive_retries
+                $stopReason = [string]$thread.stopped.reason
             } else { continue }
             $shortID = if ($threadID.Length -gt 8) { $threadID.Substring(0, 8) } else { $threadID }
             $countdown = if ($null -ne $seconds) { ([int]$seconds).ToString() + ' 秒' } else { '--' }
             $recoveryText = if ($maximum -gt 0) { "$attempt/$maximum" } else { [string]$attempt }
             $consecutiveText = if ($maxConsecutive -gt 0) { "$consecutive/$maxConsecutive" } else { [string]$consecutive }
             $item = [System.Windows.Forms.ListViewItem]::new($shortID)
-            [void]$item.SubItems.Add((Get-StateText $rowState))
+            $stateText = if ($rowState -eq 'stopped') { Get-StoppedStateText $stopReason } else { Get-StateText $rowState }
+            [void]$item.SubItems.Add($stateText)
             [void]$item.SubItems.Add($countdown)
             [void]$item.SubItems.Add($recoveryText)
             [void]$item.SubItems.Add($consecutiveText)

@@ -52,13 +52,34 @@ func TestValidateDispatchResultRejectsUnsafeReason(t *testing.T) {
 	}
 }
 
-func TestValidateDispatchResultAcceptsParentOwnedSubagent(t *testing.T) {
+func TestValidateDispatchResultAcceptsParentOwnedSubagentRecovery(t *testing.T) {
 	result, err := validateDispatchResult(DispatchResult{
-		Outcome: outcomeNotApplicable,
-		Reason:  "subagent_owned_by_parent",
+		Outcome: outcomeDispatched, Action: actionSubagentContinue,
+		Reason: "subagent_resumed_in_background", ParentNotified: true,
 	})
-	if err != nil || result.Outcome != outcomeNotApplicable {
-		t.Fatalf("valid not-applicable result was rejected: result=%+v err=%v", result, err)
+	if err != nil || result.Action != actionSubagentContinue || !result.ParentNotified {
+		t.Fatalf("valid subagent recovery result was rejected: result=%+v err=%v", result, err)
+	}
+}
+
+func TestValidateDispatchResultAcceptsGoalBlock(t *testing.T) {
+	result, err := validateDispatchResult(DispatchResult{
+		Outcome: outcomeDispatched, Action: actionGoalBlock,
+		Reason: "goal_blocked_after_empty_response_limit",
+	})
+	if err != nil || result.Action != actionGoalBlock {
+		t.Fatalf("valid goal-block result was rejected: result=%+v err=%v", result, err)
+	}
+}
+
+func TestValidateDispatchResultRejectsActionFromWrongJobKind(t *testing.T) {
+	goalResume := DispatchResult{Outcome: outcomeDispatched, Action: actionGoalResume, Reason: "goal_resumed_in_background"}
+	if _, err := validateDispatchResultForJob(jobGoalBlock, goalResume); err == nil {
+		t.Fatal("goal-stop job accepted a recovery action")
+	}
+	goalBlock := DispatchResult{Outcome: outcomeDispatched, Action: actionGoalBlock, Reason: "goal_blocked_after_empty_response_limit"}
+	if _, err := validateDispatchResultForJob(jobRecovery, goalBlock); err == nil {
+		t.Fatal("recovery job accepted a goal-stop action")
 	}
 }
 
@@ -117,12 +138,14 @@ func TestRendererDispatchUsesOnlyBackgroundAppServerMethods(t *testing.T) {
 		"send-cli-request-for-host",
 		"thread/loaded/list",
 		"thread/resume",
+		"thread/inject_items",
 		"thread/goal/get",
 		"thread/goal/set",
 		"turn/start",
 	}
-	if !strings.Contains(rendererDispatchExpression, "subagent_owned_by_parent") {
-		t.Fatal("background controller does not delegate subagent recovery to its parent task")
+	if !strings.Contains(rendererDispatchExpression, "subagent-empty-response-recovery") ||
+		!strings.Contains(rendererDispatchExpression, "resume_existing_child") {
+		t.Fatal("background controller does not notify the parent before resuming the existing subagent")
 	}
 	for _, value := range required {
 		if !strings.Contains(rendererDispatchExpression, value) {
@@ -136,6 +159,8 @@ func TestRendererDispatchUsesOnlyBackgroundAppServerMethods(t *testing.T) {
 		"window.open",
 		"location.assign",
 		"location.replace",
+		"spawn_agent",
+		`request("thread/start"`,
 	}
 	for _, value := range forbidden {
 		if strings.Contains(rendererDispatchExpression, value) {

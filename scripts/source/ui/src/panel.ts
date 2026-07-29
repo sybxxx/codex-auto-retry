@@ -376,11 +376,19 @@ function actionLabel(value?: string): string {
     goal_resume: "目标恢复",
     goal_active: "目标运行",
     conversation_continue: "对话继续",
+    subagent_continue: "子 Agent 恢复",
+    goal_block: "目标停止",
   };
   return value ? (labels[value] ?? "正在处理") : "正在处理";
 }
 
 function stopReasonLabel(retry: ManagedRetry): string {
+  if (retry.stop_reason === "goal_empty_response_limit_block_failed") {
+    return `目标连续空回复达到上限，恢复已停止，但自动设为受阻失败`;
+  }
+  if (retry.stop_reason === "goal_empty_response_limit") {
+    return `目标连续空回复达到上限，目标恢复已停止`;
+  }
   if (retry.stop_reason === "consecutive_retry_limit") {
     return `无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries ?? retry.consecutive_retry} 达上限`;
   }

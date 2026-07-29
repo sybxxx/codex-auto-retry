@@ -18,7 +18,7 @@
 | `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible non-overlapping settings form, concurrent refresh stability, settings-process shutdown, heartbeat, and clean status shutdown. |
 | `scripts/smoke-test.ps1` | Runs an isolated process-level two-task retry and strict-correlation test through a mock background endpoint. |
 | `scripts/renderer-control-smoke-test.ps1` | Probes the installed Codex App's background bridge through production discovery and transport code without changing UI or tasks. |
-| `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, and continuation beside an unchanged paused goal against an isolated app-server and temporary `CODEX_HOME`. |
+| `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, continuation beside an unchanged paused goal, fixed parent-event injection, and active-to-blocked goal closure against an isolated app-server and temporary `CODEX_HOME`. |
 | `scripts/empty-response-protocol-smoke-test.ps1` | Reproduces an HTTP 200 response with no model output through a local fake provider, then proves silent same-task recovery without adding a user message or replaying the original turn. |
 | `release/windows/deploy.ps1` | One-click deployment engine: validates the package, safely updates the personal marketplace, registers the plugin, installs the runtime, and verifies the result. |
 | `release/windows/uninstall-release.ps1` | Removes Codex registration, startup, and installed source while preserving runtime data unless full removal is explicitly requested. |
@@ -32,19 +32,21 @@ Source code lives under `scripts/source`.
 | Module | Ownership |
 | --- | --- |
 | `main.go` | Process startup, shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
-| `daemon.go` | Scan loop, bounded parallel dispatch, controller lifecycle, acknowledgement timeouts, and status publication. |
-| `retry_state.go` | Strict retry transitions, dual attempt limits, visible-progress resets, startup reconciliation, intentional-goal hold protection, later external-turn attribution, and management command application. |
+| `daemon.go` | Scan loop, bounded parallel dispatch, generic controller lifecycle, acknowledgement timeouts, and status publication. |
+| `retry_state.go` | Generic retry transitions, dual attempt limits, visible-progress resets, startup reconciliation, later external-turn attribution, and management command application. |
+| `goal_recovery.go` | Goal lifecycle holds, native-turn adoption, stale-update protection, bounded post-limit goal blocking, and goal-specific controller reconciliation. |
+| `subagent_recovery.go` | Durable acknowledgement of deterministic parent recovery events for the exact existing child. |
 | `control.go` | Persistent pause state and atomic retry-now/cancel/restart command files shared with management surfaces. |
 | `management.go` | Privacy-bounded queue snapshots, process-backed heartbeat freshness, settings updates, and management command submission. |
 | `mcp_server.go` | Official Go MCP SDK wiring, management tools, and the embedded MCP App resource. |
 | `tray_windows.go` | Native notification-area icon, live tooltip/countdown, menu controls, and graphical settings-process lifecycle. |
 | `process_windows.go` | Read-only Windows process-liveness verification for stale heartbeat rejection. |
-| `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, rollout paths, and mirrored-session detection. |
-| `events.go` | Privacy-bounded parsing of task start, completion, abort, goal lifecycle, and visible-progress markers; it retains only final-reply/progress booleans. |
+| `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, parent-to-child recovery-event routing, rollout paths, and mirrored-session detection. |
+| `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, and the plugin's fixed subagent recovery event. |
 | `classifier.go` | Provider-independent retry decisions, empty-response classification, and limited authentication budgets. |
 | `runner.go` | Controller result validation, privacy-safe failure codes, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
-| `renderer_control.go` | Loopback Codex target discovery, WebSocket transport, fixed background recovery program, live goal-revision checks, native goal resume, paused-goal-preserving conversation continuation, and the narrow compatibility-text fallback. |
+| `renderer_control.go` | Loopback Codex target discovery, WebSocket transport, fixed background recovery programs, live goal/child rechecks, deterministic parent notification, exact-child continuation, post-limit goal blocking, and the narrow compatibility-text fallback. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
 | `state.go` | Persistent cursors, pending and awaiting retries, turn correlation, migration, deduplication, and pruning. |
 | `config.go` | Versioned defaults, validation, legacy visible-UI migration, and user overrides. |
@@ -121,6 +123,11 @@ installations discover Codex App automatically.
 `cancel_retry`, or `restart_retry`; the watchdog consumes them while it owns
 the retry-state lock. This keeps both graphical management surfaces from
 editing `state.json` concurrently with the scanner.
+
+State format version 5 also persists parent-notification acknowledgement and
+post-limit goal-stop requests. These fields make subagent recovery idempotent
+across restarts and prevent an exhausted native goal chain from being cleared
+by a later automatic turn.
 
 ## Extension Points
 

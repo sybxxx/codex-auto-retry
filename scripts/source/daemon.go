@@ -214,18 +214,54 @@ func (d *daemon) rescheduleAwaitingLocked(threadID string, thread ThreadState, n
 		ConsecutiveRetry:    awaiting.ConsecutiveRetry,
 		MaxConsecutive:      awaiting.MaxConsecutive,
 		DispatchFailures:    dispatchFailures,
+		ParentNotified:      awaiting.ParentNotified,
+		GoalLimitRestart:    awaiting.GoalLimitRestart,
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry rescheduled thread=%s reason=%s delay_seconds=%d", shortThreadID(threadID), reason, int(delay.Seconds()))
 }
 
 func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
-	if d.paused {
-		return nil
-	}
 	available := d.config.MaxParallelRetries - len(d.active)
 	if available <= 0 {
 		return nil
+	}
+	jobs := make([]RetryJob, 0, available)
+	type goalStopCandidate struct {
+		threadID string
+		request  GoalStopRequest
+	}
+	goalStops := make([]goalStopCandidate, 0)
+	for threadID, thread := range d.state.Threads {
+		if thread.GoalStop == nil || thread.GoalStop.DueAt.After(now) {
+			continue
+		}
+		if _, active := d.active[threadID]; active {
+			continue
+		}
+		goalStops = append(goalStops, goalStopCandidate{threadID: threadID, request: *thread.GoalStop})
+	}
+	sort.Slice(goalStops, func(i, j int) bool { return goalStops[i].request.DueAt.Before(goalStops[j].request.DueAt) })
+	for _, item := range goalStops {
+		if available == 0 {
+			break
+		}
+		thread := d.state.Threads[item.threadID]
+		job := RetryJob{Kind: jobGoalBlock, ThreadID: item.threadID, EventKey: item.request.EventKey,
+			DispatchFailures: item.request.DispatchFailures}
+		if thread.Stopped != nil {
+			job.Class = thread.Stopped.Class
+			job.Attempt = thread.Stopped.Attempts
+		}
+		d.active[item.threadID] = job
+		jobs = append(jobs, job)
+		available--
+	}
+	if available == 0 {
+		return jobs
+	}
+	if d.paused {
+		return jobs
 	}
 	type candidate struct {
 		threadID string
@@ -233,7 +269,7 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	}
 	candidates := make([]candidate, 0)
 	for threadID, thread := range d.state.Threads {
-		if thread.GoalHeld && !heldConversationStillAllowed(thread, thread.GoalStatus, thread.GoalUpdatedAt) {
+		if thread.GoalHeld && !goalLimitRestartPending(thread) && !heldConversationStillAllowed(thread, thread.GoalStatus, thread.GoalUpdatedAt) {
 			if thread.Pending != nil || thread.Awaiting != nil {
 				thread.Pending = nil
 				thread.Awaiting = nil
@@ -254,7 +290,7 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		candidates = append(candidates, candidate{threadID: threadID, pending: *thread.Pending})
 	}
 	if len(candidates) == 0 {
-		return nil
+		return jobs
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].pending.DueAt.Before(candidates[j].pending.DueAt)
@@ -262,7 +298,6 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	if available > len(candidates) {
 		available = len(candidates)
 	}
-	jobs := make([]RetryJob, 0, available)
 	for _, item := range candidates[:available] {
 		thread := d.state.Threads[item.threadID]
 		thread.Pending = nil
@@ -279,6 +314,8 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 			ConsecutiveRetry:    item.pending.ConsecutiveRetry,
 			MaxConsecutive:      item.pending.MaxConsecutive,
 			DispatchFailures:    item.pending.DispatchFailures,
+			ParentNotified:      item.pending.ParentNotified,
+			GoalLimitRestart:    item.pending.GoalLimitRestart,
 			DispatchStartedAt:   now,
 			StartDeadline:       now.Add(time.Duration(d.config.StartAckTimeoutSeconds) * time.Second),
 			CodexHome:           item.pending.CodexHome,
@@ -286,6 +323,7 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		}
 		d.state.Threads[item.threadID] = thread
 		job := RetryJob{
+			Kind:                jobRecovery,
 			ThreadID:            item.threadID,
 			FailedTurnID:        item.pending.FailedTurnID,
 			FailedAt:            item.pending.FailedAt,
@@ -299,6 +337,9 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 			ConsecutiveRetry:    item.pending.ConsecutiveRetry,
 			MaxConsecutive:      item.pending.MaxConsecutive,
 			DispatchFailures:    item.pending.DispatchFailures,
+			ParentNotified:      item.pending.ParentNotified,
+			GoalLimitRestart:    item.pending.GoalLimitRestart,
+			RecoveryEventID:     recoveryEventID(item.threadID, item.pending.EventKey),
 		}
 		d.active[item.threadID] = job
 		jobs = append(jobs, job)
@@ -308,13 +349,17 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 
 func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 	defer d.wg.Done()
+	if job.Kind == jobGoalBlock {
+		d.runGoalBlockJob(ctx, job)
+		return
+	}
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	d.mu.Lock()
 	thread := d.state.Threads[job.ThreadID]
 	if thread.Awaiting == nil || thread.Awaiting.EventKey != job.EventKey ||
 		thread.Awaiting.Attempt != job.Attempt ||
-		(thread.GoalHeld && !heldConversationStillAllowed(thread, thread.GoalStatus, thread.GoalUpdatedAt)) {
+		(thread.GoalHeld && !job.GoalLimitRestart && !heldConversationStillAllowed(thread, thread.GoalStatus, thread.GoalUpdatedAt)) {
 		delete(d.active, job.ThreadID)
 		d.mu.Unlock()
 		d.logger.Printf("retry action ignored thread=%s reason=stale_job", shortThreadID(job.ThreadID))
@@ -337,6 +382,9 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		return
 	}
 
+	if result.ParentNotified {
+		thread.Awaiting.ParentNotified = true
+	}
 	if err != nil || result.Outcome == outcomeRetryLater {
 		d.rescheduleAwaitingLocked(job.ThreadID, thread, finishedAt, controllerFailureReason(result, err))
 	} else if result.Outcome == outcomeUserActive {
@@ -351,6 +399,7 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		thread.Pending = nil
 		thread.Awaiting = nil
 		thread.Stopped = nil
+		thread.GoalStop = nil
 		if status, held := goalHoldStatusForReason(result.Reason); held {
 			thread.GoalHeld = true
 			if status != "" {
@@ -369,25 +418,6 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		d.lastError = stateErr.Error()
 	}
 	_ = d.writeStatusLocked(true, len(discoverSessionRoots(d.config)))
-}
-
-func goalHoldStatusForReason(reason string) (string, bool) {
-	switch reason {
-	case "goal_paused":
-		return "paused", true
-	case "goal_completed":
-		return "completed", true
-	case "goal_usage_limited":
-		return "usageLimited", true
-	case "goal_budget_limited":
-		return "budgetLimited", true
-	case "goal_blocked_before_failure":
-		return "blocked", true
-	case "goal_status_changed", "goal_status_unsupported":
-		return "", true
-	default:
-		return "", false
-	}
 }
 
 func (d *daemon) waitForJobs() {

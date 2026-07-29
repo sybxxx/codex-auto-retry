@@ -36,6 +36,18 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 	if !threadIDPattern.MatchString(job.ThreadID + ".jsonl") {
 		return DispatchResult{}, errors.New("invalid thread id")
 	}
+	if job.Kind == jobGoalBlock {
+		controllerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		result, err := r.controller.BlockGoal(controllerCtx, job.ThreadID)
+		if err != nil && controllerCtx.Err() != nil {
+			return DispatchResult{}, errControllerTimeout
+		}
+		if err != nil {
+			return DispatchResult{}, err
+		}
+		return validateDispatchResultForJob(job.Kind, result)
+	}
 	settings, err := loadLatestResumeSettings(job.RolloutPath)
 	if err != nil {
 		return DispatchResult{}, err
@@ -53,6 +65,10 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 		settings,
 		job.FailedAt,
 		job.OriginTurnStartedAt,
+		job.RecoveryEventID,
+		job.ParentNotified,
+		job.GoalLimitRestart,
+		job.Class,
 	)
 	if err != nil && controllerCtx.Err() != nil {
 		return DispatchResult{}, errControllerTimeout
@@ -60,7 +76,7 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 	if err != nil {
 		return DispatchResult{}, err
 	}
-	return validateDispatchResult(result)
+	return validateDispatchResultForJob(job.Kind, result)
 }
 
 func (r *appResumeRunner) retryPrompt() (string, error) {
@@ -77,7 +93,8 @@ func (r *appResumeRunner) retryPrompt() (string, error) {
 func validateDispatchResult(result DispatchResult) (DispatchResult, error) {
 	switch result.Outcome {
 	case outcomeDispatched:
-		if result.Action != actionGoalResume && result.Action != actionConversationContinue {
+		if result.Action != actionGoalResume && result.Action != actionConversationContinue &&
+			result.Action != actionSubagentContinue && result.Action != actionGoalBlock {
 			return DispatchResult{}, fmt.Errorf("%w: dispatched action", errControllerInvalidResult)
 		}
 	case outcomeAwaitingStart:
@@ -96,6 +113,23 @@ func validateDispatchResult(result DispatchResult) (DispatchResult, error) {
 		return DispatchResult{}, fmt.Errorf("%w: reason", errControllerInvalidResult)
 	}
 	return result, nil
+}
+
+func validateDispatchResultForJob(kind RetryJobKind, result DispatchResult) (DispatchResult, error) {
+	validated, err := validateDispatchResult(result)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	if validated.Outcome != outcomeDispatched {
+		return validated, nil
+	}
+	if kind == jobGoalBlock && validated.Action != actionGoalBlock {
+		return DispatchResult{}, fmt.Errorf("%w: goal block action", errControllerInvalidResult)
+	}
+	if kind != jobGoalBlock && validated.Action == actionGoalBlock {
+		return DispatchResult{}, fmt.Errorf("%w: recovery action", errControllerInvalidResult)
+	}
+	return validated, nil
 }
 
 func controllerFailureReason(result DispatchResult, err error) string {

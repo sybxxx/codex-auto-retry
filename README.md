@@ -19,7 +19,9 @@ behavior remains independent of whether either settings surface is open.
   defaults.
 - In goal mode, uses Codex's native goal state and activates only a blocked
   goal that can be attributed to the same provider failure. Codex then creates
-  the continuation turn itself.
+  the continuation turn itself. If an active goal creates another turn
+  immediately after an empty reply, that turn is adopted into the same bounded
+  recovery chain instead of being mistaken for new manual work.
 - Treats a user or AI pause, including a goal waiting for review, as
   authoritative for goal recovery. A pause during the failed turn, countdown,
   or controller startup cancels recovery; only an explicit later `active` goal
@@ -38,15 +40,24 @@ behavior remains independent of whether either settings surface is open.
   later instead of canceling it.
 - Keeps separate retry state for every task and can dispatch up to four due
   tasks independently by default.
-- Internal subagent rollouts are owned by their parent task. They are not
-  opened or resumed as independent user tasks, so one parent workflow cannot
-  create duplicate retry entries for its internal workers.
+- For an empty reply from an internal subagent, appends one deterministic
+  recovery event to its parent and silently continues the exact existing child
+  thread. The parent receives the recovery event, while the watchdog remains
+  the sole wake-up owner for that event. The event explicitly forbids a
+  replacement child; live child state, persisted notification acknowledgement,
+  and turn correlation prevent a duplicate continuation or duplicate Agent
+  creation. Other child failures remain owned by the parent workflow.
 - Tracks two independent safety limits. `本次故障恢复` counts every automatic
   recovery in one outage (15 by default, configurable from 1 to 1000).
   `连续无进展` counts retries that produce neither a visible assistant reply
   nor a completed tool result (5 by default, configurable from 1 to 100). A
   successful completion or a new user turn clears both; visible progress clears
   only the consecutive no-progress count.
+- When an active goal reaches either limit through repeated empty replies, the
+  watchdog retains the exhausted entry, changes that goal to `blocked`, and
+  shows `目标连续空回复达到上限，目标恢复已停止`. Controller failures retry
+  separately and do not consume another provider attempt; repeated local
+  control failure eventually stops with its own explicit reason.
 - Supports a fixed interval or doubling delays capped at a configurable maximum.
   Doubling follows the consecutive no-progress count, so visible progress starts
   the delay sequence over. It correlates the new
@@ -104,8 +115,8 @@ another task. Closing the panel has no effect on the global watchdog.
 
 ## Safety And Privacy
 
-The event scanner accepts lifecycle records plus privacy-bounded progress
-markers. For a completion it retains only
+The event scanner accepts lifecycle records plus privacy-bounded progress and
+correlation markers. For a completion it retains only
 whether `last_agent_message` was present and non-empty, never its contents. A
 completion with no explicit error and no final reply is treated as a temporary
 empty-response failure. An abort remains authoritative even if a delayed
@@ -115,7 +126,13 @@ when Codex persists it in another task's rollout. It never reads the goal
 objective or searches conversation text for words such as "review". An
 assistant message or completed tool-result item contributes only a boolean
 "this retry made visible progress" marker; its content is never decoded or
-stored. Immediately
+stored. A dedicated `user_message` lifecycle record contributes only a
+content-free "explicit user input" marker associated with the currently
+started turn, so real user work supersedes an adopted native goal turn. User
+role context items written by an automatic goal turn are ignored. The only
+message text parsed is the watchdog's own fixed, schema-checked subagent
+recovery marker; it retains only parent, child, and deterministic event IDs.
+Immediately
 before recovery, a separate settings reader decodes only an allowlisted subset
 of the latest `turn_context` and
 `thread_settings_applied` records: working directory, workspace roots, model
@@ -128,7 +145,8 @@ URLs, or response bodies.
 Recovery uses Codex App's own already-running local app-server connection. The
 controller connects only to a loopback debugging endpoint whose page is the
 Codex App, evaluates a fixed recovery program, and calls the same structured
-`thread/resume`, `thread/goal/set`, and `turn/start` methods used by Codex. It
+`thread/resume`, `thread/inject_items`, `thread/goal/set`, and `turn/start`
+methods used by Codex. It
 does not automate the mouse, keyboard, clipboard, composer, window focus, or
 task navigation.
 

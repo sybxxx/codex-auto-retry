@@ -140,6 +140,13 @@ try {
     $heldConversationThreadId = $heldConversationThread.Response.result.thread.id
     Send-Request $process @{ method = 'thread/goal/set'; id = 8; params = @{ threadId = $heldConversationThreadId; objective = 'Held goal conversation test'; status = 'paused' } }
     $null = Read-UntilId $process 8
+    Send-Request $process @{ method = 'thread/start'; id = 9; params = $threadSettings }
+    $injectionThread = Read-UntilId $process 9
+    $injectionThreadId = $injectionThread.Response.result.thread.id
+    Send-Request $process @{ method = 'thread/goal/set'; id = 10; params = @{ threadId = $injectionThreadId; objective = 'Materialize injection protocol test'; status = 'paused' } }
+    $null = Read-UntilId $process 10
+    Send-Request $process @{ method = 'thread/goal/clear'; id = 11; params = @{ threadId = $injectionThreadId } }
+    $null = Read-UntilId $process 11
     Stop-AppServer $process
     $process = $null
 
@@ -197,6 +204,45 @@ try {
     $heldGoalAfter = Read-UntilId $process 11
     $captured += $heldGoalAfter.Lines
 
+    $recoveryEventId = 'car-0123456789abcdef01234567'
+    $noticePayload = @{
+        parent_thread_id = $injectionThreadId
+        child_thread_id = $normalThreadId
+        recovery_event_id = $recoveryEventId
+        action = 'resume_existing_child'
+        spawn_replacement = $false
+        instruction = 'The watchdog is resuming the exact existing child. Do not resume or spawn any child for this recovery event.'
+    } | ConvertTo-Json -Compress
+    $noticeText = 'codex-auto-retry:subagent-empty-response-recovery:v1:' + $noticePayload
+    $injectionResumeParams = $threadSettings.Clone()
+    $injectionResumeParams.threadId = $injectionThreadId
+    $injectionResumeParams.excludeTurns = $true
+    Send-Request $process @{ method = 'thread/resume'; id = 12; params = $injectionResumeParams }
+    $injectionResume = Read-UntilId $process 12
+    $captured += $injectionResume.Lines
+    Send-Request $process @{
+        method = 'thread/inject_items'
+        id = 13
+        params = @{
+            threadId = $injectionThreadId
+            items = @(@{
+                type = 'message'
+                id = 'msg_codex_auto_retry_0123456789abcdef01234567'
+                role = 'developer'
+                content = @(@{ type = 'input_text'; text = $noticeText })
+            })
+        }
+    }
+    $injected = Read-UntilId $process 13
+    $captured += $injected.Lines
+
+    Send-Request $process @{ method = 'thread/goal/set'; id = 14; params = @{ threadId = $goalThreadId; status = 'blocked' } }
+    $goalBlocked = Read-UntilId $process 14
+    $captured += $goalBlocked.Lines
+    Send-Request $process @{ method = 'thread/goal/get'; id = 15; params = @{ threadId = $goalThreadId } }
+    $goalAfterBlock = Read-UntilId $process 15
+    $captured += $goalAfterBlock.Lines
+
     $startedThreads = @($captured | ForEach-Object {
         $message = $_ | ConvertFrom-Json
         if ($message.method -eq 'turn/started') { $message.params.threadId }
@@ -219,6 +265,13 @@ try {
     if ($heldGoalBefore.Response.result.goal.status -ne 'paused' -or $heldGoalAfter.Response.result.goal.status -ne 'paused') {
         throw 'The held-goal conversation continuation changed the goal pause state.'
     }
+    if ($goalBlocked.Response.result.goal.status -ne 'blocked' -or $goalAfterBlock.Response.result.goal.status -ne 'blocked') {
+        throw 'An active goal could not be changed to blocked at the retry limit.'
+    }
+    $parentRollouts = @(Get-ChildItem -LiteralPath (Join-Path $testHome 'sessions') -Recurse -Filter ("*-$injectionThreadId.jsonl") -File)
+    if ($parentRollouts.Count -ne 1 -or -not (Select-String -LiteralPath $parentRollouts[0].FullName -SimpleMatch $recoveryEventId -Quiet)) {
+        throw 'thread/inject_items did not persist the recovery event in the declared parent thread.'
+    }
 
     [pscustomobject]@{
         Status = 'passed'
@@ -229,6 +282,8 @@ try {
         SilentNormalSameTaskTurnStarted = $true
         HeldGoalConversationStarted = $true
         HeldGoalRemainedPaused = $true
+        ParentRecoveryEventInjected = $true
+        ActiveGoalBlockedAtLimit = $true
         CodexAppUIUsed = $false
     }
 }
