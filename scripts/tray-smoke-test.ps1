@@ -52,8 +52,8 @@ try {
         initial_delay_seconds = 2
         max_delay_seconds = 30
         delay_strategy = 'exponential'
-        max_consecutive_retries = 5
-        max_recovery_attempts = 15
+        max_consecutive_retries = 100
+        max_recovery_attempts = 1000
         max_parallel_retries = 2
         start_ack_timeout_seconds = 10
         auth_max_attempts = 3

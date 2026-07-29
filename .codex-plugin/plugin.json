@@ -1,6 +1,6 @@
 {
   "name": "codex-auto-retry",
-  "version": "0.6.0+codex.20260729051322",
+  "version": "0.6.0+codex.20260729065317",
   "description": "Automatically resumes Codex tasks after recoverable provider failures, with a Windows tray controller and an embedded Codex panel.",
   "author": {
     "name": "TQY Local Tools"

@@ -123,9 +123,19 @@ func TestConfigValidatesUserVisibleRetrySettings(t *testing.T) {
 		t.Fatal("zero consecutive retry limit was accepted")
 	}
 	config = defaultConfig()
-	config.MaxRecoveryAttempts = 101
+	config.MaxConsecutiveRetries = maxConsecutiveRetriesLimit
+	config.MaxRecoveryAttempts = maxRecoveryAttemptsLimit
+	if err := config.validate(); err != nil {
+		t.Fatalf("documented retry limit maximums were rejected: %v", err)
+	}
+	config.MaxConsecutiveRetries = maxConsecutiveRetriesLimit + 1
 	if err := config.validate(); err == nil {
-		t.Fatal("recovery limit above 100 was accepted")
+		t.Fatal("consecutive retry limit above the documented maximum was accepted")
+	}
+	config = defaultConfig()
+	config.MaxRecoveryAttempts = maxRecoveryAttemptsLimit + 1
+	if err := config.validate(); err == nil {
+		t.Fatal("recovery limit above the documented maximum was accepted")
 	}
 	config = defaultConfig()
 	config.InitialDelaySeconds = 10

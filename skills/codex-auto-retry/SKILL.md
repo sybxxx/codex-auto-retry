@@ -44,9 +44,9 @@ and exit. This is not a second watchdog or a separate retry engine.
 - Count recovery only when the App-created `task_started` ID has a matching
   successful `task_complete`.
 - Stop at either independent safety limit: `max_recovery_attempts` bounds all
-  automatic attempts in one fault (15 by default, 1-100), while
+  automatic attempts in one fault (15 by default, 1-1000), while
   `max_consecutive_retries` bounds retries without a visible assistant reply or
-  completed tool result (5 by default, 1-20). Visible progress resets only the
+  completed tool result (5 by default, 1-100). Visible progress resets only the
   second count; success or a new user turn resets both. Controller connection
   failures delay dispatch and consume neither budget.
 
@@ -61,7 +61,14 @@ tasks, live countdowns, pause state, and the compatibility fallback text.
   the watchdog. Normal retries do not send this text when silent continuation
   is supported.
 - Use `set_retry_settings` to change the fallback text, both retry limits, fixed
-  or doubling waits, first/fixed delay, maximum delay, and Windows notifications.
+  or doubling waits, first/fixed delay, maximum delay, and the watchdog's
+  retry-limit notification.
+- `show_notifications` controls only the watchdog alert shown when a retry limit
+  is reached. Codex App's `ChatGPT finished a turn` popup is emitted before an
+  empty response can be classified, so it cannot be selectively withdrawn. Use
+  Codex **Settings > General > Notifications > Turn completion notifications >
+  Never** to suppress all completion popups while leaving Codex permission and
+  question notifications independently configurable.
 - Goal recovery never sends the fallback text; it continues to activate the
   native Codex goal.
 - Use `set_auto_retry_paused` to pause or resume new dispatches. Do not claim

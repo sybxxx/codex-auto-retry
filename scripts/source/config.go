@@ -37,6 +37,11 @@ const defaultRetryPrompt = "继续"
 
 const maxRetryPromptRunes = 500
 
+const (
+	maxConsecutiveRetriesLimit = 100
+	maxRecoveryAttemptsLimit   = 1000
+)
+
 const currentConfigVersion = 4
 
 const (
@@ -154,11 +159,11 @@ func (c Config) validate() error {
 	if c.DelayStrategy != delayStrategyExponential && c.DelayStrategy != delayStrategyFixed {
 		return errors.New("delay_strategy must be exponential or fixed")
 	}
-	if c.MaxConsecutiveRetries < 1 || c.MaxConsecutiveRetries > 20 {
-		return errors.New("max_consecutive_retries must be between 1 and 20")
+	if c.MaxConsecutiveRetries < 1 || c.MaxConsecutiveRetries > maxConsecutiveRetriesLimit {
+		return fmt.Errorf("max_consecutive_retries must be between 1 and %d", maxConsecutiveRetriesLimit)
 	}
-	if c.MaxRecoveryAttempts < 1 || c.MaxRecoveryAttempts > 100 {
-		return errors.New("max_recovery_attempts must be between 1 and 100")
+	if c.MaxRecoveryAttempts < 1 || c.MaxRecoveryAttempts > maxRecoveryAttemptsLimit {
+		return fmt.Errorf("max_recovery_attempts must be between 1 and %d", maxRecoveryAttemptsLimit)
 	}
 	if c.MaxParallelRetries < 1 || c.MaxParallelRetries > 16 {
 		return errors.New("max_parallel_retries must be between 1 and 16")

@@ -169,8 +169,8 @@ PowerShell otherwise may exit before executing its final compound statement.
 
 Transient and empty-response failures receive bounded retries. Every automatic
 recovery increments the per-fault counter (15 by default, configurable from 1
-to 100). A second counter tracks consecutive retries without a visible assistant
-reply or completed tool result (5 by default, configurable from 1 to 20). These failures include network and
+to 1000). A second counter tracks consecutive retries without a visible assistant
+reply or completed tool result (5 by default, configurable from 1 to 100). These failures include network and
 stream interruptions, timeouts, HTTP 408/425/429, HTTP 5xx, provider overload,
 cooldown, successful completions without a final reply, and temporarily
 unavailable authentication services. An empty automatic retry remains a failure
@@ -351,3 +351,11 @@ falling back to visible navigation.
 Missing, oversized, or invalid latest settings records also prevent dispatch
 and keep that task queued. This protects task settings instead of retrying with
 the wrong defaults.
+
+Codex App owns turn-completion notifications. The App emits a completion toast
+before the watchdog's rollout scan can identify that a nominally successful
+completion had no final model reply, so the watchdog cannot selectively prevent
+or retract only that false toast. Codex's native `notifications-turn-mode =
+"off"` setting disables all turn-completion notifications. The watchdog's
+`show_notifications` setting is intentionally narrower and controls only its
+own retry-limit notification.

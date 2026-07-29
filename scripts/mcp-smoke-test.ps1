@@ -198,15 +198,15 @@ try {
     if ($updated.structuredContent.retry_prompt -ne $updatedPrompt) { throw 'Prompt update did not take effect.' }
     $settings = Call-MCPTool $process 6 'set_retry_settings' @{
         retry_prompt = $updatedPrompt
-        max_consecutive_retries = 3
-        max_recovery_attempts = 27
+        max_consecutive_retries = 100
+        max_recovery_attempts = 1000
         initial_delay_seconds = 9
         max_delay_seconds = 120
         delay_strategy = 'fixed'
         show_notifications = $false
     }
-    if ($settings.structuredContent.max_consecutive_retries -ne 3 -or
-        $settings.structuredContent.max_recovery_attempts -ne 27 -or
+    if ($settings.structuredContent.max_consecutive_retries -ne 100 -or
+        $settings.structuredContent.max_recovery_attempts -ne 1000 -or
         $settings.structuredContent.initial_delay_seconds -ne 9 -or
         $settings.structuredContent.max_delay_seconds -ne 120 -or
         $settings.structuredContent.delay_strategy -ne 'fixed' -or

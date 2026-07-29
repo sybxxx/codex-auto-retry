@@ -172,7 +172,7 @@ $enabledCheck.Location = [System.Drawing.Point]::new(18, 25)
 $enabledCheck.Size = [System.Drawing.Size]::new(160, 24)
 $enabledCheck.Checked = -not [bool]$control.paused
 $notificationsCheck = [System.Windows.Forms.CheckBox]::new()
-$notificationsCheck.Text = '达到上限时显示 Windows 通知'
+$notificationsCheck.Text = '达到重试上限时显示插件通知'
 $notificationsCheck.Location = [System.Drawing.Point]::new(250, 25)
 $notificationsCheck.Size = [System.Drawing.Size]::new(285, 24)
 $notificationsCheck.Checked = [bool]$config.show_notifications
@@ -189,9 +189,9 @@ $promptBox.Text = [string]$config.retry_prompt
 $settingsGroup.Controls.Add($promptBox)
 
 $recoveryLabel = New-Label '本次故障恢复上限' 18 151 145 22
-$recoveryBox = New-NumberBox 168 148 1 100 ([int]$config.max_recovery_attempts) 120
+$recoveryBox = New-NumberBox 168 148 1 1000 ([int]$config.max_recovery_attempts) 120
 $consecutiveLabel = New-Label '连续无进展重试上限' 310 151 128 22
-$consecutiveBox = New-NumberBox 438 148 1 20 ([int]$config.max_consecutive_retries) 120
+$consecutiveBox = New-NumberBox 438 148 1 100 ([int]$config.max_consecutive_retries) 120
 $settingsGroup.Controls.AddRange(@($recoveryLabel, $recoveryBox, $consecutiveLabel, $consecutiveBox))
 
 $strategyLabel = New-Label '等待策略' 18 193 145 22
@@ -211,7 +211,7 @@ $maxDelayBox = New-NumberBox 168 232 1 86400 ([int]$config.max_delay_seconds) 12
 $previewLabel = New-Label '' 310 231 248 43
 $previewLabel.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.AddRange(@($maxDelayLabel, $maxDelayBox, $previewLabel))
-$hint = New-Label '目标保持暂停时，后续手动消息会独立重试。' 18 278 540 24
+$hint = New-Label "目标保持暂停时，后续手动消息会独立重试。`r`nCodex 的轮次完成提醒由 Codex 自己的通知设置控制。" 18 272 540 38
 $hint.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($hint)
 

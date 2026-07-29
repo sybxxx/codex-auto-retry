@@ -402,10 +402,10 @@ function updatePromptState(): void {
   const recoveryAttempts = Number(elements.maxRecoveryAttempts.value);
   const consecutiveRetries = Number(elements.maxConsecutiveRetries.value);
   let settingsError = "";
-  if (!Number.isInteger(recoveryAttempts) || recoveryAttempts < 1 || recoveryAttempts > 100) {
-    settingsError = "本次故障恢复上限应为 1 到 100";
-  } else if (!Number.isInteger(consecutiveRetries) || consecutiveRetries < 1 || consecutiveRetries > 20) {
-    settingsError = "连续无进展重试上限应为 1 到 20";
+  if (!Number.isInteger(recoveryAttempts) || recoveryAttempts < 1 || recoveryAttempts > 1000) {
+    settingsError = "本次故障恢复上限应为 1 到 1000";
+  } else if (!Number.isInteger(consecutiveRetries) || consecutiveRetries < 1 || consecutiveRetries > 100) {
+    settingsError = "连续无进展重试上限应为 1 到 100";
   } else if ((strategy !== "fixed" && strategy !== "exponential")
     || !Number.isInteger(initialDelay) || initialDelay < 1 || initialDelay > 3600
     || !Number.isInteger(maxDelay) || maxDelay < 1 || maxDelay > 86400) {

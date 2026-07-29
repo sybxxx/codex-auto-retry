@@ -93,13 +93,13 @@ local history or remote configuration.
 `%LOCALAPPDATA%\CodexAutoRetry\config.json` owns poll and wait strategy/timing,
 the recovery and consecutive no-progress limits, provider-specific lower limits, task-start acknowledgement timeout, optional session
 roots, maximum parallel retries, the normal-conversation fallback prompt, and
-the Windows notification preference. Normal recovery first starts a silent
+the watchdog retry-limit notification preference. Normal recovery first starts a silent
 empty-input continuation. The fallback prompt defaults to `继续`, is limited to
 500 characters, and is used only when Codex explicitly rejects an empty-input
 turn. It is reloaded immediately before each normal-conversation dispatch. The
-per-fault recovery limit defaults to 15 and accepts values from 1 through 100.
+per-fault recovery limit defaults to 15 and accepts values from 1 through 1000.
 The consecutive no-progress limit defaults to five and accepts values from 1
-through 20. Waiting can stay fixed or double from the initial delay up to the
+through 100. Waiting can stay fixed or double from the initial delay up to the
 maximum; visible progress restarts that doubling sequence.
 
 Configuration version 2 migrated the old forced single UI action to four

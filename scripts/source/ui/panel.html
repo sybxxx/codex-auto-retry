@@ -98,9 +98,9 @@
           </div>
           <div class="numeric-settings">
             <label for="max-recovery-attempts">本次故障恢复上限</label>
-            <input id="max-recovery-attempts" type="number" min="1" max="100" inputmode="numeric" />
+            <input id="max-recovery-attempts" type="number" min="1" max="1000" inputmode="numeric" />
             <label for="max-consecutive-retries">连续无进展重试上限</label>
-            <input id="max-consecutive-retries" type="number" min="1" max="20" inputmode="numeric" />
+            <input id="max-consecutive-retries" type="number" min="1" max="100" inputmode="numeric" />
             <div class="delay-strategy">
               <span id="delay-strategy-label">等待策略</span>
               <div class="segmented-control" role="group" aria-labelledby="delay-strategy-label">
@@ -124,7 +124,7 @@
           <div class="settings-footer">
             <label class="checkbox-setting">
               <input id="notifications-toggle" type="checkbox" />
-              <span>达到上限时显示 Windows 通知</span>
+              <span>达到重试上限时显示插件通知</span>
             </label>
             <button class="command-button" id="save-settings" type="button" disabled>
               <i data-lucide="save"></i>

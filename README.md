@@ -42,9 +42,9 @@ behavior remains independent of whether either settings surface is open.
   opened or resumed as independent user tasks, so one parent workflow cannot
   create duplicate retry entries for its internal workers.
 - Tracks two independent safety limits. `本次故障恢复` counts every automatic
-  recovery in one outage (15 by default, configurable from 1 to 100).
+  recovery in one outage (15 by default, configurable from 1 to 1000).
   `连续无进展` counts retries that produce neither a visible assistant reply
-  nor a completed tool result (5 by default, configurable from 1 to 20). A
+  nor a completed tool result (5 by default, configurable from 1 to 100). A
   successful completion or a new user turn clears both; visible progress clears
   only the consecutive no-progress count.
 - Supports a fixed interval or doubling delays capped at a configurable maximum.
@@ -72,7 +72,8 @@ menu opens settings, pauses or resumes dispatch, and exits the watchdog.
 
 The graphical window shows every waiting, active, and exhausted task using only
 privacy-safe task IDs. It edits the fallback retry text, both retry limits,
-fixed or doubling waits, first/fixed delay, maximum delay, and notifications.
+fixed or doubling waits, first/fixed delay, maximum delay, and the watchdog's
+retry-limit notification.
 An exhausted task can be restarted with a fresh attempt budget. These settings
 are shared with the embedded Codex panel and take effect without restarting the
 watchdog.
@@ -89,7 +90,7 @@ starter prompt. The panel opens inside the current Codex task and shows:
 - a persistent pause switch for new retry dispatches; and
 - the editable fallback retry text, limited to 500 characters;
 - the per-fault recovery limit, consecutive no-progress limit, and wait strategy; and
-- the Windows notification preference.
+- the watchdog retry-limit notification preference.
 
 Normal conversations use silent continuation first. The default fallback text
 is `继续` and is used only if the installed Codex version explicitly rejects
@@ -172,6 +173,15 @@ also stops automatic retry until the next Windows sign-in or reinstall/start.
 
 If the failed rollout does not contain valid settings records, recovery also
 remains queued instead of resuming the task with replacement defaults.
+
+The `ChatGPT finished a turn` popup is emitted by Codex App before this watchdog
+can classify a completion as an empty-response failure. It therefore cannot be
+selectively withdrawn only for false completions. Codex App's own **Settings >
+General > Notifications > Turn completion notifications > Never** option is the
+reliable way to suppress it, but that option also suppresses legitimate turn
+completion notifications. Permission and question notifications remain
+separate Codex settings. The notification checkbox in this plugin controls only
+the watchdog alert shown when a retry limit is reached.
 
 Third-party license notices for the WebSocket transport, MCP SDKs, and embedded
 panel libraries are in
