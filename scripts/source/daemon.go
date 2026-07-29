@@ -201,16 +201,19 @@ func (d *daemon) rescheduleAwaitingLocked(threadID string, thread ThreadState, n
 	delay := retryDelay(dispatchFailures, d.config)
 	thread.Awaiting = nil
 	thread.Pending = &PendingRetry{
-		EventKey:         awaiting.EventKey,
-		FailedTurnID:     awaiting.FailedTurnID,
-		FailedAt:         awaiting.FailedAt,
-		Class:            awaiting.Class,
-		DueAt:            now.Add(delay),
-		CodexHome:        awaiting.CodexHome,
-		RolloutPath:      awaiting.RolloutPath,
-		Attempt:          awaiting.Attempt,
-		MaxAttempts:      awaiting.MaxAttempts,
-		DispatchFailures: dispatchFailures,
+		EventKey:            awaiting.EventKey,
+		FailedTurnID:        awaiting.FailedTurnID,
+		FailedAt:            awaiting.FailedAt,
+		OriginTurnStartedAt: awaiting.OriginTurnStartedAt,
+		Class:               awaiting.Class,
+		DueAt:               now.Add(delay),
+		CodexHome:           awaiting.CodexHome,
+		RolloutPath:         awaiting.RolloutPath,
+		Attempt:             awaiting.Attempt,
+		MaxAttempts:         awaiting.MaxAttempts,
+		ConsecutiveRetry:    awaiting.ConsecutiveRetry,
+		MaxConsecutive:      awaiting.MaxConsecutive,
+		DispatchFailures:    dispatchFailures,
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry rescheduled thread=%s reason=%s delay_seconds=%d", shortThreadID(threadID), reason, int(delay.Seconds()))
@@ -230,11 +233,13 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	}
 	candidates := make([]candidate, 0)
 	for threadID, thread := range d.state.Threads {
-		if thread.GoalHeld {
+		if thread.GoalHeld && !heldConversationStillAllowed(thread, thread.GoalStatus, thread.GoalUpdatedAt) {
 			if thread.Pending != nil || thread.Awaiting != nil {
 				thread.Pending = nil
 				thread.Awaiting = nil
-				thread.ConsecutiveFailures = 0
+				thread.RecoveryAttempts = 0
+				thread.ConsecutiveRetries = 0
+				thread.CurrentTurnProgress = false
 				thread.Stopped = nil
 				d.state.Threads[threadID] = thread
 			}
@@ -263,31 +268,37 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		thread.Pending = nil
 		thread.LastAutoRetryAt = now
 		thread.Awaiting = &AwaitingRetry{
-			EventKey:          item.pending.EventKey,
-			FailedTurnID:      item.pending.FailedTurnID,
-			FailedAt:          item.pending.FailedAt,
-			Class:             item.pending.Class,
-			Action:            actionDispatching,
-			Attempt:           item.pending.Attempt,
-			MaxAttempts:       item.pending.MaxAttempts,
-			DispatchFailures:  item.pending.DispatchFailures,
-			DispatchStartedAt: now,
-			StartDeadline:     now.Add(time.Duration(d.config.StartAckTimeoutSeconds) * time.Second),
-			CodexHome:         item.pending.CodexHome,
-			RolloutPath:       item.pending.RolloutPath,
+			EventKey:            item.pending.EventKey,
+			FailedTurnID:        item.pending.FailedTurnID,
+			FailedAt:            item.pending.FailedAt,
+			OriginTurnStartedAt: item.pending.OriginTurnStartedAt,
+			Class:               item.pending.Class,
+			Action:              actionDispatching,
+			Attempt:             item.pending.Attempt,
+			MaxAttempts:         item.pending.MaxAttempts,
+			ConsecutiveRetry:    item.pending.ConsecutiveRetry,
+			MaxConsecutive:      item.pending.MaxConsecutive,
+			DispatchFailures:    item.pending.DispatchFailures,
+			DispatchStartedAt:   now,
+			StartDeadline:       now.Add(time.Duration(d.config.StartAckTimeoutSeconds) * time.Second),
+			CodexHome:           item.pending.CodexHome,
+			RolloutPath:         item.pending.RolloutPath,
 		}
 		d.state.Threads[item.threadID] = thread
 		job := RetryJob{
-			ThreadID:         item.threadID,
-			FailedTurnID:     item.pending.FailedTurnID,
-			FailedAt:         item.pending.FailedAt,
-			EventKey:         item.pending.EventKey,
-			Class:            item.pending.Class,
-			CodexHome:        item.pending.CodexHome,
-			RolloutPath:      item.pending.RolloutPath,
-			Attempt:          item.pending.Attempt,
-			MaxAttempts:      item.pending.MaxAttempts,
-			DispatchFailures: item.pending.DispatchFailures,
+			ThreadID:            item.threadID,
+			FailedTurnID:        item.pending.FailedTurnID,
+			FailedAt:            item.pending.FailedAt,
+			OriginTurnStartedAt: item.pending.OriginTurnStartedAt,
+			EventKey:            item.pending.EventKey,
+			Class:               item.pending.Class,
+			CodexHome:           item.pending.CodexHome,
+			RolloutPath:         item.pending.RolloutPath,
+			Attempt:             item.pending.Attempt,
+			MaxAttempts:         item.pending.MaxAttempts,
+			ConsecutiveRetry:    item.pending.ConsecutiveRetry,
+			MaxConsecutive:      item.pending.MaxConsecutive,
+			DispatchFailures:    item.pending.DispatchFailures,
 		}
 		d.active[item.threadID] = job
 		jobs = append(jobs, job)
@@ -302,7 +313,8 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 	d.mu.Lock()
 	thread := d.state.Threads[job.ThreadID]
 	if thread.Awaiting == nil || thread.Awaiting.EventKey != job.EventKey ||
-		thread.Awaiting.Attempt != job.Attempt || thread.GoalHeld {
+		thread.Awaiting.Attempt != job.Attempt ||
+		(thread.GoalHeld && !heldConversationStillAllowed(thread, thread.GoalStatus, thread.GoalUpdatedAt)) {
 		delete(d.active, job.ThreadID)
 		d.mu.Unlock()
 		d.logger.Printf("retry action ignored thread=%s reason=stale_job", shortThreadID(job.ThreadID))
@@ -333,7 +345,9 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		// failed task remains independently queued.
 		d.rescheduleAwaitingLocked(job.ThreadID, thread, finishedAt, controllerFailureReason(result, nil))
 	} else if result.Outcome == outcomeNotApplicable {
-		thread.ConsecutiveFailures = 0
+		thread.RecoveryAttempts = 0
+		thread.ConsecutiveRetries = 0
+		thread.CurrentTurnProgress = false
 		thread.Pending = nil
 		thread.Awaiting = nil
 		thread.Stopped = nil

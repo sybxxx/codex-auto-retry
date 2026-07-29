@@ -42,23 +42,28 @@ UI surface that caused both reported failures.
 
 1. Codex writes a JSONL lifecycle event to a session rollout.
 2. The scanner reads only newly appended bytes using a persisted file cursor.
-3. The event parser accepts only `event_msg` records with payload type
+3. The event parser accepts `event_msg` records with payload type
    `task_started`, `task_complete`, `turn_aborted`, or
    `thread_goal_updated`. For a completion it derives only whether
    `last_agent_message` is known and non-empty, then discards the value. A goal
    event is routed by its payload task ID because Codex may persist it in
    another task's rollout; only its status and lifecycle timestamps are retained.
-4. A non-active goal state creates a durable hold and cancels pending,
-   awaiting, or starting recovery. Only an explicit later `active` goal update
-   clears that hold. A `blocked` state is exempt only when its update time is
-   from two seconds before through five seconds after the matching provider
-   failure, which allows for timestamp precision and event ordering.
+   It also accepts `response_item` records only when their metadata identifies
+   a visible assistant message or completed tool result. Those items become one
+   boolean progress marker; their content is never decoded or retained.
+4. A non-active goal state creates a durable hold and cancels goal recovery.
+   Only an explicit later `active` goal update clears that hold. A `blocked`
+   state is exempt when its update time is from two seconds before through five
+   seconds after the matching provider failure. A second narrow exception
+   records the start time of a later externally started conversation turn: its
+   failure may be retried without changing a paused or pre-existing blocked
+   goal, provided the held goal predates that turn and remains unchanged.
 5. A `task_complete` with an explicit provider error or a known empty final
    reply is classified as retryable, limited-retry, or non-retryable. A
    `turn_aborted` clears recovery and records the aborted turn ID, so a delayed
    completion for the same turn cannot override user cancellation.
-6. A retryable failure is deduplicated and scheduled with exponential backoff
-   in state owned by that task ID.
+6. A retryable failure is deduplicated and scheduled with either a fixed wait
+   or a doubling wait capped at the configured maximum, in state owned by that task ID.
 7. The controller discovers Codex App's loopback debugging port, verifies an
    exact `app://-/index.html` Codex page, and connects to its renderer.
 8. A reverse reader finds the latest `turn_context` and
@@ -69,16 +74,19 @@ UI surface that caused both reported failures.
    `thread/resume` with those settings on the existing app-server connection.
 10. Parent-owned subagent rollouts are removed from the independent queue; their
    lifecycle remains part of the parent task that created them.
-11. The renderer reads goal state before and after hydration/resume. A paused
-   goal or a blocked goal that predates the provider failure stops recovery. A
-   provider-attributed blocked goal is changed to `active`; completed,
-   usage-limited, budget-limited, changed, and unknown states fail closed. Only
-   a task with no goal may fall through to normal continuation.
-12. Normal continuation first calls `turn/start` with an empty input array. It
+11. The renderer reads goal state before and after hydration/resume. A
+   provider-attributed blocked goal is changed to `active`. Completed,
+   usage-limited, budget-limited, changed, and unknown states fail closed. A
+   paused or pre-existing blocked goal normally stops recovery. It permits only
+   a later externally started conversation turn whose recorded start time is
+   after the held goal update; both reads must return the same held revision.
+12. Normal continuation, including the held-goal exception, first calls
+   `turn/start` with an empty input array. It
    starts another model inference in the same task without a user-message item,
    while preserving the original request and completed tool results. The
    configured text is used only when the App returns an explicit empty-input
-   validation error. The controller never rolls back or replays a completed turn.
+   validation error. The held-goal path never calls `thread/goal/set`, and the
+   controller never rolls back or replays a completed turn.
 13. The first lifecycle `task_started` in the dispatch window becomes the retry
    turn ID. Only a `task_complete` with that same ID can recover the chain or
    schedule its next provider retry.
@@ -100,8 +108,8 @@ UI surface that caused both reported failures.
 6. `retry_now` and `cancel_retry` create unique atomic command files. During its
    next scan tick, the watchdog consumes those commands while holding the same
    lock that owns `state.json`.
-7. `set_retry_settings` atomically updates the prompt, global consecutive
-   attempt limit, first delay, maximum delay, and notification preference.
+7. `set_retry_settings` atomically updates the prompt, both retry limits, wait
+   strategy, first/fixed delay, maximum delay, and notification preference.
    `restart_retry` converts only an exhausted entry into an immediate first
    attempt with a fresh budget.
 
@@ -159,21 +167,27 @@ PowerShell otherwise may exit before executing its final compound statement.
 
 ## Concurrency And Retry Policy
 
-Transient and empty-response failures receive bounded retries with delays from five seconds up to
-five minutes. The default is five automatic attempts per consecutive failure
-chain and the user may select 1 through 20. These failures include network and
+Transient and empty-response failures receive bounded retries. Every automatic
+recovery increments the per-fault counter (15 by default, configurable from 1
+to 100). A second counter tracks consecutive retries without a visible assistant
+reply or completed tool result (5 by default, configurable from 1 to 20). These failures include network and
 stream interruptions, timeouts, HTTP 408/425/429, HTTP 5xx, provider overload,
 cooldown, successful completions without a final reply, and temporarily
-unavailable authentication services. An empty automatic retry remains a
-failure until the matching completion contains a real final reply.
+unavailable authentication services. An empty automatic retry remains a failure
+until the matching completion contains a real final reply. Visible progress resets
+only the no-progress counter; it never erases the per-fault safety budget. Fixed
+waiting always uses the configured interval. Doubling waiting follows the
+no-progress counter and is capped by the maximum, so useful progress restarts
+the wait sequence.
 
 Generic 401/403 authentication errors and unknown provider errors have limited
-budgets that can only lower the global limit. Invalid payloads, context limits,
+budgets that can only lower the two configured limits. Invalid payloads, context limits,
 missing models, policy errors, approval failures, permissions, and user
 cancellation are never retried. Controller transport failures are tracked
-separately and never consume the provider attempt budget.
+separately and consume neither provider retry counter.
 
-Every task has separate pending, awaiting, attempt, and dispatch-failure state.
+Every task has separate pending, awaiting, recovery-attempt, consecutive
+no-progress, and dispatch-failure state.
 Due tasks are dispatched up to `max_parallel_retries` instead of competing for
 one navigation surface. Activity in one task delays only that task. It cannot
 cancel or block another task's queue entry.
@@ -204,10 +218,12 @@ tracked.
 
 An intentional goal hold is not inferred from assistant prose. It is driven
 only by Codex goal lifecycle status and update time. A normal task start cannot
-clear it, so a user who briefly resumes and then pauses a goal remains
-protected across later failures and watchdog restarts. Pausing during a queued
-or starting retry clears its state and cancels the controller context; any late
-controller result is treated as stale.
+clear it. Instead, the watchdog separately records that external turn's start
+time so only its conversation continuation can run while the goal remains
+held. A later pause or goal revision cancels that exception. This protects a
+user who briefly resumes and then pauses a goal across failures and watchdog
+restarts. Pausing during a queued or starting retry clears its state and
+cancels the controller context; any late controller result is treated as stale.
 
 On startup, an interrupted controller dispatch that never received a
 `task_started` acknowledgement is moved back to pending immediately. An
@@ -230,7 +246,8 @@ becoming additional writers for `state.json`.
 ## Privacy And Security
 
 - Lifecycle scanning parses only start, completion, abort, and goal status/time
-  events. For a completion it retains only known/non-empty booleans for the
+  events, plus assistant/tool metadata needed to derive a progress boolean. For
+  a completion it retains only known/non-empty booleans for the
   final message. For a goal it retains the payload task ID, status, and update time,
   but not the objective. The separate
   resume-settings reader inspects only the latest `turn_context` and decodes a
@@ -251,8 +268,9 @@ becoming additional writers for `state.json`.
 ## Verification
 
 - Go unit tests cover classification, privacy filtering, payload-based goal
-  routing, intentional pause before/during retry, blocked-failure attribution,
-  hold persistence across restart, latest-context reverse lookup, allowlisted
+  routing, intentional pause before/during retry, later external conversation
+  turns beside a held goal, blocked-failure attribution, dual retry limits,
+  visible-progress resets, hold persistence across restart, latest-context reverse lookup, allowlisted
   settings, configuration migration, baselining, mirroring, strict turn
   correlation, per-task activity delays, bounded parallel dispatch, renderer
   target validation, fixed-method safety, and two simultaneous tasks with
@@ -271,8 +289,9 @@ becoming additional writers for `state.json`.
 - `app-server-protocol-smoke-test.ps1` uses a temporary `CODEX_HOME` to prove
   that model, provider, service tier, workspace, approvals, permissions, and
   reasoning effort survive resume; goal activation starts native continuation;
-  and empty-input `turn/start` creates a normal continuation in the same task without using
-  Codex App UI.
+  empty-input `turn/start` creates a normal continuation in the same task; and
+  the same continuation can start beside an unchanged paused goal without
+  activating it or using Codex App UI.
 - `empty-response-protocol-smoke-test.ps1` uses a local fake Responses API and
   temporary `CODEX_HOME` to reproduce an HTTP 200 completion with zero model
   output. It proves that silent continuation sends exactly one additional

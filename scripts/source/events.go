@@ -30,7 +30,15 @@ type eventPayload struct {
 	} `json:"goal"`
 }
 
+type responseItemPayload struct {
+	Type string `json:"type"`
+	Role string `json:"role"`
+}
+
 func parseRelevantEvent(line []byte) (RelevantEvent, bool) {
+	if event, ok := parseProgressEvent(line); ok {
+		return event, true
+	}
 	if !bytes.Contains(line, []byte(`"event_msg"`)) ||
 		(!bytes.Contains(line, []byte(`"task_started"`)) &&
 			!bytes.Contains(line, []byte(`"task_complete"`)) &&
@@ -81,6 +89,36 @@ func parseRelevantEvent(line []byte) (RelevantEvent, bool) {
 		event.GoalUpdatedAt = persistedGoalTime(payload.Goal.UpdatedAt, timestamp)
 	}
 	return event, true
+}
+
+func parseProgressEvent(line []byte) (RelevantEvent, bool) {
+	if !bytes.Contains(line, []byte(`"response_item"`)) ||
+		(!bytes.Contains(line, []byte(`"custom_tool_call_output"`)) &&
+			!bytes.Contains(line, []byte(`"function_call_output"`)) &&
+			!bytes.Contains(line, []byte(`"message"`))) {
+		return RelevantEvent{}, false
+	}
+	var envelope eventEnvelope
+	if json.Unmarshal(line, &envelope) != nil || envelope.Type != "response_item" {
+		return RelevantEvent{}, false
+	}
+	var payload responseItemPayload
+	if json.Unmarshal(envelope.Payload, &payload) != nil {
+		return RelevantEvent{}, false
+	}
+	progress := payload.Type == "custom_tool_call_output" ||
+		payload.Type == "function_call_output" ||
+		(payload.Type == "message" && payload.Role == "assistant")
+	if !progress {
+		return RelevantEvent{}, false
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, envelope.Timestamp)
+	if err != nil {
+		timestamp = time.Now().UTC()
+	}
+	// This event intentionally retains only the existence of visible assistant
+	// progress. It never decodes or stores message or tool-result content.
+	return RelevantEvent{Kind: "task_progress", Timestamp: timestamp}, true
 }
 
 func completionMessageState(raw json.RawMessage) (known bool, present bool) {

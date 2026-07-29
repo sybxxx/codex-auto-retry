@@ -21,9 +21,11 @@ behavior remains independent of whether either settings surface is open.
   goal that can be attributed to the same provider failure. Codex then creates
   the continuation turn itself.
 - Treats a user or AI pause, including a goal waiting for review, as
-  authoritative. A pause before failure, during the countdown, or while the
-  controller is starting cancels that recovery; only an explicit later
-  `active` goal update clears the hold.
+  authoritative for goal recovery. A pause during the failed turn, countdown,
+  or controller startup cancels recovery; only an explicit later `active` goal
+  update clears the goal hold. If the pause predates a later user-started
+  conversation turn, a provider failure in that later turn may be silently
+  continued while the goal remains paused and unchanged.
 - Never converts completed, usage-limited, budget-limited, or unknown goal
   states into a normal-conversation `continue` turn.
 - In a normal conversation, starts an empty-input continuation in that same
@@ -39,17 +41,22 @@ behavior remains independent of whether either settings surface is open.
 - Internal subagent rollouts are owned by their parent task. They are not
   opened or resumed as independent user tasks, so one parent workflow cannot
   create duplicate retry entries for its internal workers.
-- Stops a consecutive provider-failure chain after five automatic attempts by
-  default. The limit can be set from 1 to 20; a successful completion or a new
-  user turn resets it.
-- Uses increasing delays up to five minutes and correlates the new
+- Tracks two independent safety limits. `本次故障恢复` counts every automatic
+  recovery in one outage (15 by default, configurable from 1 to 100).
+  `连续无进展` counts retries that produce neither a visible assistant reply
+  nor a completed tool result (5 by default, configurable from 1 to 20). A
+  successful completion or a new user turn clears both; visible progress clears
+  only the consecutive no-progress count.
+- Supports a fixed interval or doubling delays capped at a configurable maximum.
+  Doubling follows the consecutive no-progress count, so visible progress starts
+  the delay sequence over. It correlates the new
   `task_started` turn ID with its matching `task_complete`. An unrelated
   successful turn cannot falsely mark a retry as recovered.
 
 The watchdog retries network failures, timeouts, rate limits, HTTP 5xx
 responses, interrupted streams, successful completions with no final model
 reply, and temporarily unavailable authentication services within the
-configured consecutive-attempt limit. Ambiguous or
+configured dual limits. Ambiguous or
 persistent authentication failures may have a lower safety limit. A temporary
 inability to reach Codex App delays recovery without consuming an attempt.
 User cancellation, invalid requests, missing models, context length errors,
@@ -64,8 +71,8 @@ countdown. Double-clicking opens the graphical settings window. The right-click
 menu opens settings, pauses or resumes dispatch, and exits the watchdog.
 
 The graphical window shows every waiting, active, and exhausted task using only
-privacy-safe task IDs. It edits the fallback retry text, consecutive
-attempt limit, first delay, maximum delay, and Windows notification preference.
+privacy-safe task IDs. It edits the fallback retry text, both retry limits,
+fixed or doubling waits, first/fixed delay, maximum delay, and notifications.
 An exhausted task can be restarted with a fresh attempt budget. These settings
 are shared with the embedded Codex panel and take effect without restarting the
 watchdog.
@@ -81,7 +88,7 @@ starter prompt. The panel opens inside the current Codex task and shows:
 - exhausted tasks and a control to restart their attempt budget;
 - a persistent pause switch for new retry dispatches; and
 - the editable fallback retry text, limited to 500 characters;
-- the consecutive-attempt limit and backoff timing; and
+- the per-fault recovery limit, consecutive no-progress limit, and wait strategy; and
 - the Windows notification preference.
 
 Normal conversations use silent continuation first. The default fallback text
@@ -96,15 +103,18 @@ another task. Closing the panel has no effect on the global watchdog.
 
 ## Safety And Privacy
 
-The event scanner accepts only `task_started`, `task_complete`, `turn_aborted`,
-and `thread_goal_updated` lifecycle records. For a completion it retains only
+The event scanner accepts lifecycle records plus privacy-bounded progress
+markers. For a completion it retains only
 whether `last_agent_message` was present and non-empty, never its contents. A
 completion with no explicit error and no final reply is treated as a temporary
 empty-response failure. An abort remains authoritative even if a delayed
 completion for that same turn is written afterward. For goal updates it retains only the
 target task ID, status, and lifecycle timestamps; the event can be routed correctly even
 when Codex persists it in another task's rollout. It never reads the goal
-objective or searches conversation text for words such as "review". Immediately
+objective or searches conversation text for words such as "review". An
+assistant message or completed tool-result item contributes only a boolean
+"this retry made visible progress" marker; its content is never decoded or
+stored. Immediately
 before recovery, a separate settings reader decodes only an allowlisted subset
 of the latest `turn_context` and
 `thread_settings_applied` records: working directory, workspace roots, model

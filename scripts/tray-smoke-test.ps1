@@ -47,11 +47,13 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
     $config = [ordered]@{
-        config_version = 3
+        config_version = 4
         poll_interval_seconds = 1
         initial_delay_seconds = 2
         max_delay_seconds = 30
-        max_retry_attempts = 5
+        delay_strategy = 'exponential'
+        max_consecutive_retries = 5
+        max_recovery_attempts = 15
         max_parallel_retries = 2
         start_ack_timeout_seconds = 10
         auth_max_attempts = 3

@@ -15,7 +15,9 @@ type Config struct {
 	PollIntervalSeconds    int      `json:"poll_interval_seconds"`
 	InitialDelaySeconds    int      `json:"initial_delay_seconds"`
 	MaxDelaySeconds        int      `json:"max_delay_seconds"`
-	MaxRetryAttempts       int      `json:"max_retry_attempts"`
+	DelayStrategy          string   `json:"delay_strategy"`
+	MaxConsecutiveRetries  int      `json:"max_consecutive_retries"`
+	MaxRecoveryAttempts    int      `json:"max_recovery_attempts"`
 	MaxParallelRetries     int      `json:"max_parallel_retries"`
 	StartAckTimeoutSeconds int      `json:"start_ack_timeout_seconds"`
 	AuthMaxAttempts        int      `json:"auth_max_attempts"`
@@ -35,7 +37,12 @@ const defaultRetryPrompt = "继续"
 
 const maxRetryPromptRunes = 500
 
-const currentConfigVersion = 3
+const currentConfigVersion = 4
+
+const (
+	delayStrategyExponential = "exponential"
+	delayStrategyFixed       = "fixed"
+)
 
 func defaultConfig() Config {
 	return Config{
@@ -43,7 +50,9 @@ func defaultConfig() Config {
 		PollIntervalSeconds:    2,
 		InitialDelaySeconds:    5,
 		MaxDelaySeconds:        300,
-		MaxRetryAttempts:       5,
+		DelayStrategy:          delayStrategyExponential,
+		MaxConsecutiveRetries:  5,
+		MaxRecoveryAttempts:    15,
 		MaxParallelRetries:     4,
 		StartAckTimeoutSeconds: 30,
 		AuthMaxAttempts:        6,
@@ -77,14 +86,41 @@ func loadOrCreateConfig(path string) (Config, error) {
 	changed := false
 	// Version 1 forced one global UI action because retries navigated the same
 	// Codex window. Version 2 uses independent background requests. Version 3
-	// adds a user-visible global retry cap and notification preference.
+	// added one ambiguous retry cap. Version 4 separates the consecutive retry
+	// guard from the per-fault recovery budget and makes delay behavior explicit.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
 		changed = true
-	} else if cfg.ConfigVersion == 2 {
+	} else if cfg.ConfigVersion >= 1 && cfg.ConfigVersion < currentConfigVersion {
 		cfg.ConfigVersion = currentConfigVersion
 		changed = true
+	}
+	if cfg.ConfigVersion == currentConfigVersion {
+		legacyLimit := 0
+		if raw, found := fields["max_retry_attempts"]; found {
+			_ = json.Unmarshal(raw, &legacyLimit)
+		}
+		if _, found := fields["max_consecutive_retries"]; !found {
+			// The old setting actually bounded the entire recovery chain even
+			// though the UI called it consecutive retries. Preserve that value
+			// below as the recovery budget and introduce the safer default for
+			// retries that make no visible progress.
+			cfg.MaxConsecutiveRetries = defaultConfig().MaxConsecutiveRetries
+			changed = true
+		}
+		if _, found := fields["max_recovery_attempts"]; !found {
+			if legacyLimit > 0 {
+				cfg.MaxRecoveryAttempts = legacyLimit
+			} else {
+				cfg.MaxRecoveryAttempts = defaultConfig().MaxRecoveryAttempts
+			}
+			changed = true
+		}
+		if _, found := fields["delay_strategy"]; !found {
+			cfg.DelayStrategy = delayStrategyExponential
+			changed = true
+		}
 	}
 	if cfg.RetryPrompt == legacyRetryPrompt || cfg.RetryPrompt == "Continue." {
 		cfg.RetryPrompt = defaultRetryPrompt
@@ -111,11 +147,18 @@ func (c Config) validate() error {
 	if c.InitialDelaySeconds < 1 || c.InitialDelaySeconds > 3600 {
 		return errors.New("initial_delay_seconds must be between 1 and 3600")
 	}
-	if c.MaxDelaySeconds < c.InitialDelaySeconds || c.MaxDelaySeconds > 86400 {
-		return errors.New("max_delay_seconds must be at least initial_delay_seconds and no more than 86400")
+	if c.MaxDelaySeconds < 1 || c.MaxDelaySeconds > 86400 ||
+		(c.DelayStrategy == delayStrategyExponential && c.MaxDelaySeconds < c.InitialDelaySeconds) {
+		return errors.New("max_delay_seconds must be between 1 and 86400 and at least initial_delay_seconds for exponential delays")
 	}
-	if c.MaxRetryAttempts < 1 || c.MaxRetryAttempts > 20 {
-		return errors.New("max_retry_attempts must be between 1 and 20")
+	if c.DelayStrategy != delayStrategyExponential && c.DelayStrategy != delayStrategyFixed {
+		return errors.New("delay_strategy must be exponential or fixed")
+	}
+	if c.MaxConsecutiveRetries < 1 || c.MaxConsecutiveRetries > 20 {
+		return errors.New("max_consecutive_retries must be between 1 and 20")
+	}
+	if c.MaxRecoveryAttempts < 1 || c.MaxRecoveryAttempts > 100 {
+		return errors.New("max_recovery_attempts must be between 1 and 100")
 	}
 	if c.MaxParallelRetries < 1 || c.MaxParallelRetries > 16 {
 		return errors.New("max_parallel_retries must be between 1 and 16")

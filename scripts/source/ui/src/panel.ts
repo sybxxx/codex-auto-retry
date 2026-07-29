@@ -34,8 +34,10 @@ type ManagedRetry = {
   class: FailureClass;
   due_at?: string;
   seconds_remaining: number;
-  attempt: number;
-  max_attempts?: number;
+  recovery_attempt: number;
+  max_recovery_attempts?: number;
+  consecutive_retry: number;
+  max_consecutive_retries?: number;
   action?: string;
   can_retry_now: boolean;
   can_cancel: boolean;
@@ -49,9 +51,11 @@ type ManagementSnapshot = {
   heartbeat_stale: boolean;
   paused: boolean;
   retry_prompt: string;
-  max_retry_attempts: number;
+  max_recovery_attempts: number;
+  max_consecutive_retries: number;
   initial_delay_seconds: number;
   max_delay_seconds: number;
+  delay_strategy: "fixed" | "exponential";
   show_notifications: boolean;
   now: string;
   last_scan_at?: string;
@@ -89,9 +93,14 @@ const elements = {
   promptCount: required<HTMLElement>("prompt-count"),
   promptError: required<HTMLElement>("prompt-error"),
   savePrompt: required<HTMLButtonElement>("save-prompt"),
-  maxAttempts: required<HTMLInputElement>("max-attempts"),
+  maxRecoveryAttempts: required<HTMLInputElement>("max-recovery-attempts"),
+  maxConsecutiveRetries: required<HTMLInputElement>("max-consecutive-retries"),
+  delayStrategies: requiredAll<HTMLInputElement>('input[name="delay-strategy"]'),
+  initialDelayLabel: required<HTMLElement>("initial-delay-label"),
   initialDelay: required<HTMLInputElement>("initial-delay"),
   maxDelay: required<HTMLInputElement>("max-delay"),
+  delayPreview: required<HTMLElement>("delay-preview"),
+  settingsError: required<HTMLElement>("settings-error"),
   notificationsToggle: required<HTMLInputElement>("notifications-toggle"),
   saveSettings: required<HTMLButtonElement>("save-settings"),
 };
@@ -107,6 +116,12 @@ function required<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing element: ${id}`);
   return element as T;
+}
+
+function requiredAll<T extends Element>(selector: string): T[] {
+  const values = Array.from(document.querySelectorAll<T>(selector));
+  if (values.length === 0) throw new Error(`Missing elements: ${selector}`);
+  return values;
 }
 
 function refreshIcons(): void {
@@ -143,9 +158,11 @@ function render(next: ManagementSnapshot): void {
   elements.pauseToggle.disabled = false;
   if (!keepSettingsDraft) {
     elements.retryPrompt.value = next.retry_prompt;
-    elements.maxAttempts.value = String(next.max_retry_attempts);
+    elements.maxRecoveryAttempts.value = String(next.max_recovery_attempts);
+    elements.maxConsecutiveRetries.value = String(next.max_consecutive_retries);
     elements.initialDelay.value = String(next.initial_delay_seconds);
     elements.maxDelay.value = String(next.max_delay_seconds);
+    for (const option of elements.delayStrategies) option.checked = option.value === next.delay_strategy;
     elements.notificationsToggle.checked = next.show_notifications;
   }
   savedSettings = serializedSettings(next);
@@ -237,12 +254,16 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
   title.title = retry.thread_id;
   const meta = document.createElement("div");
   meta.className = "queue-meta";
-  const attempt = retry.max_attempts
-    ? `第 ${retry.attempt}/${retry.max_attempts} 次`
-    : `第 ${retry.attempt} 次`;
+  const recovery = retry.max_recovery_attempts
+    ? `本次故障恢复 ${retry.recovery_attempt}/${retry.max_recovery_attempts}`
+    : `本次故障恢复 ${retry.recovery_attempt}`;
+  const consecutive = retry.max_consecutive_retries
+    ? `连续无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries}`
+    : `连续无进展 ${retry.consecutive_retry}`;
   meta.append(
     textSpan(classLabel(retry.class)),
-    textSpan(attempt),
+    textSpan(recovery),
+    textSpan(consecutive),
     textSpan(retry.state === "pending" ? "等待中" : retry.state === "stopped" ? "达到上限" : actionLabel(retry.action)),
   );
   copy.append(title, meta);
@@ -258,7 +279,7 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
     secondary.textContent = paused ? "恢复后执行" : "后重试";
   } else if (retry.state === "stopped") {
     primary.textContent = "已停止";
-    secondary.textContent = `${retry.attempt}/${retry.max_attempts ?? retry.attempt} 次失败`;
+    secondary.textContent = stopReasonLabel(retry);
   } else {
     primary.textContent = retry.state === "running" ? "执行中" : "启动中";
     secondary.textContent = actionLabel(retry.action);
@@ -359,6 +380,13 @@ function actionLabel(value?: string): string {
   return value ? (labels[value] ?? "正在处理") : "正在处理";
 }
 
+function stopReasonLabel(retry: ManagedRetry): string {
+  if (retry.stop_reason === "consecutive_retry_limit") {
+    return `无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries ?? retry.consecutive_retry} 达上限`;
+  }
+  return `本次恢复 ${retry.recovery_attempt}/${retry.max_recovery_attempts ?? retry.recovery_attempt} 达上限`;
+}
+
 function updatePromptState(): void {
   const value = elements.retryPrompt.value;
   const count = Array.from(value).length;
@@ -368,21 +396,39 @@ function updatePromptState(): void {
   else if (count > 500) error = "最多 500 个字符";
   elements.promptError.textContent = error;
   elements.savePrompt.disabled = Boolean(error) || value === savedPrompt || busyCount > 0;
+  const strategy = selectedDelayStrategy();
   const initialDelay = Number(elements.initialDelay.value);
   const maxDelay = Number(elements.maxDelay.value);
-  const attempts = Number(elements.maxAttempts.value);
-  const settingsError = Boolean(error) || !Number.isInteger(attempts) || attempts < 1 || attempts > 20
+  const recoveryAttempts = Number(elements.maxRecoveryAttempts.value);
+  const consecutiveRetries = Number(elements.maxConsecutiveRetries.value);
+  let settingsError = "";
+  if (!Number.isInteger(recoveryAttempts) || recoveryAttempts < 1 || recoveryAttempts > 100) {
+    settingsError = "本次故障恢复上限应为 1 到 100";
+  } else if (!Number.isInteger(consecutiveRetries) || consecutiveRetries < 1 || consecutiveRetries > 20) {
+    settingsError = "连续无进展重试上限应为 1 到 20";
+  } else if ((strategy !== "fixed" && strategy !== "exponential")
     || !Number.isInteger(initialDelay) || initialDelay < 1 || initialDelay > 3600
-    || !Number.isInteger(maxDelay) || maxDelay < initialDelay || maxDelay > 86400;
-  elements.saveSettings.disabled = settingsError || currentSettings() === savedSettings || busyCount > 0;
+    || !Number.isInteger(maxDelay) || maxDelay < 1 || maxDelay > 86400) {
+    settingsError = "等待时间设置超出范围";
+  } else if (strategy === "exponential" && maxDelay < initialDelay) {
+    settingsError = "翻倍递增时，最大等待不能小于首次等待";
+  }
+  elements.maxDelay.disabled = strategy === "fixed";
+  elements.initialDelayLabel.textContent = strategy === "fixed" ? "固定间隔（秒）" : "首次等待（秒）";
+  elements.settingsError.textContent = settingsError;
+  updateDelayPreview(strategy, initialDelay, maxDelay, consecutiveRetries);
+  elements.saveSettings.disabled = Boolean(error) || Boolean(settingsError)
+    || currentSettings() === savedSettings || busyCount > 0;
 }
 
 function currentSettings(): string {
   return JSON.stringify({
     retry_prompt: elements.retryPrompt.value,
-    max_retry_attempts: Number(elements.maxAttempts.value),
+    max_recovery_attempts: Number(elements.maxRecoveryAttempts.value),
+    max_consecutive_retries: Number(elements.maxConsecutiveRetries.value),
     initial_delay_seconds: Number(elements.initialDelay.value),
     max_delay_seconds: Number(elements.maxDelay.value),
+    delay_strategy: selectedDelayStrategy(),
     show_notifications: elements.notificationsToggle.checked,
   });
 }
@@ -390,11 +436,47 @@ function currentSettings(): string {
 function serializedSettings(value: ManagementSnapshot): string {
   return JSON.stringify({
     retry_prompt: value.retry_prompt,
-    max_retry_attempts: value.max_retry_attempts,
+    max_recovery_attempts: value.max_recovery_attempts,
+    max_consecutive_retries: value.max_consecutive_retries,
     initial_delay_seconds: value.initial_delay_seconds,
     max_delay_seconds: value.max_delay_seconds,
+    delay_strategy: value.delay_strategy,
     show_notifications: value.show_notifications,
   });
+}
+
+function selectedDelayStrategy(): "fixed" | "exponential" {
+  const selected = elements.delayStrategies.find((option) => option.checked)?.value;
+  return selected === "fixed" ? "fixed" : "exponential";
+}
+
+function updateDelayPreview(
+  strategy: "fixed" | "exponential",
+  initialDelay: number,
+  maxDelay: number,
+  consecutiveRetries: number,
+): void {
+  if (!Number.isInteger(initialDelay) || initialDelay < 1 || !Number.isInteger(maxDelay) || maxDelay < 1
+    || !Number.isInteger(consecutiveRetries) || consecutiveRetries < 1) {
+    elements.delayPreview.textContent = "";
+    return;
+  }
+  const visibleCount = Math.min(consecutiveRetries, 8);
+  const delays: number[] = [];
+  let delay = initialDelay;
+  for (let index = 0; index < visibleCount; index += 1) {
+    delays.push(strategy === "fixed" ? initialDelay : Math.min(delay, maxDelay));
+    if (strategy === "exponential") delay = Math.min(delay * 2, maxDelay);
+  }
+  const suffix = consecutiveRetries > visibleCount ? "，…" : "";
+  elements.delayPreview.textContent = `等待序列：${delays.map(formatPreviewDelay).join("，")}${suffix}`;
+}
+
+function formatPreviewDelay(seconds: number): string {
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
+  if (seconds % 60 === 0) return `${seconds / 60} 分钟`;
+  return `${seconds} 秒`;
 }
 
 function setBusy(active: boolean): void {
@@ -445,7 +527,9 @@ function showNotice(message: string, isError: boolean): void {
 elements.refreshButton.addEventListener("click", () => void callTool("get_auto_retry_status"));
 elements.pauseToggle.addEventListener("change", () => void callTool("set_auto_retry_paused", { paused: !elements.pauseToggle.checked }));
 elements.retryPrompt.addEventListener("input", updatePromptState);
-elements.maxAttempts.addEventListener("input", updatePromptState);
+elements.maxRecoveryAttempts.addEventListener("input", updatePromptState);
+elements.maxConsecutiveRetries.addEventListener("input", updatePromptState);
+for (const option of elements.delayStrategies) option.addEventListener("change", updatePromptState);
 elements.initialDelay.addEventListener("input", updatePromptState);
 elements.maxDelay.addEventListener("input", updatePromptState);
 elements.notificationsToggle.addEventListener("change", updatePromptState);
@@ -461,7 +545,7 @@ window.setInterval(() => {
 if (new URLSearchParams(window.location.search).has("preview")) {
   render(previewSnapshot());
 } else {
-  app = new App({ name: "Codex Auto Retry", version: "0.5.0" });
+  app = new App({ name: "Codex Auto Retry", version: "0.6.0" });
   app.onerror = (error) => showNotice(error instanceof Error ? error.message : "连接失败", true);
   app.onhostcontextchanged = handleHostContext;
   app.ontoolresult = (result) => {
@@ -480,14 +564,16 @@ if (new URLSearchParams(window.location.search).has("preview")) {
 function previewSnapshot(): ManagementSnapshot {
   const now = Date.now();
   return {
-    version: "0.5.0",
+    version: "0.6.0",
     running: true,
     heartbeat_stale: false,
     paused: false,
     retry_prompt: "继续",
-    max_retry_attempts: 5,
+    max_recovery_attempts: 15,
+    max_consecutive_retries: 5,
     initial_delay_seconds: 5,
     max_delay_seconds: 300,
+    delay_strategy: "exponential",
     show_notifications: true,
     now: new Date(now).toISOString(),
     last_scan_at: new Date(now - 1300).toISOString(),
@@ -502,7 +588,10 @@ function previewSnapshot(): ManagementSnapshot {
         state: "running",
         class: "server",
         seconds_remaining: 0,
-        attempt: 1,
+        recovery_attempt: 1,
+        max_recovery_attempts: 15,
+        consecutive_retry: 1,
+        max_consecutive_retries: 5,
         action: "goal_resume",
         can_retry_now: false,
         can_cancel: false,
@@ -515,8 +604,10 @@ function previewSnapshot(): ManagementSnapshot {
         class: "rate_limit",
         due_at: new Date(now + 42_000).toISOString(),
         seconds_remaining: 42,
-        attempt: 2,
-        max_attempts: 5,
+        recovery_attempt: 4,
+        max_recovery_attempts: 15,
+        consecutive_retry: 1,
+        max_consecutive_retries: 5,
         can_retry_now: true,
         can_cancel: true,
         can_restart: false,
@@ -528,7 +619,10 @@ function previewSnapshot(): ManagementSnapshot {
         class: "transient",
         due_at: new Date(now + 126_000).toISOString(),
         seconds_remaining: 126,
-        attempt: 3,
+        recovery_attempt: 3,
+        max_recovery_attempts: 15,
+        consecutive_retry: 2,
+        max_consecutive_retries: 5,
         can_retry_now: true,
         can_cancel: true,
         can_restart: false,
@@ -539,8 +633,10 @@ function previewSnapshot(): ManagementSnapshot {
         state: "stopped",
         class: "server",
         seconds_remaining: 0,
-        attempt: 5,
-        max_attempts: 5,
+        recovery_attempt: 15,
+        max_recovery_attempts: 15,
+        consecutive_retry: 5,
+        max_consecutive_retries: 5,
         can_retry_now: false,
         can_cancel: false,
         can_restart: true,

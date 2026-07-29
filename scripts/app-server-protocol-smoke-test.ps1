@@ -135,6 +135,11 @@ try {
     $null = Read-UntilId $process 5
     Send-Request $process @{ method = 'thread/goal/clear'; id = 6; params = @{ threadId = $normalThreadId } }
     $null = Read-UntilId $process 6
+    Send-Request $process @{ method = 'thread/start'; id = 7; params = $threadSettings }
+    $heldConversationThread = Read-UntilId $process 7
+    $heldConversationThreadId = $heldConversationThread.Response.result.thread.id
+    Send-Request $process @{ method = 'thread/goal/set'; id = 8; params = @{ threadId = $heldConversationThreadId; objective = 'Held goal conversation test'; status = 'paused' } }
+    $null = Read-UntilId $process 8
     Stop-AppServer $process
     $process = $null
 
@@ -174,6 +179,24 @@ try {
     $finalRead = Read-UntilId $process 7
     $captured += $finalRead.Lines
 
+    $heldResumeParams = $threadSettings.Clone()
+    $heldResumeParams.threadId = $heldConversationThreadId
+    $heldResumeParams.excludeTurns = $true
+    Send-Request $process @{ method = 'thread/resume'; id = 8; params = $heldResumeParams }
+    $heldResume = Read-UntilId $process 8
+    $captured += $heldResume.Lines
+    Assert-ResumeSettingsPreserved -Started $heldConversationThread.Response.result -Resumed $heldResume.Response.result -Label 'Held-goal conversation task'
+    Send-Request $process @{ method = 'thread/goal/get'; id = 9; params = @{ threadId = $heldConversationThreadId } }
+    $heldGoalBefore = Read-UntilId $process 9
+    $captured += $heldGoalBefore.Lines
+    Send-Request $process @{ method = 'turn/start'; id = 10; params = @{ threadId = $heldConversationThreadId; input = @() } }
+    $heldTurn = Read-UntilId $process 10
+    $captured += $heldTurn.Lines
+    Start-Sleep -Milliseconds 800
+    Send-Request $process @{ method = 'thread/goal/get'; id = 11; params = @{ threadId = $heldConversationThreadId } }
+    $heldGoalAfter = Read-UntilId $process 11
+    $captured += $heldGoalAfter.Lines
+
     $startedThreads = @($captured | ForEach-Object {
         $message = $_ | ConvertFrom-Json
         if ($message.method -eq 'turn/started') { $message.params.threadId }
@@ -190,6 +213,12 @@ try {
     if ($startedThreads -notcontains $normalThreadId) {
         throw 'Starting a normal continuation did not create a turn in the same task.'
     }
+    if ($startedThreads -notcontains $heldConversationThreadId) {
+        throw 'Starting a conversation after pausing its goal did not create a same-task turn.'
+    }
+    if ($heldGoalBefore.Response.result.goal.status -ne 'paused' -or $heldGoalAfter.Response.result.goal.status -ne 'paused') {
+        throw 'The held-goal conversation continuation changed the goal pause state.'
+    }
 
     [pscustomobject]@{
         Status = 'passed'
@@ -198,6 +227,8 @@ try {
         ThreadSettingsPreserved = $true
         GoalNativeContinuationStarted = $true
         SilentNormalSameTaskTurnStarted = $true
+        HeldGoalConversationStarted = $true
+        HeldGoalRemainedPaused = $true
         CodexAppUIUsed = $false
     }
 }

@@ -10,7 +10,7 @@ import (
 
 func newRuntimeState() RuntimeState {
 	return RuntimeState{
-		Version:         3,
+		Version:         4,
 		Files:           make(map[string]FileCursor),
 		Threads:         make(map[string]ThreadState),
 		ProcessedEvents: make(map[string]time.Time),
@@ -38,13 +38,44 @@ func loadState(path string) (RuntimeState, error) {
 	if state.ProcessedEvents == nil {
 		state.ProcessedEvents = make(map[string]time.Time)
 	}
-	state.Version = 3
+	state.Version = 4
 	for id, thread := range state.Threads {
+		if thread.RecoveryAttempts < 1 && thread.LegacyFailures > 0 {
+			thread.RecoveryAttempts = thread.LegacyFailures
+		}
+		if thread.ConsecutiveRetries < 1 && thread.LegacyFailures > 0 {
+			thread.ConsecutiveRetries = thread.LegacyFailures
+		}
+		thread.LegacyFailures = 0
 		if thread.Pending != nil && thread.Pending.Attempt < 1 {
-			thread.Pending.Attempt = thread.ConsecutiveFailures
+			thread.Pending.Attempt = thread.RecoveryAttempts
 			if thread.Pending.Attempt < 1 {
 				thread.Pending.Attempt = 1
 			}
+		}
+		if thread.Pending != nil && thread.Pending.ConsecutiveRetry < 1 {
+			thread.Pending.ConsecutiveRetry = thread.ConsecutiveRetries
+			if thread.Pending.ConsecutiveRetry < 1 {
+				thread.Pending.ConsecutiveRetry = thread.Pending.Attempt
+			}
+		}
+		if thread.Pending != nil && thread.Pending.MaxConsecutive < 1 {
+			thread.Pending.MaxConsecutive = thread.Pending.MaxAttempts
+		}
+		if thread.Awaiting != nil && thread.Awaiting.ConsecutiveRetry < 1 {
+			thread.Awaiting.ConsecutiveRetry = thread.ConsecutiveRetries
+			if thread.Awaiting.ConsecutiveRetry < 1 {
+				thread.Awaiting.ConsecutiveRetry = thread.Awaiting.Attempt
+			}
+		}
+		if thread.Awaiting != nil && thread.Awaiting.MaxConsecutive < 1 {
+			thread.Awaiting.MaxConsecutive = thread.Awaiting.MaxAttempts
+		}
+		if thread.Stopped != nil && thread.Stopped.ConsecutiveRetries < 1 {
+			thread.Stopped.ConsecutiveRetries = thread.Stopped.Attempts
+		}
+		if thread.Stopped != nil && thread.Stopped.MaxConsecutive < 1 {
+			thread.Stopped.MaxConsecutive = thread.Stopped.MaxAttempts
 		}
 		if thread.Pending != nil && thread.Pending.FailedAt.IsZero() {
 			thread.Pending.FailedAt = thread.LastFailureAt

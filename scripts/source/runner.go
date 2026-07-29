@@ -52,6 +52,7 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 		retryPrompt,
 		settings,
 		job.FailedAt,
+		job.OriginTurnStartedAt,
 	)
 	if err != nil && controllerCtx.Err() != nil {
 		return DispatchResult{}, errControllerTimeout
@@ -163,12 +164,15 @@ func powerShellScriptInput(script string) string {
 	return strings.TrimRight(script, "\r\n") + "\r\n\r\n"
 }
 
-func retryDelay(attempt int, cfg Config) time.Duration {
-	if attempt < 1 {
-		attempt = 1
+func retryDelay(consecutiveRetry int, cfg Config) time.Duration {
+	if consecutiveRetry < 1 {
+		consecutiveRetry = 1
 	}
 	delay := time.Duration(cfg.InitialDelaySeconds) * time.Second
-	for i := 1; i < attempt; i++ {
+	if cfg.DelayStrategy == delayStrategyFixed {
+		return delay
+	}
+	for i := 1; i < consecutiveRetry; i++ {
 		if delay >= time.Duration(cfg.MaxDelaySeconds)*time.Second/2 {
 			delay = time.Duration(cfg.MaxDelaySeconds) * time.Second
 			break

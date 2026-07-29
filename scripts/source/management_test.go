@@ -13,15 +13,12 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	now := time.Date(2026, 7, 27, 6, 0, 0, 0, time.UTC)
 	state := newRuntimeState()
 	state.Threads["019f9d5d-9c82-75b1-b7c0-20a658af0423"] = ThreadState{Pending: &PendingRetry{
-		Class:   classServer,
-		DueAt:   now.Add(5500 * time.Millisecond),
-		Attempt: 2,
+		Class: classServer, DueAt: now.Add(5500 * time.Millisecond),
+		Attempt: 4, MaxAttempts: 15, ConsecutiveRetry: 1, MaxConsecutive: 5,
 	}}
 	state.Threads["019f9d5d-9c82-75b1-b7c0-20a658af0424"] = ThreadState{Awaiting: &AwaitingRetry{
-		Class:       classTransient,
-		Action:      actionGoalResume,
-		Attempt:     1,
-		RetryTurnID: "retry-turn",
+		Class: classTransient, Action: actionGoalResume, RetryTurnID: "retry-turn",
+		Attempt: 3, MaxAttempts: 15, ConsecutiveRetry: 2, MaxConsecutive: 5,
 	}}
 	if err := writeJSONAtomic(service.statePath, state); err != nil {
 		t.Fatal(err)
@@ -42,7 +39,9 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	if !snapshot.Running || snapshot.PendingRetries != 1 || snapshot.ActiveRetries != 1 || len(snapshot.Retries) != 2 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
-	if snapshot.Retries[0].State != "running" || snapshot.Retries[1].SecondsRemaining != 6 {
+	if snapshot.Retries[0].State != "running" || snapshot.Retries[0].RecoveryAttempt != 3 ||
+		snapshot.Retries[0].ConsecutiveRetry != 2 || snapshot.Retries[1].SecondsRemaining != 6 ||
+		snapshot.Retries[1].RecoveryAttempt != 4 || snapshot.Retries[1].ConsecutiveRetry != 1 {
 		t.Fatalf("queue state or countdown is incorrect: %+v", snapshot.Retries)
 	}
 }
@@ -54,11 +53,9 @@ func TestManagementShowsStoppedRetryAndQueuesRestart(t *testing.T) {
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
 	state := newRuntimeState()
 	state.Threads[threadID] = ThreadState{Stopped: &StoppedRetry{
-		Class:       classServer,
-		Attempts:    5,
-		MaxAttempts: 5,
-		StoppedAt:   now,
-		Reason:      "attempt_limit",
+		Class: classServer, Attempts: 15, MaxAttempts: 15,
+		ConsecutiveRetries: 1, MaxConsecutive: 5,
+		StoppedAt: now, Reason: "recovery_attempt_limit",
 	}}
 	if err := writeJSONAtomic(service.statePath, state); err != nil {
 		t.Fatal(err)
@@ -68,7 +65,9 @@ func TestManagementShowsStoppedRetryAndQueuesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if snapshot.StoppedRetries != 1 || len(snapshot.Retries) != 1 ||
-		snapshot.Retries[0].State != "stopped" || !snapshot.Retries[0].CanRestart {
+		snapshot.Retries[0].State != "stopped" || !snapshot.Retries[0].CanRestart ||
+		snapshot.Retries[0].RecoveryAttempt != 15 || snapshot.Retries[0].ConsecutiveRetry != 1 ||
+		snapshot.Retries[0].StopReason != "recovery_attempt_limit" {
 		t.Fatalf("stopped retry was not exposed: %+v", snapshot)
 	}
 	if _, err := service.restartRetry(threadID, now); err != nil {
@@ -111,16 +110,19 @@ func TestManagementUpdatesAllRetrySettings(t *testing.T) {
 	service := newManagementService(t.TempDir())
 	now := time.Now().UTC()
 	snapshot, err := service.setRetrySettings(RetrySettings{
-		RetryPrompt:         "继续检查",
-		MaxRetryAttempts:    7,
-		InitialDelaySeconds: 9,
-		MaxDelaySeconds:     120,
-		ShowNotifications:   false,
+		RetryPrompt:           "继续检查",
+		MaxConsecutiveRetries: 3,
+		MaxRecoveryAttempts:   7,
+		InitialDelaySeconds:   9,
+		MaxDelaySeconds:       120,
+		DelayStrategy:         delayStrategyFixed,
+		ShowNotifications:     false,
 	}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.RetryPrompt != "继续检查" || snapshot.MaxRetryAttempts != 7 ||
+	if snapshot.RetryPrompt != "继续检查" || snapshot.MaxRecoveryAttempts != 7 ||
+		snapshot.MaxConsecutiveRetries != 3 || snapshot.DelayStrategy != delayStrategyFixed ||
 		snapshot.InitialDelaySeconds != 9 || snapshot.MaxDelaySeconds != 120 ||
 		snapshot.ShowNotifications {
 		t.Fatalf("retry settings did not round trip: %+v", snapshot)
@@ -130,11 +132,13 @@ func TestManagementUpdatesAllRetrySettings(t *testing.T) {
 func TestManagementUpdatesCombinedLocalSettingsAndPause(t *testing.T) {
 	service := newManagementService(t.TempDir())
 	settings := RetrySettings{
-		RetryPrompt:         "继续",
-		MaxRetryAttempts:    4,
-		InitialDelaySeconds: 6,
-		MaxDelaySeconds:     90,
-		ShowNotifications:   true,
+		RetryPrompt:           "继续",
+		MaxConsecutiveRetries: 2,
+		MaxRecoveryAttempts:   4,
+		InitialDelaySeconds:   6,
+		MaxDelaySeconds:       90,
+		DelayStrategy:         delayStrategyExponential,
+		ShowNotifications:     true,
 	}
 	if err := service.setLocalSettings(settings, true, time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -143,7 +147,8 @@ func TestManagementUpdatesCombinedLocalSettingsAndPause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.Paused || snapshot.MaxRetryAttempts != 4 || snapshot.InitialDelaySeconds != 6 ||
+	if !snapshot.Paused || snapshot.MaxRecoveryAttempts != 4 || snapshot.MaxConsecutiveRetries != 2 ||
+		snapshot.DelayStrategy != delayStrategyExponential || snapshot.InitialDelaySeconds != 6 ||
 		snapshot.MaxDelaySeconds != 90 || !snapshot.ShowNotifications {
 		t.Fatalf("combined local settings did not round trip: %+v", snapshot)
 	}

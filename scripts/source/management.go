@@ -13,40 +13,44 @@ import (
 )
 
 type ManagedRetry struct {
-	ThreadID         string       `json:"thread_id" jsonschema:"Codex task identifier"`
-	Label            string       `json:"label" jsonschema:"privacy-safe short task label"`
-	State            string       `json:"state" jsonschema:"pending, starting, or running"`
-	Class            FailureClass `json:"class" jsonschema:"provider failure category"`
-	DueAt            string       `json:"due_at,omitempty" jsonschema:"next retry time in RFC 3339 format"`
-	SecondsRemaining int64        `json:"seconds_remaining" jsonschema:"whole seconds until the retry is due"`
-	Attempt          int          `json:"attempt" jsonschema:"current provider retry attempt"`
-	MaxAttempts      int          `json:"max_attempts,omitempty" jsonschema:"retry limit for this consecutive failure chain"`
-	Action           RetryAction  `json:"action,omitempty" jsonschema:"current recovery action"`
-	CanRetryNow      bool         `json:"can_retry_now" jsonschema:"whether retry-now is currently available"`
-	CanCancel        bool         `json:"can_cancel" jsonschema:"whether the pending retry can be cancelled"`
-	CanRestart       bool         `json:"can_restart" jsonschema:"whether an exhausted retry can be restarted with a fresh budget"`
-	StopReason       string       `json:"stop_reason,omitempty" jsonschema:"privacy-safe reason why retries stopped"`
+	ThreadID              string       `json:"thread_id" jsonschema:"Codex task identifier"`
+	Label                 string       `json:"label" jsonschema:"privacy-safe short task label"`
+	State                 string       `json:"state" jsonschema:"pending, starting, or running"`
+	Class                 FailureClass `json:"class" jsonschema:"provider failure category"`
+	DueAt                 string       `json:"due_at,omitempty" jsonschema:"next retry time in RFC 3339 format"`
+	SecondsRemaining      int64        `json:"seconds_remaining" jsonschema:"whole seconds until the retry is due"`
+	RecoveryAttempt       int          `json:"recovery_attempt" jsonschema:"current attempt in this fault recovery cycle"`
+	MaxRecoveryAttempts   int          `json:"max_recovery_attempts,omitempty" jsonschema:"maximum attempts in this fault recovery cycle"`
+	ConsecutiveRetry      int          `json:"consecutive_retry" jsonschema:"current retry without visible assistant progress"`
+	MaxConsecutiveRetries int          `json:"max_consecutive_retries,omitempty" jsonschema:"maximum retries without visible assistant progress"`
+	Action                RetryAction  `json:"action,omitempty" jsonschema:"current recovery action"`
+	CanRetryNow           bool         `json:"can_retry_now" jsonschema:"whether retry-now is currently available"`
+	CanCancel             bool         `json:"can_cancel" jsonschema:"whether the pending retry can be cancelled"`
+	CanRestart            bool         `json:"can_restart" jsonschema:"whether an exhausted retry can be restarted with a fresh budget"`
+	StopReason            string       `json:"stop_reason,omitempty" jsonschema:"privacy-safe reason why retries stopped"`
 }
 
 type ManagementSnapshot struct {
-	Version             string         `json:"version" jsonschema:"watchdog version"`
-	Running             bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
-	HeartbeatStale      bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
-	Paused              bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
-	RetryPrompt         string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
-	MaxRetryAttempts    int            `json:"max_retry_attempts" jsonschema:"maximum provider retry attempts per consecutive failure chain"`
-	InitialDelaySeconds int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
-	MaxDelaySeconds     int            `json:"max_delay_seconds" jsonschema:"maximum exponential backoff delay"`
-	ShowNotifications   bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
-	Now                 string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
-	LastScanAt          string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
-	PendingRetries      int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
-	ActiveRetries       int            `json:"active_retries" jsonschema:"number of retries starting or running"`
-	StoppedRetries      int            `json:"stopped_retries" jsonschema:"number of retry chains stopped at their attempt limit"`
-	WatchedRoots        int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
-	LastError           string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
-	Notice              string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
-	Retries             []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
+	Version               string         `json:"version" jsonschema:"watchdog version"`
+	Running               bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
+	HeartbeatStale        bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
+	Paused                bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
+	RetryPrompt           string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
+	MaxConsecutiveRetries int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
+	MaxRecoveryAttempts   int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
+	InitialDelaySeconds   int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
+	MaxDelaySeconds       int            `json:"max_delay_seconds" jsonschema:"maximum exponential backoff delay"`
+	DelayStrategy         string         `json:"delay_strategy" jsonschema:"fixed or exponential retry delay"`
+	ShowNotifications     bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
+	Now                   string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
+	LastScanAt            string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
+	PendingRetries        int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
+	ActiveRetries         int            `json:"active_retries" jsonschema:"number of retries starting or running"`
+	StoppedRetries        int            `json:"stopped_retries" jsonschema:"number of retry chains stopped at their attempt limit"`
+	WatchedRoots          int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
+	LastError             string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
+	Notice                string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
+	Retries               []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
 }
 
 type managementService struct {
@@ -120,20 +124,22 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 	retries = visibleRetries
 
 	snapshot := ManagementSnapshot{
-		Version:             appVersion,
-		Running:             running,
-		HeartbeatStale:      heartbeatStale,
-		Paused:              control.Paused,
-		RetryPrompt:         config.RetryPrompt,
-		MaxRetryAttempts:    config.MaxRetryAttempts,
-		InitialDelaySeconds: config.InitialDelaySeconds,
-		MaxDelaySeconds:     config.MaxDelaySeconds,
-		ShowNotifications:   config.ShowNotifications,
-		Now:                 now.Format(time.RFC3339Nano),
-		PendingRetries:      pending,
-		ActiveRetries:       active,
-		StoppedRetries:      stopped,
-		Retries:             retries,
+		Version:               appVersion,
+		Running:               running,
+		HeartbeatStale:        heartbeatStale,
+		Paused:                control.Paused,
+		RetryPrompt:           config.RetryPrompt,
+		MaxConsecutiveRetries: config.MaxConsecutiveRetries,
+		MaxRecoveryAttempts:   config.MaxRecoveryAttempts,
+		InitialDelaySeconds:   config.InitialDelaySeconds,
+		MaxDelaySeconds:       config.MaxDelaySeconds,
+		DelayStrategy:         config.DelayStrategy,
+		ShowNotifications:     config.ShowNotifications,
+		Now:                   now.Format(time.RFC3339Nano),
+		PendingRetries:        pending,
+		ActiveRetries:         active,
+		StoppedRetries:        stopped,
+		Retries:               retries,
 	}
 	if statusFound {
 		if running {
@@ -149,11 +155,13 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 }
 
 type RetrySettings struct {
-	RetryPrompt         string `json:"retry_prompt"`
-	MaxRetryAttempts    int    `json:"max_retry_attempts"`
-	InitialDelaySeconds int    `json:"initial_delay_seconds"`
-	MaxDelaySeconds     int    `json:"max_delay_seconds"`
-	ShowNotifications   bool   `json:"show_notifications"`
+	RetryPrompt           string `json:"retry_prompt"`
+	MaxConsecutiveRetries int    `json:"max_consecutive_retries"`
+	MaxRecoveryAttempts   int    `json:"max_recovery_attempts"`
+	InitialDelaySeconds   int    `json:"initial_delay_seconds"`
+	MaxDelaySeconds       int    `json:"max_delay_seconds"`
+	DelayStrategy         string `json:"delay_strategy"`
+	ShowNotifications     bool   `json:"show_notifications"`
 }
 
 func (m *managementService) setRetrySettings(settings RetrySettings, now time.Time) (ManagementSnapshot, error) {
@@ -164,9 +172,11 @@ func (m *managementService) setRetrySettings(settings RetrySettings, now time.Ti
 		return ManagementSnapshot{}, err
 	}
 	config.RetryPrompt = settings.RetryPrompt
-	config.MaxRetryAttempts = settings.MaxRetryAttempts
+	config.MaxConsecutiveRetries = settings.MaxConsecutiveRetries
+	config.MaxRecoveryAttempts = settings.MaxRecoveryAttempts
 	config.InitialDelaySeconds = settings.InitialDelaySeconds
 	config.MaxDelaySeconds = settings.MaxDelaySeconds
+	config.DelayStrategy = settings.DelayStrategy
 	config.ShowNotifications = settings.ShowNotifications
 	if err := config.validate(); err != nil {
 		return ManagementSnapshot{}, err
@@ -190,9 +200,11 @@ func (m *managementService) setLocalSettings(settings RetrySettings, paused bool
 	}
 	originalConfig := config
 	config.RetryPrompt = settings.RetryPrompt
-	config.MaxRetryAttempts = settings.MaxRetryAttempts
+	config.MaxConsecutiveRetries = settings.MaxConsecutiveRetries
+	config.MaxRecoveryAttempts = settings.MaxRecoveryAttempts
 	config.InitialDelaySeconds = settings.InitialDelaySeconds
 	config.MaxDelaySeconds = settings.MaxDelaySeconds
+	config.DelayStrategy = settings.DelayStrategy
 	config.ShowNotifications = settings.ShowNotifications
 	if err := config.validate(); err != nil {
 		return err
@@ -312,16 +324,18 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 				remaining = int64((duration + time.Second - 1) / time.Second)
 			}
 			retries = append(retries, ManagedRetry{
-				ThreadID:         threadID,
-				Label:            "任务 " + shortThreadID(threadID),
-				State:            "pending",
-				Class:            thread.Pending.Class,
-				DueAt:            thread.Pending.DueAt.Format(time.RFC3339Nano),
-				SecondsRemaining: remaining,
-				Attempt:          thread.Pending.Attempt,
-				MaxAttempts:      thread.Pending.MaxAttempts,
-				CanRetryNow:      true,
-				CanCancel:        true,
+				ThreadID:              threadID,
+				Label:                 "任务 " + shortThreadID(threadID),
+				State:                 "pending",
+				Class:                 thread.Pending.Class,
+				DueAt:                 thread.Pending.DueAt.Format(time.RFC3339Nano),
+				SecondsRemaining:      remaining,
+				RecoveryAttempt:       thread.Pending.Attempt,
+				MaxRecoveryAttempts:   thread.Pending.MaxAttempts,
+				ConsecutiveRetry:      thread.Pending.ConsecutiveRetry,
+				MaxConsecutiveRetries: thread.Pending.MaxConsecutive,
+				CanRetryNow:           true,
+				CanCancel:             true,
 			})
 		}
 		if thread.Awaiting != nil {
@@ -330,25 +344,29 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 				stateName = "running"
 			}
 			retries = append(retries, ManagedRetry{
-				ThreadID:    threadID,
-				Label:       "任务 " + shortThreadID(threadID),
-				State:       stateName,
-				Class:       thread.Awaiting.Class,
-				Attempt:     thread.Awaiting.Attempt,
-				MaxAttempts: thread.Awaiting.MaxAttempts,
-				Action:      thread.Awaiting.Action,
+				ThreadID:              threadID,
+				Label:                 "任务 " + shortThreadID(threadID),
+				State:                 stateName,
+				Class:                 thread.Awaiting.Class,
+				RecoveryAttempt:       thread.Awaiting.Attempt,
+				MaxRecoveryAttempts:   thread.Awaiting.MaxAttempts,
+				ConsecutiveRetry:      thread.Awaiting.ConsecutiveRetry,
+				MaxConsecutiveRetries: thread.Awaiting.MaxConsecutive,
+				Action:                thread.Awaiting.Action,
 			})
 		}
 		if thread.Stopped != nil {
 			retries = append(retries, ManagedRetry{
-				ThreadID:    threadID,
-				Label:       "任务 " + shortThreadID(threadID),
-				State:       "stopped",
-				Class:       thread.Stopped.Class,
-				Attempt:     thread.Stopped.Attempts,
-				MaxAttempts: thread.Stopped.MaxAttempts,
-				CanRestart:  true,
-				StopReason:  thread.Stopped.Reason,
+				ThreadID:              threadID,
+				Label:                 "任务 " + shortThreadID(threadID),
+				State:                 "stopped",
+				Class:                 thread.Stopped.Class,
+				RecoveryAttempt:       thread.Stopped.Attempts,
+				MaxRecoveryAttempts:   thread.Stopped.MaxAttempts,
+				ConsecutiveRetry:      thread.Stopped.ConsecutiveRetries,
+				MaxConsecutiveRetries: thread.Stopped.MaxConsecutive,
+				CanRestart:            true,
+				StopReason:            thread.Stopped.Reason,
 			})
 		}
 	}

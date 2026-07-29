@@ -91,6 +91,38 @@ func TestIgnoreConversationContent(t *testing.T) {
 	}
 }
 
+func TestParseProgressWithoutRetainingContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{"assistant message", `{"type":"message","role":"assistant","content":"private assistant response"}`},
+		{"custom tool result", `{"type":"custom_tool_call_output","output":"private tool output"}`},
+		{"function result", `{"type":"function_call_output","output":"private function output"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			line := []byte(`{"timestamp":"2026-07-26T09:00:00Z","type":"response_item","payload":` + test.payload + `}`)
+			event, ok := parseRelevantEvent(line)
+			if !ok || event.Kind != "task_progress" || event.ErrorText != "" {
+				t.Fatalf("progress metadata was not parsed privately: %+v, ok=%v", event, ok)
+			}
+		})
+	}
+}
+
+func TestIgnoreNonVisibleResponseItems(t *testing.T) {
+	for _, payload := range []string{
+		`{"type":"message","role":"user","content":"private user message"}`,
+		`{"type":"reasoning","summary":"private reasoning"}`,
+	} {
+		line := []byte(`{"timestamp":"2026-07-26T09:00:00Z","type":"response_item","payload":` + payload + `}`)
+		if _, ok := parseRelevantEvent(line); ok {
+			t.Fatalf("non-visible progress was accepted: %s", payload)
+		}
+	}
+}
+
 func TestParseGoalLifecycleEventWithoutRetainingObjective(t *testing.T) {
 	writtenAt := time.Date(2026, 7, 27, 15, 50, 53, 0, time.UTC)
 	line := makeGoalEventLine(t, writtenAt.Add(time.Second), "paused", writtenAt.Unix(), "private objective must be ignored")

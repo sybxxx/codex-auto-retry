@@ -149,13 +149,18 @@ func (c *rendererController) Dispatch(
 	prompt string,
 	settings ResumeSettings,
 	failedAt time.Time,
+	originTurnStartedAt time.Time,
 ) (DispatchResult, error) {
 	payload, err := json.Marshal(struct {
-		ThreadID       string         `json:"thread_id"`
-		Prompt         string         `json:"prompt"`
-		Settings       ResumeSettings `json:"settings"`
-		FailedAtUnixMS int64          `json:"failed_at_unix_ms"`
-	}{ThreadID: threadID, Prompt: prompt, Settings: settings, FailedAtUnixMS: failedAt.UnixMilli()})
+		ThreadID                string         `json:"thread_id"`
+		Prompt                  string         `json:"prompt"`
+		Settings                ResumeSettings `json:"settings"`
+		FailedAtUnixMS          int64          `json:"failed_at_unix_ms"`
+		OriginTurnStartedUnixMS int64          `json:"origin_turn_started_at_unix_ms,omitempty"`
+	}{
+		ThreadID: threadID, Prompt: prompt, Settings: settings, FailedAtUnixMS: failedAt.UnixMilli(),
+		OriginTurnStartedUnixMS: timeToUnixMilli(originTurnStartedAt),
+	})
 	if err != nil {
 		return DispatchResult{}, errRendererEvaluation
 	}
@@ -169,6 +174,13 @@ func (c *rendererController) Dispatch(
 		return DispatchResult{}, errControllerInvalidResult
 	}
 	return result, nil
+}
+
+func timeToUnixMilli(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	return value.UnixMilli()
 }
 
 func (c *rendererController) Probe(ctx context.Context) (rendererProbeResult, error) {
@@ -371,6 +383,15 @@ const rendererDispatchExpression = `(async () => {
         const updatedAt = unixSeconds(goal?.updatedAt);
         return failedAt > 0 && updatedAt >= failedAt - 2 && updatedAt <= failedAt + 5;
     };
+	const heldConversationAllowed = goal => {
+		const startedAt = unixSeconds(payload.origin_turn_started_at_unix_ms);
+		const updatedAt = unixSeconds(goal?.updatedAt);
+		const status = goal?.status ?? null;
+		if (startedAt <= 0 || updatedAt <= 0 || updatedAt > startedAt) return false;
+		if (status === "paused") return true;
+		return status === "blocked" && !blockedByFailure(goal);
+	};
+	const goalRevision = goal => String(goal?.status ?? "") + "|" + String(goal?.updatedAt ?? "");
     const goalHoldReason = goal => {
         if (!goal) return "";
         const status = goal?.status ?? null;
@@ -400,6 +421,27 @@ const rendererDispatchExpression = `(async () => {
             message.includes("at least one input") ||
             (message.includes("input") && message.includes("minitems"));
     };
+	const startConversation = async (request, goalHeld) => {
+		try {
+			await request("turn/start", {threadId: payload.thread_id, input: []});
+			return {
+				outcome: "dispatched",
+				action: "conversation_continue",
+				reason: goalHeld ? "silent_turn_started_with_goal_held" : "silent_turn_started_in_background"
+			};
+		} catch (error) {
+			if (!emptyInputUnsupported(error)) throw error;
+			await request("turn/start", {
+				threadId: payload.thread_id,
+				input: [{type: "text", text: payload.prompt, text_elements: []}]
+			});
+			return {
+				outcome: "dispatched",
+				action: "conversation_continue",
+				reason: goalHeld ? "fallback_turn_started_with_goal_held" : "fallback_turn_started_in_background"
+			};
+		}
+	};
     try {
         const rpc = await (async () => {` + rendererModuleBootstrap + `})();
         if (!rpc) return retryLater("renderer_rpc_not_found");
@@ -419,7 +461,9 @@ const rendererDispatchExpression = `(async () => {
         const goalResponse = await request("thread/goal/get", {threadId: payload.thread_id});
         const initialGoal = goalResponse?.goal ?? null;
         const initialHoldReason = goalHoldReason(initialGoal);
-        if (initialHoldReason) return hold(initialHoldReason);
+		const continuingWhileGoalHeld = heldConversationAllowed(initialGoal);
+		if (initialHoldReason && !continuingWhileGoalHeld) return hold(initialHoldReason);
+		const initialGoalRevision = goalRevision(initialGoal);
         await rpc("hydrate-background-threads", {
             hostId: "local", threadIds: [payload.thread_id], includeTurns: false
         });
@@ -450,6 +494,13 @@ const rendererDispatchExpression = `(async () => {
         const latestGoal = latestGoalResponse?.goal ?? null;
         const latestGoalStatus = latestGoal?.status ?? null;
         if (Boolean(initialGoal) !== Boolean(latestGoal)) return hold("goal_status_changed");
+		if (continuingWhileGoalHeld) {
+			if (!heldConversationAllowed(latestGoal) || goalRevision(latestGoal) !== initialGoalRevision) {
+				return hold("goal_status_changed");
+			}
+			if (resumedStatus === "active") return retryLater("thread_active");
+			return await startConversation(request, true);
+		}
         const latestHoldReason = goalHoldReason(latestGoal);
         if (latestHoldReason) return hold(latestHoldReason);
         const goalCanContinue = latestGoalStatus === "active" || latestGoalStatus === "blocked";
@@ -460,17 +511,7 @@ const rendererDispatchExpression = `(async () => {
             return {outcome: "dispatched", action: "goal_resume", reason: "goal_resumed_in_background"};
         }
         if (resumedStatus === "active") return retryLater("thread_active");
-        try {
-            await request("turn/start", {threadId: payload.thread_id, input: []});
-            return {outcome: "dispatched", action: "conversation_continue", reason: "silent_turn_started_in_background"};
-        } catch (error) {
-            if (!emptyInputUnsupported(error)) throw error;
-            await request("turn/start", {
-                threadId: payload.thread_id,
-                input: [{type: "text", text: payload.prompt, text_elements: []}]
-            });
-            return {outcome: "dispatched", action: "conversation_continue", reason: "fallback_turn_started_in_background"};
-        }
+		return await startConversation(request, false);
     } catch (error) {
         return retryLater(classifyError(error));
     }

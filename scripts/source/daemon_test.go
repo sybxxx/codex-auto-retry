@@ -90,7 +90,7 @@ func TestDaemonPauseAndQueuedControls(t *testing.T) {
 
 func TestDaemonStopsAfterConfiguredRetryLimitAndCanRestart(t *testing.T) {
 	config := isolatedConfig(filepath.Join(t.TempDir(), ".codex"))
-	config.MaxRetryAttempts = 2
+	config.MaxRecoveryAttempts = 2
 	d := newTestDaemon(t, config, successfulRunner())
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
 	now := time.Date(2026, 7, 28, 7, 0, 0, 0, time.UTC)
@@ -101,10 +101,10 @@ func TestDaemonStopsAfterConfiguredRetryLimitAndCanRestart(t *testing.T) {
 		t.Fatalf("first retry was not scheduled with the global limit: %+v", thread)
 	}
 	exhausted := failureScannedEvent(threadID, "failed-3", now.Add(time.Minute))
-	d.scheduleFailureLocked(exhausted, "event-3", now.Add(time.Minute), thread, 3)
+	d.scheduleFailureLocked(exhausted, "event-3", now.Add(time.Minute), thread, 3, 3, time.Time{})
 	thread = d.state.Threads[threadID]
 	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil ||
-		thread.Stopped.Attempts != 2 || thread.ConsecutiveFailures != 2 {
+		thread.Stopped.Attempts != 2 || thread.RecoveryAttempts != 2 {
 		t.Fatalf("retry chain did not stop at its limit: %+v", thread)
 	}
 	d.applyControlCommandLocked(ControlCommand{
@@ -167,14 +167,14 @@ func TestDaemonRestoresOnlyUnacknowledgedStartingRetriesOnStartup(t *testing.T) 
 
 func TestDaemonLoweringRetryLimitStopsAnOverBudgetPendingRetry(t *testing.T) {
 	config := isolatedConfig(filepath.Join(t.TempDir(), ".codex"))
-	config.MaxRetryAttempts = 5
+	config.MaxRecoveryAttempts = 5
 	d := newTestDaemon(t, config, successfulRunner())
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
 	d.state.Threads[threadID] = ThreadState{Pending: &PendingRetry{
 		EventKey: "event", FailedTurnID: "failed", Class: classServer,
 		Attempt: 5, MaxAttempts: 5,
 	}}
-	config.MaxRetryAttempts = 3
+	config.MaxRecoveryAttempts = 3
 	if err := writeJSONAtomic(filepath.Join(d.dataDir, "config.json"), config); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestManualTaskCancelsPendingRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread := daemonThreadSnapshot(d, threadID)
-	if thread.Pending != nil || thread.Awaiting != nil || thread.ConsecutiveFailures != 0 {
+	if thread.Pending != nil || thread.Awaiting != nil || thread.RecoveryAttempts != 0 {
 		t.Fatalf("manual task did not cancel retry: %+v", thread)
 	}
 }
@@ -528,7 +528,7 @@ func TestOnlyMatchingRetryTurnCanRecoverChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread := daemonThreadSnapshot(d, threadID)
-	if thread.Pending != nil || thread.Awaiting != nil || thread.ConsecutiveFailures != 0 {
+	if thread.Pending != nil || thread.Awaiting != nil || thread.RecoveryAttempts != 0 {
 		t.Fatalf("matching retry completion did not recover the chain: %+v", thread)
 	}
 }
@@ -540,7 +540,8 @@ func TestEmptySuccessfulCompletionSchedulesRetry(t *testing.T) {
 	d.handleEventLocked(emptyCompletionScannedEvent(threadID, "empty-turn", now), now)
 	thread := d.state.Threads[threadID]
 	if thread.Pending == nil || thread.Pending.Class != classEmptyResponse ||
-		thread.Pending.Attempt != 1 || thread.ConsecutiveFailures != 1 {
+		thread.Pending.Attempt != 1 || thread.Pending.ConsecutiveRetry != 1 ||
+		thread.RecoveryAttempts != 1 || thread.ConsecutiveRetries != 1 {
 		t.Fatalf("empty successful completion was not scheduled: %+v", thread)
 	}
 }
@@ -551,26 +552,27 @@ func TestEmptyAutomaticRetryDoesNotFalselyRecoverChain(t *testing.T) {
 	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
 	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
 		EventKey: "first-empty", FailedTurnID: "original-turn", RetryTurnID: "retry-turn",
-		Class: classEmptyResponse, Attempt: 1, MaxAttempts: 5,
+		Class: classEmptyResponse, Attempt: 1, MaxAttempts: 5, ConsecutiveRetry: 1, MaxConsecutive: 5,
 	}}
 	d.handleEventLocked(emptyCompletionScannedEvent(threadID, "retry-turn", now), now)
 	thread := d.state.Threads[threadID]
 	if thread.Awaiting != nil || thread.Pending == nil || thread.Pending.Attempt != 2 ||
-		thread.Pending.Class != classEmptyResponse || thread.ConsecutiveFailures != 2 {
+		thread.Pending.ConsecutiveRetry != 2 || thread.Pending.Class != classEmptyResponse ||
+		thread.RecoveryAttempts != 2 || thread.ConsecutiveRetries != 2 {
 		t.Fatalf("empty automatic retry falsely recovered the chain: %+v", thread)
 	}
 
 	thread.Pending = nil
 	thread.Awaiting = &AwaitingRetry{
 		EventKey: "second-empty", FailedTurnID: "retry-turn", RetryTurnID: "recovered-turn",
-		Class: classEmptyResponse, Attempt: 2, MaxAttempts: 5,
+		Class: classEmptyResponse, Attempt: 2, MaxAttempts: 5, ConsecutiveRetry: 2, MaxConsecutive: 5,
 	}
 	d.state.Threads[threadID] = thread
 	recovered := emptyCompletionScannedEvent(threadID, "recovered-turn", now.Add(time.Second))
 	recovered.Event.FinalPresent = true
 	d.handleEventLocked(recovered, now.Add(time.Second))
 	thread = d.state.Threads[threadID]
-	if thread.Pending != nil || thread.Awaiting != nil || thread.ConsecutiveFailures != 0 {
+	if thread.Pending != nil || thread.Awaiting != nil || thread.RecoveryAttempts != 0 {
 		t.Fatalf("non-empty matching retry did not recover the chain: %+v", thread)
 	}
 }
@@ -601,7 +603,7 @@ func TestTurnAbortCancelsEmptyResponseRetryInEitherEventOrder(t *testing.T) {
 			}
 			thread := d.state.Threads[threadID]
 			if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped != nil ||
-				thread.ConsecutiveFailures != 0 || thread.LastAbortedTurnID != "cancelled-turn" {
+				thread.RecoveryAttempts != 0 || thread.LastAbortedTurnID != "cancelled-turn" {
 				t.Fatalf("turn abort did not remain authoritative: %+v", thread)
 			}
 		})
@@ -637,7 +639,7 @@ func TestDifferentTaskAfterRetryAcknowledgementCancelsAutomation(t *testing.T) {
 		Kind: "task_started", TurnID: "manual-turn", Timestamp: start.Add(time.Second),
 	}}, start.Add(time.Second))
 	thread := d.state.Threads[threadID]
-	if thread.Awaiting != nil || thread.ConsecutiveFailures != 0 {
+	if thread.Awaiting != nil || thread.RecoveryAttempts != 0 {
 		t.Fatalf("different task did not cancel automation: %+v", thread)
 	}
 }
@@ -649,7 +651,7 @@ func TestUserActivityReschedulesDispatchedRetry(t *testing.T) {
 	d := newTestDaemon(t, cfg, runner)
 	now := time.Now().UTC()
 	d.state.Threads[threadID] = ThreadState{
-		ConsecutiveFailures: 1,
+		RecoveryAttempts: 1,
 		Pending: &PendingRetry{
 			EventKey: "event", FailedTurnID: "failed", Class: classServer,
 			DueAt: now, Attempt: 1,
@@ -664,7 +666,7 @@ func TestUserActivityReschedulesDispatchedRetry(t *testing.T) {
 	d.waitForJobs()
 	thread := daemonThreadSnapshot(d, threadID)
 	if thread.Pending == nil || thread.Pending.Attempt != 1 || thread.Pending.DispatchFailures != 1 ||
-		thread.Awaiting != nil || thread.ConsecutiveFailures != 1 {
+		thread.Awaiting != nil || thread.RecoveryAttempts != 1 {
 		t.Fatalf("user activity removed the failed task instead of delaying it: %+v", thread)
 	}
 }
@@ -676,7 +678,7 @@ func TestControllerFailureReschedulesSameProviderAttempt(t *testing.T) {
 	d := newTestDaemon(t, cfg, runner)
 	now := time.Now().UTC()
 	d.state.Threads[threadID] = ThreadState{
-		ConsecutiveFailures: 1,
+		RecoveryAttempts: 1,
 		Pending: &PendingRetry{
 			EventKey: "event", FailedTurnID: "failed", Class: classServer,
 			DueAt: now, Attempt: 1,
@@ -702,7 +704,7 @@ func TestParentOwnedSubagentDoesNotRemainInIndependentRetryQueue(t *testing.T) {
 	d := newTestDaemon(t, cfg, runner)
 	now := time.Now().UTC()
 	d.state.Threads[threadID] = ThreadState{
-		ConsecutiveFailures: 1,
+		RecoveryAttempts: 1,
 		Pending: &PendingRetry{
 			EventKey: "event", FailedTurnID: "failed", Class: classServer,
 			DueAt: now, Attempt: 1,
@@ -713,7 +715,7 @@ func TestParentOwnedSubagentDoesNotRemainInIndependentRetryQueue(t *testing.T) {
 	go d.runJob(context.Background(), jobs[0])
 	d.waitForJobs()
 	thread := daemonThreadSnapshot(d, threadID)
-	if thread.Pending != nil || thread.Awaiting != nil || thread.ConsecutiveFailures != 0 {
+	if thread.Pending != nil || thread.Awaiting != nil || thread.RecoveryAttempts != 0 {
 		t.Fatalf("parent-owned subagent remained independently queued: %+v", thread)
 	}
 }
@@ -747,7 +749,7 @@ func TestMissingStartAcknowledgementReschedules(t *testing.T) {
 	d := newTestDaemon(t, cfg, successfulRunner())
 	now := time.Now().UTC()
 	d.state.Threads[threadID] = ThreadState{
-		ConsecutiveFailures: 1,
+		RecoveryAttempts: 1,
 		Awaiting: &AwaitingRetry{
 			EventKey: "event", FailedTurnID: "failed", Class: classServer,
 			Attempt: 1, Action: actionGoalResume, DispatchStartedAt: now.Add(-time.Minute),

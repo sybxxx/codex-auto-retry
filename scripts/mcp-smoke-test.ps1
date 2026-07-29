@@ -57,32 +57,39 @@ try {
     $threadId = '019f9d5d-9c82-75b1-b7c0-20a658af0423'
     $stoppedThreadId = '019f9d5d-9c82-75b1-b7c0-20a658af0424'
     $state = @{
-        version = 2
+        version = 4
         initialized = $true
         files = @{}
         processed_events = @{}
         threads = @{
             $threadId = @{
-                consecutive_failures = 1
+                recovery_attempts = 4
+                consecutive_retries = 1
                 pending = @{
                     event_key = 'smoke-event'
                     turn_id = 'failed-turn'
                     class = 'server'
                     due_at = [DateTime]::UtcNow.AddMinutes(1).ToString('o')
                     codex_home = $dataDir
-                    attempt = 1
+                    attempt = 4
+                    max_attempts = 15
+                    consecutive_retry = 1
+                    max_consecutive_retries = 5
                 }
             }
             $stoppedThreadId = @{
-                consecutive_failures = 5
+                recovery_attempts = 15
+                consecutive_retries = 5
                 stopped = @{
                     event_key = 'stopped-event'
                     failed_turn_id = 'failed-turn'
                     class = 'server'
                     stopped_at = [DateTime]::UtcNow.ToString('o')
-                    attempts = 5
-                    max_attempts = 5
-                    reason = 'attempt_limit'
+                    attempts = 15
+                    max_attempts = 15
+                    consecutive_retries = 5
+                    max_consecutive_retries = 5
+                    reason = 'recovery_attempt_limit'
                 }
             }
         }
@@ -94,7 +101,7 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     $status = @{
-        version = '0.5.0'
+        version = '0.6.0'
         running = $true
         pid = $PID
         started_at = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
@@ -167,28 +174,42 @@ try {
         throw 'Embedded MCP App resource is missing or incomplete.'
     }
     if (-not $content.text.Contains('Codex Auto Retry')) { throw 'Embedded panel identity is missing.' }
+    $recoveryCounterLabel = ([char]0x672c).ToString() + [char]0x6b21 + [char]0x6545 + [char]0x969c + [char]0x6062 + [char]0x590d
+    $consecutiveCounterLabel = ([char]0x8fde).ToString() + [char]0x7eed + [char]0x65e0 + [char]0x8fdb + [char]0x5c55
+    if (-not $content.text.Contains($recoveryCounterLabel) -or -not $content.text.Contains($consecutiveCounterLabel)) {
+        throw 'Embedded panel does not distinguish the two retry counters.'
+    }
 
     $defaultPrompt = ([char]0x7ee7).ToString() + [char]0x7eed
     $updatedPrompt = $defaultPrompt + [char]0x5904 + [char]0x7406
     $status = Call-MCPTool $process 4 'get_auto_retry_status'
+    $pendingRetry = @($status.structuredContent.retries | Where-Object thread_id -eq $threadId)[0]
     if ($status.structuredContent.retry_prompt -ne $defaultPrompt -or
         $status.structuredContent.pending_retries -ne 1 -or
         $status.structuredContent.stopped_retries -ne 1 -or
-        $status.structuredContent.max_retry_attempts -ne 5) {
+        $status.structuredContent.max_consecutive_retries -ne 5 -or
+        $status.structuredContent.max_recovery_attempts -ne 15 -or
+        $status.structuredContent.delay_strategy -ne 'exponential' -or
+        $pendingRetry.recovery_attempt -ne 4 -or
+        $pendingRetry.consecutive_retry -ne 1) {
         throw "Status tool returned unexpected management state (prompt=$($status.structuredContent.retry_prompt), pending=$($status.structuredContent.pending_retries))."
     }
     $updated = Call-MCPTool $process 5 'set_retry_prompt' @{ prompt = $updatedPrompt }
     if ($updated.structuredContent.retry_prompt -ne $updatedPrompt) { throw 'Prompt update did not take effect.' }
     $settings = Call-MCPTool $process 6 'set_retry_settings' @{
         retry_prompt = $updatedPrompt
-        max_retry_attempts = 7
+        max_consecutive_retries = 3
+        max_recovery_attempts = 27
         initial_delay_seconds = 9
         max_delay_seconds = 120
+        delay_strategy = 'fixed'
         show_notifications = $false
     }
-    if ($settings.structuredContent.max_retry_attempts -ne 7 -or
+    if ($settings.structuredContent.max_consecutive_retries -ne 3 -or
+        $settings.structuredContent.max_recovery_attempts -ne 27 -or
         $settings.structuredContent.initial_delay_seconds -ne 9 -or
         $settings.structuredContent.max_delay_seconds -ne 120 -or
+        $settings.structuredContent.delay_strategy -ne 'fixed' -or
         $settings.structuredContent.show_notifications) {
         throw 'Full settings update did not take effect.'
     }

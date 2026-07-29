@@ -23,11 +23,13 @@ type setRetryPromptInput struct {
 }
 
 type setRetrySettingsInput struct {
-	RetryPrompt         string `json:"retry_prompt" jsonschema:"fallback text used only when silent continuation is unsupported, from 1 to 500 characters"`
-	MaxRetryAttempts    int    `json:"max_retry_attempts" jsonschema:"maximum consecutive retry attempts, from 1 to 20"`
-	InitialDelaySeconds int    `json:"initial_delay_seconds" jsonschema:"delay before the first retry, from 1 to 3600 seconds"`
-	MaxDelaySeconds     int    `json:"max_delay_seconds" jsonschema:"maximum delay, at least the initial delay and no more than 86400 seconds"`
-	ShowNotifications   bool   `json:"show_notifications" jsonschema:"whether Windows retry notifications are enabled"`
+	RetryPrompt           string `json:"retry_prompt" jsonschema:"fallback text used only when silent continuation is unsupported, from 1 to 500 characters"`
+	MaxConsecutiveRetries int    `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress, from 1 to 20"`
+	MaxRecoveryAttempts   int    `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle, from 1 to 100"`
+	InitialDelaySeconds   int    `json:"initial_delay_seconds" jsonschema:"fixed delay or first exponential delay, from 1 to 3600 seconds"`
+	MaxDelaySeconds       int    `json:"max_delay_seconds" jsonschema:"maximum exponential delay, from 1 to 86400 seconds"`
+	DelayStrategy         string `json:"delay_strategy" jsonschema:"fixed for a constant delay or exponential for doubling delays"`
+	ShowNotifications     bool   `json:"show_notifications" jsonschema:"whether Windows retry notifications are enabled"`
 }
 
 type setPausedInput struct {
@@ -93,7 +95,7 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Meta:        managementToolMeta(),
 		Name:        "set_retry_settings",
 		Title:       "修改自动重试设置",
-		Description: "同时修改后备重试文字、连续重试上限、等待时间和 Windows 通知设置。",
+		Description: "同时修改后备重试文字、连续无进展重试上限、单次故障恢复上限、等待策略和 Windows 通知设置。",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "修改自动重试设置"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input setRetrySettingsInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
 		snapshot, err := service.setRetrySettings(RetrySettings(input), time.Now().UTC())
@@ -137,7 +139,7 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Meta:        managementToolMeta(),
 		Name:        "restart_retry",
 		Title:       "重新开始重试",
-		Description: "为已经达到连续失败上限的任务重新开始计数并立即重试。",
+		Description: "为已经达到任一重试上限的任务重新开始两个计数并立即重试。",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), OpenWorldHint: boolPointer(false), Title: "重新开始重试"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input threadControlInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
 		snapshot, err := service.restartRetry(input.ThreadID, time.Now().UTC())

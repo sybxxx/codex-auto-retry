@@ -257,7 +257,7 @@ func (a *trayApp) refresh() {
 	}
 	a.setVisual(iconState, tip)
 	if a.initialized && snapshot.ShowNotifications && snapshot.StoppedRetries > a.lastStopped {
-		a.notify("自动重试已停止", fmt.Sprintf("有 %d 个任务已达到连续重试上限。", snapshot.StoppedRetries))
+		a.notify("自动重试已停止", fmt.Sprintf("有 %d 个任务已达到重试上限。", snapshot.StoppedRetries))
 	}
 	a.lastStopped = snapshot.StoppedRetries
 	a.initialized = true

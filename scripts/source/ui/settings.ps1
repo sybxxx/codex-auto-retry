@@ -96,7 +96,7 @@ $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
-$form.ClientSize = [System.Drawing.Size]::new(620, 690)
+$form.ClientSize = [System.Drawing.Size]::new(620, 760)
 $form.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
 $form.Icon = [System.Drawing.SystemIcons]::Application
 if ($SmokeTest) {
@@ -139,11 +139,12 @@ $taskList.View = 'Details'
 $taskList.FullRowSelect = $true
 $taskList.GridLines = $true
 $taskList.HideSelection = $false
-[void]$taskList.Columns.Add('任务', 105)
-[void]$taskList.Columns.Add('状态', 110)
-[void]$taskList.Columns.Add('倒计时', 105)
-[void]$taskList.Columns.Add('次数', 85)
-[void]$taskList.Columns.Add('故障类型', 125)
+[void]$taskList.Columns.Add('任务', 76)
+[void]$taskList.Columns.Add('状态', 66)
+[void]$taskList.Columns.Add('倒计时', 76)
+[void]$taskList.Columns.Add('本次恢复', 96)
+[void]$taskList.Columns.Add('连续无进展', 96)
+[void]$taskList.Columns.Add('故障类型', 100)
 $queueGroup.Controls.Add($taskList)
 $retryNowButton = [System.Windows.Forms.Button]::new()
 $retryNowButton.Text = '立即重试'
@@ -162,7 +163,7 @@ $queueGroup.Controls.AddRange(@($retryNowButton, $cancelRetryButton, $restartRet
 $settingsGroup = [System.Windows.Forms.GroupBox]::new()
 $settingsGroup.Text = '自动重试设置'
 $settingsGroup.Location = [System.Drawing.Point]::new(20, 378)
-$settingsGroup.Size = [System.Drawing.Size]::new(580, 245)
+$settingsGroup.Size = [System.Drawing.Size]::new(580, 315)
 $form.Controls.Add($settingsGroup)
 
 $enabledCheck = [System.Windows.Forms.CheckBox]::new()
@@ -187,25 +188,38 @@ $promptBox.ScrollBars = 'Vertical'
 $promptBox.Text = [string]$config.retry_prompt
 $settingsGroup.Controls.Add($promptBox)
 
-$attemptLabel = New-Label '最多连续重试次数' 18 151 145 22
-$attemptBox = New-NumberBox 168 148 1 20 ([int]$config.max_retry_attempts) 120
-$settingsGroup.Controls.Add($attemptLabel)
-$settingsGroup.Controls.Add($attemptBox)
-$initialDelayLabel = New-Label '首次等待（秒）' 310 151 110 22
-$initialDelayBox = New-NumberBox 428 148 1 3600 ([int]$config.initial_delay_seconds) 130
-$settingsGroup.Controls.Add($initialDelayLabel)
-$settingsGroup.Controls.Add($initialDelayBox)
-$maxDelayLabel = New-Label '最大等待（秒）' 18 193 145 22
-$maxDelayBox = New-NumberBox 168 190 1 86400 ([int]$config.max_delay_seconds) 120
-$settingsGroup.Controls.Add($maxDelayLabel)
-$settingsGroup.Controls.Add($maxDelayBox)
-$hint = New-Label '目标模式仍使用 Codex 原生恢复，不会发送上面的文字。' 310 193 248 42
+$recoveryLabel = New-Label '本次故障恢复上限' 18 151 145 22
+$recoveryBox = New-NumberBox 168 148 1 100 ([int]$config.max_recovery_attempts) 120
+$consecutiveLabel = New-Label '连续无进展重试上限' 310 151 128 22
+$consecutiveBox = New-NumberBox 438 148 1 20 ([int]$config.max_consecutive_retries) 120
+$settingsGroup.Controls.AddRange(@($recoveryLabel, $recoveryBox, $consecutiveLabel, $consecutiveBox))
+
+$strategyLabel = New-Label '等待策略' 18 193 145 22
+$strategyBox = [System.Windows.Forms.ComboBox]::new()
+$strategyBox.Location = [System.Drawing.Point]::new(168, 190)
+$strategyBox.Size = [System.Drawing.Size]::new(120, 24)
+$strategyBox.DropDownStyle = 'DropDownList'
+[void]$strategyBox.Items.Add('翻倍递增')
+[void]$strategyBox.Items.Add('固定间隔')
+$strategyBox.SelectedIndex = if ([string]$config.delay_strategy -eq 'fixed') { 1 } else { 0 }
+$initialDelayLabel = New-Label '首次等待（秒）' 310 193 118 22
+$initialDelayBox = New-NumberBox 438 190 1 3600 ([int]$config.initial_delay_seconds) 120
+$settingsGroup.Controls.AddRange(@($strategyLabel, $strategyBox, $initialDelayLabel, $initialDelayBox))
+
+$maxDelayLabel = New-Label '最大等待（秒）' 18 235 145 22
+$maxDelayBox = New-NumberBox 168 232 1 86400 ([int]$config.max_delay_seconds) 120
+$previewLabel = New-Label '' 310 231 248 43
+$previewLabel.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.AddRange(@($maxDelayLabel, $maxDelayBox, $previewLabel))
+$hint = New-Label '目标保持暂停时，后续手动消息会独立重试。' 18 278 540 24
 $hint.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($hint)
 
 function Assert-SettingsLayout {
     foreach ($pair in @(
-        @($attemptLabel, $attemptBox, '最多连续重试次数'),
+        @($recoveryLabel, $recoveryBox, '本次故障恢复上限'),
+        @($consecutiveLabel, $consecutiveBox, '连续无进展重试上限'),
+        @($strategyLabel, $strategyBox, '等待策略'),
         @($initialDelayLabel, $initialDelayBox, '首次等待'),
         @($maxDelayLabel, $maxDelayBox, '最大等待')
     )) {
@@ -213,7 +227,7 @@ function Assert-SettingsLayout {
             throw ("设置布局发生遮挡：" + [string]$pair[2])
         }
     }
-    foreach ($box in @($attemptBox, $initialDelayBox, $maxDelayBox)) {
+    foreach ($box in @($recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox, $maxDelayBox)) {
         if ($box.Left -lt 0 -or $box.Right -gt $settingsGroup.ClientSize.Width) {
             throw '设置输入框超出可见区域。'
         }
@@ -221,19 +235,52 @@ function Assert-SettingsLayout {
 }
 Assert-SettingsLayout
 
-$noticeLabel = New-Label '' 22 637 390 28
+function Get-DelayStrategy {
+    if ($strategyBox.SelectedIndex -eq 1) { return 'fixed' }
+    return 'exponential'
+}
+
+function Format-PreviewDelay {
+    param([long]$Seconds)
+    if ($Seconds -lt 60) { return ([string]$Seconds + ' 秒') }
+    if ($Seconds % 3600 -eq 0) { return ([string]($Seconds / 3600) + ' 小时') }
+    if ($Seconds % 60 -eq 0) { return ([string]($Seconds / 60) + ' 分钟') }
+    return ([string]$Seconds + ' 秒')
+}
+
+function Update-DelayPreview {
+    $strategy = Get-DelayStrategy
+    $initial = [long]$initialDelayBox.Value
+    $maximum = [long]$maxDelayBox.Value
+    $count = [Math]::Min([int]$consecutiveBox.Value, 6)
+    $values = @()
+    $delay = $initial
+    for ($index = 0; $index -lt $count; $index++) {
+        $value = if ($strategy -eq 'fixed') { $initial } else { [Math]::Min($delay, $maximum) }
+        $values += (Format-PreviewDelay $value)
+        if ($strategy -eq 'exponential') { $delay = [Math]::Min($delay * 2, $maximum) }
+    }
+    $suffix = if ([int]$consecutiveBox.Value -gt $count) { '，…' } else { '' }
+    $previewLabel.Text = '等待序列：' + ($values -join '，') + $suffix
+    $maxDelayBox.Enabled = $strategy -eq 'exponential'
+    $initialDelayLabel.Text = if ($strategy -eq 'fixed') { '固定间隔（秒）' } else { '首次等待（秒）' }
+}
+
+Update-DelayPreview
+
+$noticeLabel = New-Label '' 22 707 390 28
 $noticeLabel.ForeColor = [System.Drawing.Color]::SeaGreen
 $form.Controls.Add($noticeLabel)
 $saveButton = [System.Windows.Forms.Button]::new()
 $saveButton.Text = '保存设置'
-$saveButton.Location = [System.Drawing.Point]::new(420, 637)
+$saveButton.Location = [System.Drawing.Point]::new(420, 707)
 $saveButton.Size = [System.Drawing.Size]::new(85, 30)
 $saveButton.BackColor = [System.Drawing.Color]::FromArgb(35, 39, 37)
 $saveButton.ForeColor = [System.Drawing.Color]::White
 $saveButton.FlatStyle = 'Flat'
 $closeButton = [System.Windows.Forms.Button]::new()
 $closeButton.Text = '关闭'
-$closeButton.Location = [System.Drawing.Point]::new(515, 637)
+$closeButton.Location = [System.Drawing.Point]::new(515, 707)
 $closeButton.Size = [System.Drawing.Size]::new(85, 30)
 $form.Controls.AddRange(@($saveButton, $closeButton))
 $form.CancelButton = $closeButton
@@ -257,6 +304,7 @@ function Get-ClassText {
         'server' { '供应商故障' }
         'auth_transient' { '登录服务异常' }
         'auth_limited' { '登录异常' }
+        'empty_response' { '模型空回复' }
         'unknown' { '未知故障' }
         default { '未分类' }
     }
@@ -311,6 +359,8 @@ function Update-RuntimeView {
             $failureClass = ''
             $attempt = 0
             $maximum = 0
+            $consecutive = 0
+            $maxConsecutive = 0
             $seconds = $null
             if (-not $running -and ($thread.pending -or $thread.awaiting)) { continue }
             if ($thread.pending) {
@@ -319,6 +369,8 @@ function Update-RuntimeView {
                 $failureClass = [string]$thread.pending.class
                 $attempt = [int]$thread.pending.attempt
                 $maximum = [int]$thread.pending.max_attempts
+                $consecutive = [int]$thread.pending.consecutive_retry
+                $maxConsecutive = [int]$thread.pending.max_consecutive_retries
                 try {
                     $dueAt = [DateTimeOffset]::Parse([string]$thread.pending.due_at)
                     $seconds = [Math]::Max(0, [Math]::Ceiling(($dueAt - [DateTimeOffset]::UtcNow).TotalSeconds))
@@ -330,20 +382,26 @@ function Update-RuntimeView {
                 $failureClass = [string]$thread.awaiting.class
                 $attempt = [int]$thread.awaiting.attempt
                 $maximum = [int]$thread.awaiting.max_attempts
+                $consecutive = [int]$thread.awaiting.consecutive_retry
+                $maxConsecutive = [int]$thread.awaiting.max_consecutive_retries
             } elseif ($thread.stopped) {
                 $rowState = 'stopped'
                 $stoppedCount++
                 $failureClass = [string]$thread.stopped.class
                 $attempt = [int]$thread.stopped.attempts
                 $maximum = [int]$thread.stopped.max_attempts
+                $consecutive = [int]$thread.stopped.consecutive_retries
+                $maxConsecutive = [int]$thread.stopped.max_consecutive_retries
             } else { continue }
             $shortID = if ($threadID.Length -gt 8) { $threadID.Substring(0, 8) } else { $threadID }
             $countdown = if ($null -ne $seconds) { ([int]$seconds).ToString() + ' 秒' } else { '--' }
-            $attemptText = if ($maximum -gt 0) { "$attempt/$maximum" } else { [string]$attempt }
+            $recoveryText = if ($maximum -gt 0) { "$attempt/$maximum" } else { [string]$attempt }
+            $consecutiveText = if ($maxConsecutive -gt 0) { "$consecutive/$maxConsecutive" } else { [string]$consecutive }
             $item = [System.Windows.Forms.ListViewItem]::new($shortID)
             [void]$item.SubItems.Add((Get-StateText $rowState))
             [void]$item.SubItems.Add($countdown)
-            [void]$item.SubItems.Add($attemptText)
+            [void]$item.SubItems.Add($recoveryText)
+            [void]$item.SubItems.Add($consecutiveText)
             [void]$item.SubItems.Add((Get-ClassText $failureClass))
             $item.Tag = [pscustomobject]@{ ThreadID = $threadID; State = $rowState }
             [void]$taskList.Items.Add($item)
@@ -388,6 +446,10 @@ $taskList.add_SelectedIndexChanged({ Update-ActionButtons })
 $retryNowButton.add_Click({ Invoke-TaskAction 'retry_now' })
 $cancelRetryButton.add_Click({ Invoke-TaskAction 'cancel_retry' })
 $restartRetryButton.add_Click({ Invoke-TaskAction 'restart_retry' })
+$strategyBox.add_SelectedIndexChanged({ Update-DelayPreview })
+$initialDelayBox.add_ValueChanged({ Update-DelayPreview })
+$maxDelayBox.add_ValueChanged({ Update-DelayPreview })
+$consecutiveBox.add_ValueChanged({ Update-DelayPreview })
 $closeButton.add_Click({ $form.Close() })
 $saveButton.add_Click({
     $prompt = $promptBox.Text.Trim()
@@ -395,15 +457,18 @@ $saveButton.add_Click({
         [System.Windows.Forms.MessageBox]::Show('后备重试文字不能为空。', 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
         return
     }
-    if ([int]$maxDelayBox.Value -lt [int]$initialDelayBox.Value) {
+    $delayStrategy = Get-DelayStrategy
+    if ($delayStrategy -eq 'exponential' -and [int]$maxDelayBox.Value -lt [int]$initialDelayBox.Value) {
         [System.Windows.Forms.MessageBox]::Show('最大等待时间不能小于首次等待时间。', 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
         return
     }
     $payload = [ordered]@{
         retry_prompt = $prompt
-        max_retry_attempts = [int]$attemptBox.Value
+        max_recovery_attempts = [int]$recoveryBox.Value
+        max_consecutive_retries = [int]$consecutiveBox.Value
         initial_delay_seconds = [int]$initialDelayBox.Value
         max_delay_seconds = [int]$maxDelayBox.Value
+        delay_strategy = $delayStrategy
         show_notifications = [bool]$notificationsCheck.Checked
         paused = -not [bool]$enabledCheck.Checked
     }

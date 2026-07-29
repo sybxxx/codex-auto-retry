@@ -20,10 +20,13 @@ and exit. This is not a second watchdog or a separate retry engine.
   background connection and activate its native goal only when the blocked
   state is attributable to the same provider failure. Codex creates the goal
   continuation turn itself.
-- A user or AI pause, including a goal waiting for review, overrides recovery.
-  Pauses observed before failure, during the countdown, or while dispatch is
-  starting cancel that retry. Only a later explicit `active` goal update clears
-  the hold.
+- A user or AI pause, including a goal waiting for review, overrides goal
+  recovery. Pauses during the failed turn, countdown, or dispatch cancel that
+  retry. Only a later explicit `active` goal update clears the goal hold.
+- If a held goal predates a later externally started conversation turn, retry
+  that turn as a silent normal continuation while leaving the goal unchanged.
+  Recheck the same held goal revision immediately before `turn/start`; a pause
+  or goal change at or after the turn start must fail closed.
 - Completed, usage-limited, budget-limited, missing, and unknown goal states
   must fail closed; never turn them into a normal-conversation continuation.
 - Normal conversation: start a silent empty-input continuation in the exact
@@ -40,9 +43,12 @@ and exit. This is not a second watchdog or a separate retry engine.
   independent user task to resume.
 - Count recovery only when the App-created `task_started` ID has a matching
   successful `task_complete`.
-- Stop a consecutive failure chain at `max_retry_attempts`, five by default.
-  A success or a new user turn resets the count. Controller connection failures
-  delay dispatch and never consume the provider attempt budget.
+- Stop at either independent safety limit: `max_recovery_attempts` bounds all
+  automatic attempts in one fault (15 by default, 1-100), while
+  `max_consecutive_retries` bounds retries without a visible assistant reply or
+  completed tool result (5 by default, 1-20). Visible progress resets only the
+  second count; success or a new user turn resets both. Controller connection
+  failures delay dispatch and consume neither budget.
 
 ## Embedded Management
 
@@ -54,8 +60,8 @@ tasks, live countdowns, pause state, and the compatibility fallback text.
   `继续`, the maximum is 500 characters, and changes apply without restarting
   the watchdog. Normal retries do not send this text when silent continuation
   is supported.
-- Use `set_retry_settings` to change the fallback text, consecutive attempt limit
-  (1-20), initial delay, maximum delay, and Windows notification preference.
+- Use `set_retry_settings` to change the fallback text, both retry limits, fixed
+  or doubling waits, first/fixed delay, maximum delay, and Windows notifications.
 - Goal recovery never sends the fallback text; it continues to activate the
   native Codex goal.
 - Use `set_auto_retry_paused` to pause or resume new dispatches. Do not claim
@@ -119,14 +125,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 
 ## Privacy Boundary
 
-The event scanner parses only `event_msg` records whose payload type is
-`task_started`, `task_complete`, `turn_aborted`, or `thread_goal_updated`. For
+The event scanner parses lifecycle records plus `response_item` metadata only
+when it identifies a visible assistant message or completed tool result. For
 completions it retains only whether `last_agent_message` was known and non-empty,
 never the message text. For aborts it retains only the turn ID, reason, and
 timestamp. Goal parsing retains only the target task ID, status, and lifecycle
 timestamps, and routes by the payload task ID even when Codex stores the event
 in another rollout. It does not retain the goal objective or inspect
-conversation text for intent. Before dispatch, a
+conversation text for intent. Progress records retain only a boolean and never
+decode or save message/tool-result content. Before dispatch, a
 separate reader extracts only the required execution settings from the latest `turn_context` and
 `thread_settings_applied` records. It does not retain, forward, or log prompts,
 developer instructions, assistant messages, tool arguments, tool results, API
@@ -139,7 +146,8 @@ the fallback prompt or app-server error bodies.
 
 ## Retry Policy
 
-- Bounded retries, five by default and configurable from 1 to 20: network
+- Bounded by both the per-fault recovery budget and the consecutive no-progress
+  guard: network
   failures, timeouts, HTTP 408/425/429 and 5xx responses, interrupted streams,
   HTTP 200 completions with no final model reply, temporary provider
   authentication outages, cooldown, and provider overload.

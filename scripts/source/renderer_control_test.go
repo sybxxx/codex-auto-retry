@@ -100,8 +100,9 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 		Reason:  "goal_resumed_in_background",
 	})
 	failedAt := time.Date(2026, 7, 27, 15, 52, 2, 123_000_000, time.UTC)
+	originAt := failedAt.Add(-5 * time.Minute)
 	result, err := fake.controller().Dispatch(context.Background(),
-		"019f9d46-2924-7a70-8ec9-83b19f5491a9", "Continue.", testResumeSettings(), failedAt)
+		"019f9d46-2924-7a70-8ec9-83b19f5491a9", "Continue.", testResumeSettings(), failedAt, originAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +115,9 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 	}
 	if !strings.Contains(expressions[0], `"failed_at_unix_ms":1785167522123`) {
 		t.Fatal("provider failure time was not encoded for goal-state attribution")
+	}
+	if !strings.Contains(expressions[0], `"origin_turn_started_at_unix_ms":1785167222123`) {
+		t.Fatal("originating user turn time was not encoded for held-goal continuation")
 	}
 	for _, setting := range []string{
 		`"permissions":":danger-full-access"`,
@@ -136,6 +140,9 @@ func TestRendererControllerDispatchesStructuredResult(t *testing.T) {
 func TestRendererDispatchProtectsIntentionalGoalHolds(t *testing.T) {
 	for _, required := range []string{
 		`payload.failed_at_unix_ms`,
+		`payload.origin_turn_started_at_unix_ms`,
+		`heldConversationAllowed`,
+		`goalRevision(latestGoal) !== initialGoalRevision`,
 		`"goal_paused"`,
 		`"goal_blocked_before_failure"`,
 		`"goal_completed"`,
@@ -164,10 +171,15 @@ func TestRendererDispatchProtectsIntentionalGoalHolds(t *testing.T) {
 		}
 	}
 	secondGoalRead := strings.LastIndex(rendererDispatchExpression, `request("thread/goal/get"`)
+	heldStart := strings.Index(rendererDispatchExpression, `return await startConversation(request, true)`)
 	holdCheck := strings.LastIndex(rendererDispatchExpression, `const latestHoldReason = goalHoldReason(latestGoal)`)
-	turnStart := strings.Index(rendererDispatchExpression, `request("turn/start"`)
-	if secondGoalRead < 0 || holdCheck < secondGoalRead || turnStart < holdCheck {
-		t.Fatal("normal conversation fallback can run before the final goal hold check")
+	normalStart := strings.Index(rendererDispatchExpression, `return await startConversation(request, false)`)
+	if secondGoalRead < 0 || heldStart < secondGoalRead || holdCheck < heldStart || normalStart < holdCheck {
+		t.Fatal("conversation continuation can run before the final goal-state checks")
+	}
+	heldBranch := rendererDispatchExpression[heldStart:holdCheck]
+	if strings.Contains(heldBranch, `thread/goal/set`) {
+		t.Fatal("held-goal conversation path can reactivate the paused goal")
 	}
 }
 
@@ -247,7 +259,7 @@ func TestRendererControllerSupportsTwoTasksWithoutSharedNavigation(t *testing.T)
 			settings := testResumeSettings()
 			settings.Model = test.model
 			settings.Effort = test.effort
-			_, err := controller.Dispatch(context.Background(), test.threadID, "Continue.", settings, time.Now().UTC())
+			_, err := controller.Dispatch(context.Background(), test.threadID, "Continue.", settings, time.Now().UTC(), time.Time{})
 			errorsByThread <- err
 		}(test)
 	}

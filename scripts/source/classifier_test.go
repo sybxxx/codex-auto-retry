@@ -48,6 +48,18 @@ func TestRetryDelayCaps(t *testing.T) {
 	}
 }
 
+func TestFixedRetryDelayDoesNotIncrease(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.DelayStrategy = delayStrategyFixed
+	cfg.InitialDelaySeconds = 7
+	cfg.MaxDelaySeconds = 3
+	for attempt := 1; attempt <= 8; attempt++ {
+		if got := int(retryDelay(attempt, cfg).Seconds()); got != 7 {
+			t.Fatalf("attempt %d fixed delay = %d, want 7", attempt, got)
+		}
+	}
+}
+
 func TestClassifyCompletionFailure(t *testing.T) {
 	cfg := defaultConfig()
 	empty := RelevantEvent{FinalKnown: true}

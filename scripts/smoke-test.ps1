@@ -124,10 +124,13 @@ try {
     $mockPort = [int](Get-Content -Raw -Encoding UTF8 -LiteralPath $mockPortPath | ConvertFrom-Json)
 
     $config = [ordered]@{
-        config_version = 3
+        config_version = 4
         poll_interval_seconds = 1
         initial_delay_seconds = 1
         max_delay_seconds = 4
+        delay_strategy = 'exponential'
+        max_consecutive_retries = 5
+        max_recovery_attempts = 15
         max_parallel_retries = 2
         start_ack_timeout_seconds = 10
         auth_max_attempts = 3
@@ -137,6 +140,7 @@ try {
         include_cockpit_homes = $false
         renderer_debug_port = $mockPort
         retry_prompt = 'Continue smoke test.'
+        show_notifications = $false
     }
     [System.IO.File]::WriteAllText(
         (Join-Path $dataDir 'config.json'),
@@ -251,7 +255,8 @@ try {
         $recovered = $true
         foreach ($thread in $retryThreads) {
             $threadState = Get-ThreadState -ThreadId $thread.Id
-            if (-not $threadState -or $threadState.pending -or $threadState.awaiting -or $threadState.consecutive_failures -ne 0) {
+            if (-not $threadState -or $threadState.pending -or $threadState.awaiting -or
+                [int]$threadState.recovery_attempts -ne 0 -or [int]$threadState.consecutive_retries -ne 0) {
                 $recovered = $false
             }
         }
