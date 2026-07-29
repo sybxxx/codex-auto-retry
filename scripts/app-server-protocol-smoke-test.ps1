@@ -20,7 +20,7 @@ function Start-AppServer {
     param([string]$CodexBinary, [string]$CodexHome)
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $CodexBinary
-    $startInfo.Arguments = 'app-server --stdio'
+    $startInfo.Arguments = '--disable plugins app-server --stdio'
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardInput = $true
@@ -30,7 +30,9 @@ function Start-AppServer {
     $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     $startInfo.EnvironmentVariables['CODEX_HOME'] = $CodexHome
     [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-    return [System.Diagnostics.Process]::Start($startInfo)
+    $server = [System.Diagnostics.Process]::Start($startInfo)
+    $server.BeginErrorReadLine()
+    return $server
 }
 
 function Send-Request {
