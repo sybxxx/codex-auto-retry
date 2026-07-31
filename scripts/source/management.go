@@ -39,8 +39,9 @@ type ManagementSnapshot struct {
 	MaxConsecutiveRetries int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
 	MaxRecoveryAttempts   int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
 	InitialDelaySeconds   int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
-	MaxDelaySeconds       int            `json:"max_delay_seconds" jsonschema:"maximum exponential backoff delay"`
-	DelayStrategy         string         `json:"delay_strategy" jsonschema:"fixed or exponential retry delay"`
+	MaxDelaySeconds       int            `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
+	DelayIncrementSeconds int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
+	DelayStrategy         string         `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
 	ShowNotifications     bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
 	Now                   string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
 	LastScanAt            string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
@@ -49,6 +50,7 @@ type ManagementSnapshot struct {
 	StoppedRetries        int            `json:"stopped_retries" jsonschema:"number of retry chains stopped at their attempt limit"`
 	WatchedRoots          int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
 	LastError             string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
+	ControllerState       string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
 	Notice                string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
 	Retries               []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
 }
@@ -133,6 +135,7 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		MaxRecoveryAttempts:   config.MaxRecoveryAttempts,
 		InitialDelaySeconds:   config.InitialDelaySeconds,
 		MaxDelaySeconds:       config.MaxDelaySeconds,
+		DelayIncrementSeconds: config.DelayIncrementSeconds,
 		DelayStrategy:         config.DelayStrategy,
 		ShowNotifications:     config.ShowNotifications,
 		Now:                   now.Format(time.RFC3339Nano),
@@ -147,6 +150,7 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		}
 		snapshot.WatchedRoots = status.WatchedRoots
 		snapshot.LastError = status.LastError
+		snapshot.ControllerState = status.ControllerState
 		if !status.LastScanAt.IsZero() {
 			snapshot.LastScanAt = status.LastScanAt.Format(time.RFC3339Nano)
 		}
@@ -160,6 +164,7 @@ type RetrySettings struct {
 	MaxRecoveryAttempts   int    `json:"max_recovery_attempts"`
 	InitialDelaySeconds   int    `json:"initial_delay_seconds"`
 	MaxDelaySeconds       int    `json:"max_delay_seconds"`
+	DelayIncrementSeconds int    `json:"delay_increment_seconds"`
 	DelayStrategy         string `json:"delay_strategy"`
 	ShowNotifications     bool   `json:"show_notifications"`
 }
@@ -171,13 +176,7 @@ func (m *managementService) setRetrySettings(settings RetrySettings, now time.Ti
 	if err != nil {
 		return ManagementSnapshot{}, err
 	}
-	config.RetryPrompt = settings.RetryPrompt
-	config.MaxConsecutiveRetries = settings.MaxConsecutiveRetries
-	config.MaxRecoveryAttempts = settings.MaxRecoveryAttempts
-	config.InitialDelaySeconds = settings.InitialDelaySeconds
-	config.MaxDelaySeconds = settings.MaxDelaySeconds
-	config.DelayStrategy = settings.DelayStrategy
-	config.ShowNotifications = settings.ShowNotifications
+	applyRetrySettings(&config, settings)
 	if err := config.validate(); err != nil {
 		return ManagementSnapshot{}, err
 	}
@@ -199,13 +198,7 @@ func (m *managementService) setLocalSettings(settings RetrySettings, paused bool
 		return err
 	}
 	originalConfig := config
-	config.RetryPrompt = settings.RetryPrompt
-	config.MaxConsecutiveRetries = settings.MaxConsecutiveRetries
-	config.MaxRecoveryAttempts = settings.MaxRecoveryAttempts
-	config.InitialDelaySeconds = settings.InitialDelaySeconds
-	config.MaxDelaySeconds = settings.MaxDelaySeconds
-	config.DelayStrategy = settings.DelayStrategy
-	config.ShowNotifications = settings.ShowNotifications
+	applyRetrySettings(&config, settings)
 	if err := config.validate(); err != nil {
 		return err
 	}
@@ -219,6 +212,19 @@ func (m *managementService) setLocalSettings(settings RetrySettings, paused bool
 		return fmt.Errorf("save local pause state: %w", err)
 	}
 	return nil
+}
+
+func applyRetrySettings(config *Config, settings RetrySettings) {
+	config.RetryPrompt = settings.RetryPrompt
+	config.MaxConsecutiveRetries = settings.MaxConsecutiveRetries
+	config.MaxRecoveryAttempts = settings.MaxRecoveryAttempts
+	config.InitialDelaySeconds = settings.InitialDelaySeconds
+	config.MaxDelaySeconds = settings.MaxDelaySeconds
+	if settings.DelayIncrementSeconds != 0 || settings.DelayStrategy == delayStrategyLinear {
+		config.DelayIncrementSeconds = settings.DelayIncrementSeconds
+	}
+	config.DelayStrategy = settings.DelayStrategy
+	config.ShowNotifications = settings.ShowNotifications
 }
 
 func (m *managementService) setRetryPrompt(prompt string, now time.Time) (ManagementSnapshot, error) {

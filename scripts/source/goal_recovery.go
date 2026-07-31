@@ -7,7 +7,6 @@ import (
 
 const (
 	nativeGoalContinuationWindow     = 5 * time.Second
-	maxGoalStopDispatchFailures      = 100
 	goalEmptyResponseStopReason      = "goal_empty_response_limit"
 	goalEmptyResponseBlockFailReason = "goal_empty_response_limit_block_failed"
 )
@@ -135,8 +134,10 @@ func (d *daemon) runGoalBlockJob(ctx context.Context, job RetryJob) {
 		return
 	}
 	if err != nil || result.Outcome == outcomeRetryLater || result.Outcome == outcomeUserActive {
+		d.controllerState = controllerFailureReason(result, err)
 		d.rescheduleGoalBlockLocked(job.ThreadID, &thread, finishedAt, controllerFailureReason(result, err))
 	} else if result.Outcome == outcomeDispatched && result.Action == actionGoalBlock {
+		d.controllerState = "ready"
 		thread.GoalStop = nil
 		thread.Stopped.Reason = goalEmptyResponseStopReason
 		switch result.Reason {
@@ -166,12 +167,17 @@ func (d *daemon) runGoalBlockJob(ctx context.Context, job RetryJob) {
 
 func (d *daemon) rescheduleGoalBlockLocked(threadID string, thread *ThreadState, now time.Time, reason string) {
 	failures := thread.GoalStop.DispatchFailures + 1
-	if failures >= maxGoalStopDispatchFailures {
+	if controllerFailureNeedsAction(reason) || failures >= d.config.ControllerFailureLimit {
 		thread.GoalStop = nil
 		thread.GoalHeld = true
 		if thread.Stopped != nil {
-			thread.Stopped.Reason = goalEmptyResponseBlockFailReason
+			if controllerFailureNeedsAction(reason) {
+				thread.Stopped.Reason = reason
+			} else {
+				thread.Stopped.Reason = goalEmptyResponseBlockFailReason
+			}
 		}
+		d.lastError = reason
 		d.logger.Printf("goal stop failed thread=%s reason=%s", shortThreadID(threadID), reason)
 		return
 	}

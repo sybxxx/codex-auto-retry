@@ -29,6 +29,8 @@ function Start-AppServer {
     $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     $startInfo.EnvironmentVariables['CODEX_HOME'] = $CodexHome
+    $startInfo.EnvironmentVariables['CODEX_INTEGRATION_TEST_KEY'] = 'local-test-key'
+    $startInfo.EnvironmentVariables['NO_PROXY'] = '127.0.0.1,localhost'
     [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
     $server = [System.Diagnostics.Process]::Start($startInfo)
     $server.BeginErrorReadLine()
@@ -103,6 +105,25 @@ function Assert-ResumeSettingsPreserved {
 
 try {
     New-Item -ItemType Directory -Force -Path $testHome | Out-Null
+    $isolatedConfig = @"
+model = 'integration-test-model'
+model_provider = 'integration_test'
+
+[model_providers.integration_test]
+name = 'Integration Test'
+base_url = 'http://127.0.0.1:1/v1'
+env_key = 'CODEX_INTEGRATION_TEST_KEY'
+wire_api = 'responses'
+requires_openai_auth = false
+request_max_retries = 0
+stream_max_retries = 0
+stream_idle_timeout_ms = 250
+"@
+    [System.IO.File]::WriteAllText(
+        (Join-Path $testHome 'config.toml'),
+        $isolatedConfig,
+        [System.Text.UTF8Encoding]::new($false)
+    )
     $secondaryWorkspace = Join-Path $testRoot 'secondary-workspace'
     New-Item -ItemType Directory -Force -Path $secondaryWorkspace | Out-Null
     $codexBinary = Find-CodexBinary
@@ -113,8 +134,8 @@ try {
         approvalPolicy = 'never'
         approvalsReviewer = 'user'
         permissions = ':danger-full-access'
-        model = 'gpt-5.3-codex'
-        modelProvider = 'openai'
+        model = 'integration-test-model'
+        modelProvider = 'integration_test'
         personality = 'pragmatic'
         serviceTier = 'priority'
         config = @{
@@ -216,12 +237,17 @@ try {
         instruction = 'The watchdog is resuming the exact existing child. Do not resume or spawn any child for this recovery event.'
     } | ConvertTo-Json -Compress
     $noticeText = 'codex-auto-retry:subagent-empty-response-recovery:v1:' + $noticePayload
-    $injectionResumeParams = $threadSettings.Clone()
-    $injectionResumeParams.threadId = $injectionThreadId
-    $injectionResumeParams.excludeTurns = $true
-    Send-Request $process @{ method = 'thread/resume'; id = 12; params = $injectionResumeParams }
-    $injectionResume = Read-UntilId $process 12
-    $captured += $injectionResume.Lines
+    $parentResumeParams = $threadSettings.Clone()
+    $parentResumeParams.threadId = $injectionThreadId
+    $parentResumeParams.excludeTurns = $true
+    Send-Request $process @{
+        method = 'thread/resume'
+        id = 12
+        params = $parentResumeParams
+    }
+    $parentResume = Read-UntilId $process 12
+    $captured += $parentResume.Lines
+    Assert-ResumeSettingsPreserved -Started $injectionThread.Response.result -Resumed $parentResume.Response.result -Label 'Subagent parent task'
     Send-Request $process @{
         method = 'thread/inject_items'
         id = 13
@@ -252,6 +278,9 @@ try {
     if ($pausedGoal.Response.result.goal.status -ne 'paused' -or $goalBefore.Response.result.goal.status -ne 'paused') {
         throw 'Paused goal state was not preserved across app-server restart.'
     }
+    if ($null -eq $goalBefore.Response.result.goal.updatedAt) {
+        throw 'Goal state did not expose the revision timestamp required for pause/race protection.'
+    }
     if ($goalActivated.Response.result.goal.status -ne 'active') {
         throw 'Goal activation was not accepted.'
     }
@@ -279,14 +308,17 @@ try {
         Status = 'passed'
         IsolatedCodexHome = $true
         GoalStatePreserved = $true
+        GoalRevisionObserved = $true
         ThreadSettingsPreserved = $true
         GoalNativeContinuationStarted = $true
         SilentNormalSameTaskTurnStarted = $true
         HeldGoalConversationStarted = $true
         HeldGoalRemainedPaused = $true
+        UnloadedParentResumed = $true
         ParentRecoveryEventInjected = $true
         ActiveGoalBlockedAtLimit = $true
         CodexAppUIUsed = $false
+        RealAccountOrProviderUsed = $false
     }
 }
 finally {

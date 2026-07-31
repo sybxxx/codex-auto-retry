@@ -25,14 +25,16 @@ type daemon struct {
 	runner      resumeRunner
 	startedAt   time.Time
 
-	mu        sync.Mutex
-	wg        sync.WaitGroup
-	state     RuntimeState
-	active    map[string]RetryJob
-	activeCtx map[string]context.CancelFunc
-	lastScan  time.Time
-	lastError string
-	paused    bool
+	mu                  sync.Mutex
+	wg                  sync.WaitGroup
+	state               RuntimeState
+	active              map[string]RetryJob
+	activeCtx           map[string]context.CancelFunc
+	lastScan            time.Time
+	lastError           string
+	controllerState     string
+	lastControllerProbe time.Time
+	paused              bool
 }
 
 func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeRunner) (*daemon, error) {
@@ -53,20 +55,21 @@ func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeR
 		return nil, err
 	}
 	daemon := &daemon{
-		config:      config,
-		dataDir:     dataDir,
-		statePath:   statePath,
-		statusPath:  filepath.Join(dataDir, "status.json"),
-		stopPath:    filepath.Join(dataDir, "stop.signal"),
-		controlPath: controlPath,
-		commandDir:  filepath.Join(dataDir, "commands"),
-		logger:      logger,
-		runner:      runner,
-		startedAt:   time.Now().UTC(),
-		state:       state,
-		active:      make(map[string]RetryJob),
-		activeCtx:   make(map[string]context.CancelFunc),
-		paused:      control.Paused,
+		config:          config,
+		dataDir:         dataDir,
+		statePath:       statePath,
+		statusPath:      filepath.Join(dataDir, "status.json"),
+		stopPath:        filepath.Join(dataDir, "stop.signal"),
+		controlPath:     controlPath,
+		commandDir:      filepath.Join(dataDir, "commands"),
+		logger:          logger,
+		runner:          runner,
+		startedAt:       time.Now().UTC(),
+		state:           state,
+		active:          make(map[string]RetryJob),
+		activeCtx:       make(map[string]context.CancelFunc),
+		paused:          control.Paused,
+		controllerState: "starting",
 	}
 	daemon.reconcileStartupState(time.Now().UTC())
 	return daemon, nil
@@ -97,7 +100,11 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 		return errStopRequested
 	}
 
+	controllerReady := d.controllerRestartReady(ctx, now)
 	d.mu.Lock()
+	if controllerReady {
+		d.reopenRestartRequiredLocked(now)
+	}
 	d.reloadConfigLocked()
 	roots := discoverSessionRoots(d.config)
 	baseline := !d.state.Initialized
@@ -151,6 +158,58 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
+func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool {
+	runner, ok := d.runner.(controllerStateRunner)
+	if !ok {
+		return false
+	}
+	d.mu.Lock()
+	needsProbe := false
+	for _, thread := range d.state.Threads {
+		if thread.Stopped != nil && thread.Stopped.Reason == "codex_restart_required" {
+			needsProbe = true
+			break
+		}
+	}
+	if !needsProbe || (!d.lastControllerProbe.IsZero() && now.Sub(d.lastControllerProbe) < 10*time.Second) {
+		d.mu.Unlock()
+		return false
+	}
+	d.lastControllerProbe = now
+	d.mu.Unlock()
+	state := runner.ControllerState(ctx)
+	d.mu.Lock()
+	d.controllerState = state
+	d.mu.Unlock()
+	return state == "ready"
+}
+
+func (d *daemon) reopenRestartRequiredLocked(now time.Time) {
+	for threadID, thread := range d.state.Threads {
+		stopped := thread.Stopped
+		if stopped == nil || stopped.Reason != "codex_restart_required" {
+			continue
+		}
+		attempt := stopped.Attempts + 1
+		consecutive := stopped.ConsecutiveRetries + 1
+		if attempt > stopped.MaxAttempts || consecutive > stopped.MaxConsecutive {
+			continue
+		}
+		thread.Stopped = nil
+		thread.RecoveryAttempts = attempt
+		thread.ConsecutiveRetries = consecutive
+		thread.Pending = &PendingRetry{
+			EventKey: stopped.EventKey, FailedTurnID: stopped.FailedTurnID, FailedAt: stopped.FailedAt,
+			OriginTurnStartedAt: stopped.OriginTurnStartedAt,
+			Class:               stopped.Class, DueAt: now, CodexHome: stopped.CodexHome, RolloutPath: stopped.RolloutPath,
+			Attempt: attempt, MaxAttempts: stopped.MaxAttempts,
+			ConsecutiveRetry: consecutive, MaxConsecutive: stopped.MaxConsecutive,
+		}
+		d.state.Threads[threadID] = thread
+		d.logger.Printf("retry reopened thread=%s reason=codex_restart_completed", shortThreadID(threadID))
+	}
+}
+
 func (d *daemon) refreshControlsLocked(now time.Time) {
 	control, err := loadOrCreateControlState(d.controlPath)
 	if err != nil {
@@ -193,12 +252,30 @@ func (d *daemon) expireUnacknowledgedLocked(now time.Time) {
 }
 
 func (d *daemon) rescheduleAwaitingLocked(threadID string, thread ThreadState, now time.Time, reason string) {
+	d.rescheduleAwaitingWithPolicyLocked(threadID, thread, now, reason, true)
+}
+
+func (d *daemon) rescheduleAwaitingWithPolicyLocked(threadID string, thread ThreadState, now time.Time, reason string, countFailure bool) {
 	awaiting := thread.Awaiting
 	if awaiting == nil {
 		return
 	}
-	dispatchFailures := awaiting.DispatchFailures + 1
-	delay := retryDelay(dispatchFailures, d.config)
+	dispatchFailures := awaiting.DispatchFailures
+	if countFailure {
+		dispatchFailures++
+	}
+	if controllerFailureNeedsAction(reason) || (countFailure && dispatchFailures >= d.config.ControllerFailureLimit) {
+		d.stopAwaitingForControllerLocked(threadID, thread, now, reason)
+		return
+	}
+	delayIndex := dispatchFailures
+	if delayIndex < 1 {
+		delayIndex = 1
+	}
+	delay := retryDelay(delayIndex, d.config)
+	if reason == "codex_not_running" && delay < 15*time.Second {
+		delay = 15 * time.Second
+	}
 	thread.Awaiting = nil
 	thread.Pending = &PendingRetry{
 		EventKey:            awaiting.EventKey,
@@ -219,6 +296,37 @@ func (d *daemon) rescheduleAwaitingLocked(threadID string, thread ThreadState, n
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry rescheduled thread=%s reason=%s delay_seconds=%d", shortThreadID(threadID), reason, int(delay.Seconds()))
+}
+
+func (d *daemon) stopAwaitingForControllerLocked(threadID string, thread ThreadState, now time.Time, reason string) {
+	awaiting := thread.Awaiting
+	if awaiting == nil {
+		return
+	}
+	thread.Pending = nil
+	thread.Awaiting = nil
+	thread.GoalStop = nil
+	thread.RecoveryAttempts = completedRetryCount(awaiting.Attempt, awaiting.MaxAttempts)
+	thread.ConsecutiveRetries = completedRetryCount(awaiting.ConsecutiveRetry, awaiting.MaxConsecutive)
+	thread.Stopped = &StoppedRetry{
+		EventKey: awaiting.EventKey, FailedTurnID: awaiting.FailedTurnID, FailedAt: awaiting.FailedAt,
+		OriginTurnStartedAt: awaiting.OriginTurnStartedAt,
+		Class:               awaiting.Class, StoppedAt: now, CodexHome: awaiting.CodexHome, RolloutPath: awaiting.RolloutPath,
+		Attempts: thread.RecoveryAttempts, MaxAttempts: awaiting.MaxAttempts,
+		ConsecutiveRetries: thread.ConsecutiveRetries, MaxConsecutive: awaiting.MaxConsecutive, Reason: reason,
+	}
+	d.state.Threads[threadID] = thread
+	d.lastError = reason
+	d.logger.Printf("retry stopped thread=%s reason=%s controller_failures=%d", shortThreadID(threadID), reason, awaiting.DispatchFailures+1)
+}
+
+func controllerFailureNeedsAction(reason string) bool {
+	switch reason {
+	case "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_conflict":
+		return true
+	default:
+		return false
+	}
 }
 
 func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
@@ -252,6 +360,8 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		if thread.Stopped != nil {
 			job.Class = thread.Stopped.Class
 			job.Attempt = thread.Stopped.Attempts
+			job.CodexHome = thread.Stopped.CodexHome
+			job.RolloutPath = thread.Stopped.RolloutPath
 		}
 		d.active[item.threadID] = job
 		jobs = append(jobs, job)
@@ -386,13 +496,18 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		thread.Awaiting.ParentNotified = true
 	}
 	if err != nil || result.Outcome == outcomeRetryLater {
-		d.rescheduleAwaitingLocked(job.ThreadID, thread, finishedAt, controllerFailureReason(result, err))
+		reason := controllerFailureReason(result, err)
+		d.controllerState = reason
+		countFailure := reason != "codex_not_running"
+		d.rescheduleAwaitingWithPolicyLocked(job.ThreadID, thread, finishedAt, reason, countFailure)
 	} else if result.Outcome == outcomeUserActive {
 		// User or turn activity is temporary. A matching task_started event will
 		// still cancel or acknowledge this retry on the next scan; until then the
 		// failed task remains independently queued.
-		d.rescheduleAwaitingLocked(job.ThreadID, thread, finishedAt, controllerFailureReason(result, nil))
+		d.controllerState = "ready"
+		d.rescheduleAwaitingWithPolicyLocked(job.ThreadID, thread, finishedAt, controllerFailureReason(result, nil), false)
 	} else if result.Outcome == outcomeNotApplicable {
+		d.controllerState = "ready"
 		thread.RecoveryAttempts = 0
 		thread.ConsecutiveRetries = 0
 		thread.CurrentTurnProgress = false
@@ -409,6 +524,7 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		d.state.Threads[job.ThreadID] = thread
 		d.logger.Printf("retry skipped thread=%s reason=%s", shortThreadID(job.ThreadID), result.Reason)
 	} else {
+		d.controllerState = "ready"
 		thread.Awaiting.Action = result.Action
 		thread.Awaiting.StartDeadline = finishedAt.Add(time.Duration(d.config.StartAckTimeoutSeconds) * time.Second)
 		d.state.Threads[job.ThreadID] = thread
@@ -446,17 +562,18 @@ func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 		active = 0
 	}
 	status := StatusSnapshot{
-		Version:        appVersion,
-		Running:        running,
-		PID:            os.Getpid(),
-		StartedAt:      d.startedAt,
-		LastScanAt:     d.lastScan,
-		WatchedRoots:   rootCount,
-		PendingRetries: pending,
-		ActiveRetries:  active,
-		Paused:         d.paused,
-		LastError:      d.lastError,
-		LogPath:        d.logger.path,
+		Version:         appVersion,
+		Running:         running,
+		PID:             os.Getpid(),
+		StartedAt:       d.startedAt,
+		LastScanAt:      d.lastScan,
+		WatchedRoots:    rootCount,
+		PendingRetries:  pending,
+		ActiveRetries:   active,
+		Paused:          d.paused,
+		ControllerState: d.controllerState,
+		LastError:       d.lastError,
+		LogPath:         d.logger.path,
 	}
 	return writeJSONAtomic(d.statusPath, status)
 }

@@ -10,6 +10,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const createNoWindow = 0x08000000
+
 func processOwnsRuntime(pid int, dataDir string) bool {
 	if pid <= 0 {
 		return false

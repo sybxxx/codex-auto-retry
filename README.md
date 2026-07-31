@@ -11,8 +11,9 @@ behavior remains independent of whether either settings surface is open.
 - Watches the default Codex session store and optional Cockpit-managed Codex
   instances for recoverable provider failures.
 - Rejoins the exact failed task through the Codex App process that is already
-  running. It does not open a task link, focus Codex, change the task currently
-  on screen, or create a hidden `codex exec resume` task.
+  running. Codex Desktop and the watchdog are two clients of one local shared
+  app-server, so recovery does not open a task link, focus Codex, change the
+  task currently on screen, or create a hidden `codex exec resume` task.
 - Restores the failed task with its latest working directory, workspace roots,
   model and provider, service tier, reasoning settings, personality, approval
   routing, and effective permission profile instead of applying the App's
@@ -42,11 +43,13 @@ behavior remains independent of whether either settings surface is open.
   tasks independently by default.
 - For an empty reply from an internal subagent, appends one deterministic
   recovery event to its parent and silently continues the exact existing child
-  thread. The parent receives the recovery event, while the watchdog remains
-  the sole wake-up owner for that event. The event explicitly forbids a
-  replacement child; live child state, persisted notification acknowledgement,
-  and turn correlation prevent a duplicate continuation or duplicate Agent
-  creation. Other child failures remain owned by the parent workflow.
+  thread. An unloaded parent is first restored with its own persisted task
+  settings, rather than current App defaults. The parent receives the recovery
+  event, while the watchdog remains the sole wake-up owner for that event. The
+  event explicitly forbids a replacement child; live child state, persisted
+  notification acknowledgement, and turn correlation prevent a duplicate
+  continuation or duplicate Agent creation. Other child failures remain owned
+  by the parent workflow.
 - Tracks two independent safety limits. `本次故障恢复` counts every automatic
   recovery in one outage (15 by default, configurable from 1 to 1000).
   `连续无进展` counts retries that produce neither a visible assistant reply
@@ -58,8 +61,9 @@ behavior remains independent of whether either settings surface is open.
   shows `目标连续空回复达到上限，目标恢复已停止`. Controller failures retry
   separately and do not consume another provider attempt; repeated local
   control failure eventually stops with its own explicit reason.
-- Supports a fixed interval or doubling delays capped at a configurable maximum.
-  Doubling follows the consecutive no-progress count, so visible progress starts
+- Supports fixed, linear, or doubling delays capped at a configurable maximum.
+  Linear waits add a configurable number of seconds each time. Increasing
+  waits follow the consecutive no-progress count, so visible progress starts
   the delay sequence over. It correlates the new
   `task_started` turn ID with its matching `task_complete`. An unrelated
   successful turn cannot falsely mark a retry as recovered.
@@ -68,8 +72,11 @@ The watchdog retries network failures, timeouts, rate limits, HTTP 5xx
 responses, interrupted streams, successful completions with no final model
 reply, and temporarily unavailable authentication services within the
 configured dual limits. Ambiguous or
-persistent authentication failures may have a lower safety limit. A temporary
-inability to reach Codex App delays recovery without consuming an attempt.
+persistent authentication failures may have a lower safety limit. A closed
+Codex App delays recovery without consuming an attempt. Other local controller
+failures stop after three consecutive failures by default instead of
+refreshing a countdown forever. A task that still uses Codex's old per-process
+transport stops with `codex_restart_required` and asks for one Codex restart.
 User cancellation, invalid requests, missing models, context length errors,
 policy failures, permission failures, and approval failures are not retried.
 
@@ -83,7 +90,7 @@ menu opens settings, pauses or resumes dispatch, and exits the watchdog.
 
 The graphical window shows every waiting, active, and exhausted task using only
 privacy-safe task IDs. It edits the fallback retry text, both retry limits,
-fixed or doubling waits, first/fixed delay, maximum delay, and the watchdog's
+fixed, linear, or doubling waits, first/fixed delay, linear increment, maximum delay, and the watchdog's
 retry-limit notification.
 An exhausted task can be restarted with a fresh attempt budget. These settings
 are shared with the embedded Codex panel and take effect without restarting the
@@ -142,11 +149,13 @@ field and never forwards or logs developer instructions, conversation
 messages, assistant output text, tool input, tool output, credentials, provider
 URLs, or response bodies.
 
-Recovery uses Codex App's own already-running local app-server connection. The
-controller connects only to a loopback debugging endpoint whose page is the
-Codex App, evaluates a fixed recovery program, and calls the same structured
-`thread/resume`, `thread/inject_items`, `thread/goal/set`, and `turn/start`
-methods used by Codex. It
+Recovery uses one local app-server bound only to `127.0.0.1`. The installer
+sets `CODEX_APP_SERVER_WS_URL` for the current Windows user, and after one Codex
+restart the Desktop App and watchdog connect to that same server. The watchdog
+uses only the structured `thread/read`, `thread/resume`,
+`thread/inject_items`, `thread/goal/get`, `thread/goal/set`, and `turn/start`
+methods used by Codex. It validates ownership of the loopback server before
+using it and never routes local recovery traffic through an HTTP proxy. It
 does not automate the mouse, keyboard, clipboard, composer, window focus, or
 task navigation.
 
@@ -167,6 +176,12 @@ its Codex connection. Runtime state, heartbeat, configuration, controls, and
 privacy-safe logs remain in the same local directory. Plugin management
 commands live in `skills/codex-auto-retry/SKILL.md`.
 
+The installer refuses to overwrite a different existing
+`CODEX_APP_SERVER_WS_URL`, records the environment value it owns, and restores
+the prior user value on uninstall. If Codex was open during the first install,
+restart Codex once. The panel and tray show that requirement instead of
+repeatedly pretending to retry.
+
 After installing or updating the plugin, open a new Codex task so the updated
 MCP tools and embedded panel are discovered. The background watchdog itself is
 restarted and verified by the installer immediately.
@@ -183,8 +198,9 @@ the recovery state machine, safety boundaries, and verification model.
 
 A permanently expired or revoked login still requires authentication. Codex
 App must be running for a retry to start. If an App update removes or changes
-the local background bridge, recovery fails closed and remains queued with
-backoff; it never falls back to opening or focusing a task.
+the local app-server protocol, recovery fails closed at the bounded controller
+limit and remains visibly restartable; it never falls back to opening or
+focusing a task.
 
 The tray controller requires Windows 10 or 11. Closing it through the tray menu
 also stops automatic retry until the next Windows sign-in or reinstall/start.

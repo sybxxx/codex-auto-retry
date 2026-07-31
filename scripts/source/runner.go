@@ -15,9 +15,24 @@ type resumeRunner interface {
 	Resume(context.Context, RetryJob) (DispatchResult, error)
 }
 
+type recoveryController interface {
+	Prepare(context.Context) error
+	Readiness(context.Context) (string, error)
+	Dispatch(
+		context.Context, string, string, ResumeSettings, time.Time, time.Time,
+		string, bool, bool, FailureClass, string,
+	) (DispatchResult, error)
+	BlockGoal(context.Context, string, *ResumeSettings, string) (DispatchResult, error)
+}
+
 type appResumeRunner struct {
-	controller *rendererController
-	configPath string
+	controller    recoveryController
+	configPath    string
+	defaultPrompt string
+}
+
+type controllerStateRunner interface {
+	ControllerState(context.Context) string
 }
 
 var (
@@ -25,11 +40,24 @@ var (
 	errControllerInvalidResult = errors.New("app controller returned an invalid result")
 )
 
-func newAppResumeRunner(config Config, dataDir string) *appResumeRunner {
+func newAppResumeRunner(config Config, dataDir string, logger *safeLogger) *appResumeRunner {
 	return &appResumeRunner{
-		controller: newRendererController(config),
-		configPath: filepath.Join(dataDir, "config.json"),
+		controller:    newSharedAppServerController(config, dataDir, logger),
+		configPath:    filepath.Join(dataDir, "config.json"),
+		defaultPrompt: config.RetryPrompt,
 	}
+}
+
+func (r *appResumeRunner) Prepare(ctx context.Context) error {
+	return r.controller.Prepare(ctx)
+}
+
+func (r *appResumeRunner) ControllerState(ctx context.Context) string {
+	state, err := r.controller.Readiness(ctx)
+	if err != nil {
+		return controllerFailureReason(DispatchResult{}, err)
+	}
+	return state
 }
 
 func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {
@@ -37,9 +65,13 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 		return DispatchResult{}, errors.New("invalid thread id")
 	}
 	if job.Kind == jobGoalBlock {
+		var settings *ResumeSettings
+		if loaded, err := loadLatestResumeSettings(job.RolloutPath); err == nil {
+			settings = &loaded
+		}
 		controllerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		result, err := r.controller.BlockGoal(controllerCtx, job.ThreadID)
+		result, err := r.controller.BlockGoal(controllerCtx, job.ThreadID, settings, job.CodexHome)
 		if err != nil && controllerCtx.Err() != nil {
 			return DispatchResult{}, errControllerTimeout
 		}
@@ -69,6 +101,7 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 		job.ParentNotified,
 		job.GoalLimitRestart,
 		job.Class,
+		job.CodexHome,
 	)
 	if err != nil && controllerCtx.Err() != nil {
 		return DispatchResult{}, errControllerTimeout
@@ -81,7 +114,7 @@ func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchRes
 
 func (r *appResumeRunner) retryPrompt() (string, error) {
 	if r.configPath == "" {
-		return r.controller.config.RetryPrompt, nil
+		return r.defaultPrompt, nil
 	}
 	config, err := loadOrCreateConfig(r.configPath)
 	if err != nil {
@@ -141,14 +174,16 @@ func controllerFailureReason(result DispatchResult, err error) string {
 	switch {
 	case errors.Is(err, errControllerTimeout):
 		return "controller_timeout"
-	case errors.Is(err, errRendererTargetNotFound):
+	case errors.Is(err, errSharedServerPortConflict):
+		return "shared_app_server_port_conflict"
+	case errors.Is(err, errSharedServerUnavailable):
 		return "codex_background_channel_unavailable"
-	case errors.Is(err, errRendererProtocol):
-		return "codex_background_channel_failed"
-	case errors.Is(err, errRendererEvaluation):
+	case errors.Is(err, errAppServerRequest):
 		return "codex_background_dispatch_failed"
 	case errors.Is(err, errControllerInvalidResult):
 		return "controller_invalid_result"
+	case errors.Is(err, errCodexRestartRequired):
+		return "codex_restart_required"
 	case errors.Is(err, errResumeSettingsUnavailable):
 		return "thread_settings_unavailable"
 	default:
@@ -203,17 +238,27 @@ func retryDelay(consecutiveRetry int, cfg Config) time.Duration {
 		consecutiveRetry = 1
 	}
 	delay := time.Duration(cfg.InitialDelaySeconds) * time.Second
+	maximum := time.Duration(cfg.MaxDelaySeconds) * time.Second
 	if cfg.DelayStrategy == delayStrategyFixed {
 		return delay
 	}
+	if cfg.DelayStrategy == delayStrategyLinear {
+		increment := time.Duration(cfg.DelayIncrementSeconds) * time.Second
+		for attempt := 1; attempt < consecutiveRetry && delay < maximum; attempt++ {
+			if increment >= maximum-delay {
+				return maximum
+			}
+			delay += increment
+		}
+		return delay
+	}
 	for i := 1; i < consecutiveRetry; i++ {
-		if delay >= time.Duration(cfg.MaxDelaySeconds)*time.Second/2 {
-			delay = time.Duration(cfg.MaxDelaySeconds) * time.Second
+		if delay >= maximum/2 {
+			delay = maximum
 			break
 		}
 		delay *= 2
 	}
-	maximum := time.Duration(cfg.MaxDelaySeconds) * time.Second
 	if delay > maximum {
 		return maximum
 	}

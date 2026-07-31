@@ -21,6 +21,13 @@ type fakeResumeRunner struct {
 	once    sync.Once
 }
 
+type stateAwareRunner struct {
+	*fakeResumeRunner
+	state string
+}
+
+func (r *stateAwareRunner) ControllerState(context.Context) string { return r.state }
+
 func (f *fakeResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {
 	f.mu.Lock()
 	f.jobs = append(f.jobs, job)
@@ -49,6 +56,35 @@ func successfulRunner() *fakeResumeRunner {
 		Outcome: outcomeDispatched,
 		Action:  actionConversationContinue,
 	}}
+}
+
+func TestRestartRequiredRetryReopensAfterCodexUsesSharedServer(t *testing.T) {
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0422"
+	now := time.Now().UTC()
+	runner := &stateAwareRunner{fakeResumeRunner: successfulRunner(), state: "ready"}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.state.Threads[threadID] = ThreadState{
+		RecoveryAttempts: 4, ConsecutiveRetries: 3,
+		Stopped: &StoppedRetry{
+			EventKey: "event", FailedTurnID: "failed", FailedAt: now.Add(-time.Minute),
+			Class: classServer, StoppedAt: now.Add(-time.Second), CodexHome: `C:\Users\test\.codex`,
+			RolloutPath: `C:\Users\test\.codex\sessions\rollout.jsonl`,
+			Attempts:    4, MaxAttempts: 15, ConsecutiveRetries: 3, MaxConsecutive: 5,
+			Reason: "codex_restart_required",
+		},
+	}
+	if !d.controllerRestartReady(context.Background(), now) {
+		t.Fatal("shared controller readiness was not detected")
+	}
+	d.mu.Lock()
+	d.reopenRestartRequiredLocked(now)
+	d.mu.Unlock()
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Stopped != nil || thread.Pending == nil || thread.Pending.Attempt != 5 ||
+		thread.Pending.ConsecutiveRetry != 4 || thread.Pending.DispatchFailures != 0 ||
+		thread.RecoveryAttempts != 5 || thread.ConsecutiveRetries != 4 || !thread.Pending.DueAt.Equal(now) {
+		t.Fatalf("restart-required retry was not reopened without losing its provider budget: %+v", thread)
+	}
 }
 
 func TestDaemonPauseAndQueuedControls(t *testing.T) {
@@ -665,7 +701,7 @@ func TestUserActivityReschedulesDispatchedRetry(t *testing.T) {
 	go d.runJob(context.Background(), jobs[0])
 	d.waitForJobs()
 	thread := daemonThreadSnapshot(d, threadID)
-	if thread.Pending == nil || thread.Pending.Attempt != 1 || thread.Pending.DispatchFailures != 1 ||
+	if thread.Pending == nil || thread.Pending.Attempt != 1 || thread.Pending.DispatchFailures != 0 ||
 		thread.Awaiting != nil || thread.RecoveryAttempts != 1 {
 		t.Fatalf("user activity removed the failed task instead of delaying it: %+v", thread)
 	}
@@ -691,6 +727,83 @@ func TestControllerFailureReschedulesSameProviderAttempt(t *testing.T) {
 	thread := daemonThreadSnapshot(d, threadID)
 	if thread.Pending == nil || thread.Pending.Attempt != 1 || thread.Pending.DispatchFailures != 1 || thread.Awaiting != nil {
 		t.Fatalf("controller failure was not safely rescheduled: %+v", thread)
+	}
+}
+
+func TestCodexNotRunningWaitDoesNotConsumeFailureOrProviderCounters(t *testing.T) {
+	threadID := "019f9e7a-022b-77d2-bccc-5394d292caf4"
+	now := time.Now().UTC()
+	runner := &fakeResumeRunner{result: DispatchResult{Outcome: outcomeRetryLater, Reason: "codex_not_running"}}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.state.Threads[threadID] = ThreadState{
+		RecoveryAttempts: 4, ConsecutiveRetries: 3,
+		Pending: &PendingRetry{
+			EventKey: "event", FailedTurnID: "failed", Class: classServer,
+			DueAt: now, Attempt: 5, MaxAttempts: 15, ConsecutiveRetry: 4, MaxConsecutive: 5,
+		},
+	}
+	jobs := d.dispatchDueLocked(now)
+	d.wg.Add(1)
+	go d.runJob(context.Background(), jobs[0])
+	d.waitForJobs()
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Pending == nil || thread.Pending.DispatchFailures != 0 || thread.Pending.Attempt != 5 ||
+		thread.RecoveryAttempts != 4 || thread.ConsecutiveRetries != 3 ||
+		thread.Pending.DueAt.Before(now.Add(14*time.Second)) {
+		t.Fatalf("waiting for Codex changed retry accounting or polled too quickly: %+v", thread)
+	}
+}
+
+func TestCodexRestartRequiredStopsWithoutAnotherCountdown(t *testing.T) {
+	threadID := "019f9e7a-022b-77d2-bccc-5394d292caf5"
+	now := time.Now().UTC()
+	runner := &fakeResumeRunner{result: DispatchResult{Outcome: outcomeRetryLater, Reason: "codex_restart_required"}}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.state.Threads[threadID] = ThreadState{
+		RecoveryAttempts: 4, ConsecutiveRetries: 3,
+		Pending: &PendingRetry{
+			EventKey: "event", FailedTurnID: "failed", Class: classServer,
+			DueAt: now, Attempt: 5, MaxAttempts: 15, ConsecutiveRetry: 4, MaxConsecutive: 5,
+		},
+	}
+	jobs := d.dispatchDueLocked(now)
+	d.wg.Add(1)
+	go d.runJob(context.Background(), jobs[0])
+	d.waitForJobs()
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil ||
+		thread.Stopped.Reason != "codex_restart_required" || thread.Stopped.Attempts != 4 ||
+		thread.Stopped.ConsecutiveRetries != 3 || thread.RecoveryAttempts != 4 || thread.ConsecutiveRetries != 3 {
+		t.Fatalf("restart-required state kept looping or consumed provider attempts: %+v", thread)
+	}
+	if jobs = d.dispatchDueLocked(now.Add(time.Hour)); len(jobs) != 0 {
+		t.Fatalf("restart-required state dispatched another job: %+v", jobs)
+	}
+}
+
+func TestControllerFailuresStopAtConfiguredLimit(t *testing.T) {
+	threadID := "019f9e7a-022b-77d2-bccc-5394d292caf6"
+	now := time.Now().UTC()
+	cfg := isolatedConfig(t.TempDir())
+	cfg.ControllerFailureLimit = 3
+	d := newTestDaemon(t, cfg, &fakeResumeRunner{err: errors.New("controller unavailable")})
+	d.state.Threads[threadID] = ThreadState{
+		RecoveryAttempts: 4, ConsecutiveRetries: 3,
+		Pending: &PendingRetry{
+			EventKey: "event", FailedTurnID: "failed", Class: classServer,
+			DueAt: now, Attempt: 5, MaxAttempts: 15, ConsecutiveRetry: 4, MaxConsecutive: 5,
+			DispatchFailures: cfg.ControllerFailureLimit - 1,
+		},
+	}
+	jobs := d.dispatchDueLocked(now)
+	d.wg.Add(1)
+	go d.runJob(context.Background(), jobs[0])
+	d.waitForJobs()
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil ||
+		thread.Stopped.Reason != "controller_unavailable" || thread.Stopped.Attempts != 4 ||
+		thread.Stopped.ConsecutiveRetries != 3 {
+		t.Fatalf("bounded controller failure did not enter a visible terminal state: %+v", thread)
 	}
 }
 
@@ -771,7 +884,7 @@ func TestSubagentRecoveryCannotAdoptTaskStartBeforeFailure(t *testing.T) {
 	}
 }
 
-func TestLiveRendererGoalHoldPersistsInDaemonState(t *testing.T) {
+func TestLiveGoalHoldPersistsInDaemonState(t *testing.T) {
 	threadID := "019fa3f6-a793-78a3-8ae6-947340d954bc"
 	cfg := isolatedConfig(t.TempDir())
 	runner := &fakeResumeRunner{result: DispatchResult{
@@ -790,7 +903,7 @@ func TestLiveRendererGoalHoldPersistsInDaemonState(t *testing.T) {
 	d.waitForJobs()
 	thread := daemonThreadSnapshot(d, threadID)
 	if !thread.GoalHeld || thread.GoalStatus != "paused" || thread.Pending != nil || thread.Awaiting != nil {
-		t.Fatalf("live renderer hold was not persisted: %+v", thread)
+		t.Fatalf("live goal hold was not persisted: %+v", thread)
 	}
 }
 

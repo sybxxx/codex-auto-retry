@@ -5,13 +5,14 @@
 Codex plugins do not receive a provider-failure callback after a model turn has
 already stopped. This plugin therefore packages a local watchdog. The watchdog
 observes persisted lifecycle events and asks the installed Codex App to recover
-the original task through the App's already-running app-server connection.
+the original task through one shared local app-server.
 
 The watchdog is provider-independent. It does not proxy model traffic, change
 provider settings, refresh credentials, launch an external Codex CLI, start a
-second app-server, or create a second task. The existing Codex process remains
-the single owner of the task, so its workspace, model, permissions, login,
-conversation, and goal state remain intact.
+second per-task app-server, or create a second task. It starts one detached
+loopback app-server that Codex Desktop and the watchdog both use. This keeps one
+in-memory owner for task, workspace, model, permissions, login, conversation,
+and goal state.
 
 The user-facing management panel and the watchdog are deliberately separate
 processes. Codex starts the MCP server only when it needs plugin tools or the
@@ -27,13 +28,15 @@ Three recovery channels were evaluated:
 1. A `codex://threads/{id}` link can reach an exact task, but Codex always
    makes its primary window visible and navigates that window. This caused the
    foreground stealing and cross-task interruption reported by the user.
-2. A separate `codex app-server` process can issue structured requests without
-   a window, but it would independently own an in-memory copy of a task already
-   loaded by Codex App. That risks stale UI state and concurrent rollout
-   ownership.
-3. The selected design reaches the app-server connection already owned by the
-   running Codex renderer. It issues structured background requests through
-   that connection and never invokes navigation or window APIs.
+2. An independent app-server used only by the watchdog can issue structured
+   requests without a window, but it would own a second in-memory copy of a task
+   already loaded by Codex Desktop. That risks stale UI state and concurrent
+   rollout ownership.
+3. The selected design launches one loopback WebSocket app-server and sets
+   `CODEX_APP_SERVER_WS_URL` so Codex Desktop connects to that exact server after
+   one restart. The watchdog becomes another client of the same server. Both
+   clients receive the same lifecycle notifications, and no renderer or window
+   API is involved.
 
 The third option preserves native behavior while removing the shared visible
 UI surface that caused both reported failures.
@@ -63,28 +66,31 @@ UI surface that caused both reported failures.
    reply is classified as retryable, limited-retry, or non-retryable. A
    `turn_aborted` clears recovery and records the aborted turn ID, so a delayed
    completion for the same turn cannot override user cancellation.
-6. A retryable failure is deduplicated and scheduled with either a fixed wait
-   or a doubling wait capped at the configured maximum, in state owned by that task ID.
+6. A retryable failure is deduplicated and scheduled with a fixed, linear, or
+   doubling wait capped at the configured maximum, in state owned by that task ID.
 7. When an active goal creates a new `task_started` within five seconds of its
    empty completion, that native continuation adopts the pending retry instead
    of resetting its two counters. User-role context items in that native turn
    are ignored; only the separate `user_message` lifecycle event proves that a
    person superseded the automatic chain.
-8. The controller discovers Codex App's loopback debugging port, verifies an
-   exact `app://-/index.html` Codex page, and connects to its renderer.
+8. The controller verifies that Codex Desktop is using the configured shared
+   transport. An old Desktop-owned stdio app-server produces the visible,
+   terminal `codex_restart_required` state instead of another countdown.
 9. A reverse reader finds the latest `turn_context` and
    `thread_settings_applied` records in that task's rollout and decodes only the
    allowlisted execution settings needed by `thread/resume`.
-10. The renderer program locates Codex's internal structured request bridge,
-   reads the target task state, hydrates it in the background, and calls
-   `thread/resume` with those settings on the existing app-server connection.
-11. For a subagent empty reply, the renderer derives the parent from the child
-    thread, injects one deterministic recovery event into that parent, and
-    persists the acknowledgement. It then re-reads the exact child and starts an
-    empty-input continuation only if the child is still inactive. The fixed path
-    has no spawn, replacement-thread, failed-turn replay, or parent-turn start;
-    other subagent failure classes remain with the parent workflow.
-12. The renderer reads goal state before and after hydration/resume. A
+10. The watchdog opens its own JSON-RPC WebSocket client, resumes an unloaded
+    target before reading it, rechecks live task state, and calls
+    `thread/resume` with the persisted settings when needed.
+11. For a subagent empty reply, the controller derives the parent from the child
+    thread. If the parent is unloaded, it locates that parent's rollout and
+    restores its own allowlisted execution settings before injecting one
+    deterministic recovery event and persisting the acknowledgement. It then
+    re-reads the exact child and starts an empty-input continuation only if the
+    child is still inactive. The fixed path has no spawn, replacement-thread,
+    failed-turn replay, or parent-turn start; other subagent failure classes
+    remain with the parent workflow.
+12. The controller reads goal state before and after hydration/resume. A
     provider-attributed blocked goal is changed to `active`. Completed,
     usage-limited, budget-limited, changed, and unknown states fail closed. A
     paused or pre-existing blocked goal normally stops recovery. It permits only
@@ -101,8 +107,8 @@ UI surface that caused both reported failures.
     durable stopped entry is retained and a separate control job calls only
     `thread/goal/get` and `thread/goal/set status=blocked`. This safety closure
     runs even while ordinary retry dispatch is paused; controller failures back
-    off without consuming provider-attempt counters. It stops after 100 local
-    control failures and exposes a distinct terminal reason instead of looping
+    off without consuming provider-attempt counters. It stops at the configured
+    controller-failure limit (three by default) and exposes a distinct terminal reason instead of looping
     indefinitely or claiming the goal was blocked.
 15. The first lifecycle `task_started` in the dispatch window becomes the retry
     turn ID. Only a `task_complete` with that same ID can recover the chain or
@@ -153,41 +159,46 @@ Only one settings process is launched from a watchdog instance at a time.
 
 ## Background Controller Safety
 
-`renderer_control.go` owns port discovery, target validation, the DevTools
-transport, and the fixed renderer program.
+`shared_server_windows.go`, `desktop_transport_windows.go`,
+`app_server_rpc.go`, and `shared_controller.go` jointly own the recovery
+transport.
 
-- Port discovery reads only process command lines containing a numeric
-  `--remote-debugging-port` value.
-- HTTP and WebSocket connections are restricted to loopback addresses and the
-  same discovered port.
-- The selected page must be a Codex `app://-/index.html` page.
-- Task IDs, fallback prompts, and allowlisted resume settings are inserted
-  by JSON encoding, not executable string concatenation.
-- The renderer program calls only the fixed background methods needed for
-  state read, hydration, resume, parent recovery-event injection, goal status
-  changes, and turn start.
+- The server listens only on `127.0.0.1`; `wss`, hostnames, credentials, paths,
+  and a different port are rejected.
+- The watchdog records the server PID, executable, endpoint, Codex home, and
+  start time. A responsive port is rejected unless its live process still
+  matches that owned record.
+- Loopback WebSocket traffic bypasses environment HTTP proxies.
+- JSON-RPC calls are fixed structured methods; task IDs, fallback prompts, and
+  allowlisted settings are JSON values, not executable strings.
+- The controller uses only state read, loaded-list, resume, parent
+  recovery-event injection, goal status, and turn-start methods.
 - Goal state is checked before hydration and again immediately before the
   mutating goal/turn action. A goal appearing, disappearing, pausing, or
   changing to a terminal or limited state during dispatch fails closed.
-- It contains no task deeplink, routing call, window activation, UI Automation,
+- It contains no renderer evaluation, DevTools port, task deeplink, routing
+  call, window activation, UI Automation,
   mouse, keyboard, clipboard, or composer access.
-- A missing App, incompatible renderer bridge, active target task, or missing
-  lifecycle acknowledgement is rescheduled with backoff.
+- A closed App waits without consuming either provider or controller counters.
+  A restart requirement and permanent local configuration conflict stop
+  immediately; other controller failures stop at a configurable small limit.
 - Missing or invalid persisted task settings fail closed and reschedule only
   that task; App defaults are never substituted during recovery.
-- Subagent recovery validates a deterministic event ID, notifies the declared
-  parent once, rechecks the original child's live status, and calls
-  `turn/start` only on that child. It contains no `spawn_agent` or `thread/start`
-  request and cannot create a replacement thread.
+- Subagent recovery validates a deterministic event ID, loads an unloaded
+  parent only with that parent's persisted settings, notifies it once, rechecks
+  the original child's live status, and calls `turn/start` only on that child.
+  It contains no `spawn_agent` or `thread/start` request and cannot create a
+  replacement thread.
 - Goal-limit closure uses a separate fixed program that cannot hydrate, resume,
   inject items, or start a turn.
 - There is deliberately no visible-UI or navigation fallback. The compatibility
   prompt fallback is still a structured background request and runs only after
   an explicit empty-input validation rejection.
 
-Windows PowerShell is used only to discover the numeric debugging port. The
-embedded stdin stream ends with a blank submission line because Windows
-PowerShell otherwise may exit before executing its final compound statement.
+Windows PowerShell is used only for read-only process ownership and Desktop
+transport checks. The embedded stdin stream ends with a blank submission line
+because Windows PowerShell otherwise may exit before executing its final
+compound statement.
 
 ## Concurrency And Retry Policy
 
@@ -200,15 +211,17 @@ cooldown, successful completions without a final reply, and temporarily
 unavailable authentication services. An empty automatic retry remains a failure
 until the matching completion contains a real final reply. Visible progress resets
 only the no-progress counter; it never erases the per-fault safety budget. Fixed
-waiting always uses the configured interval. Doubling waiting follows the
-no-progress counter and is capped by the maximum, so useful progress restarts
-the wait sequence.
+waiting always uses the configured interval. Linear waiting adds the configured
+increment, while doubling multiplies by two; both are capped by the maximum and
+follow the no-progress counter, so useful progress restarts the wait sequence.
 
 Generic 401/403 authentication errors and unknown provider errors have limited
 budgets that can only lower the two configured limits. Invalid payloads, context limits,
 missing models, policy errors, approval failures, permissions, and user
 cancellation are never retried. Controller transport failures are tracked
-separately and consume neither provider retry counter.
+separately and consume neither provider retry counter. They are bounded by
+`controller_failure_limit`; `codex_not_running` is a wait state rather than a
+failure.
 
 Every task has separate pending, awaiting, recovery-attempt, consecutive
 no-progress, and dispatch-failure state.
@@ -318,20 +331,19 @@ becoming additional writers for `state.json`.
   conversation turns beside a held goal, blocked-failure attribution, dual retry limits,
   visible-progress resets, hold persistence across restart, latest-context reverse lookup, allowlisted
   settings, configuration migration, baselining, mirroring, strict turn
-  correlation, per-task activity delays, bounded parallel dispatch, renderer
-  target validation, fixed-method safety, and two simultaneous tasks with
-  distinct settings.
+  correlation, per-task activity delays, bounded parallel dispatch, shared
+  server ownership validation, fixed-method safety, unloaded-task resume, and
+  two WebSocket clients observing one retry.
 - `go test -race` verifies concurrent scanning, dispatch, and controller
   completion. `go vet` checks static correctness.
-- `smoke-test.ps1` runs the compiled GUI-subsystem watchdog with isolated
-  sessions and a mock background endpoint. It proves HTTP 400 suppression, two
-  independent HTTP 503 dispatches with distinct task settings, absence of
-  navigation and external CLI mechanisms, private-context exclusion,
-  unrelated-success rejection, matching-turn recovery, and graceful stop.
-- `renderer-control-smoke-test.ps1` uses the production discovery and transport
-  code to perform a read-only state snapshot and loaded-task-list request
-  against the installed Codex App. It does not resume, navigate, or modify a
-  task.
+- `shared-app-server-smoke-test.ps1` launches an isolated real Codex app-server
+  over WebSocket plus a local fake Responses provider. A simulated Desktop
+  client creates the task and observes the retry started by a separate watchdog
+  client. It proves one additional provider request, same-task context,
+  no visible user item, and no real provider use.
+- `environment-smoke-test.ps1` uses a random temporary user environment name to
+  prove endpoint ownership, idempotent updates, prior-value restoration, and
+  refusal to overwrite a conflicting value. `smoke-test.ps1` runs both checks.
 - `app-server-protocol-smoke-test.ps1` uses a temporary `CODEX_HOME` to prove
   that model, provider, service tier, workspace, approvals, permissions, and
   reasoning effort survive resume; goal activation starts native continuation;
@@ -381,6 +393,11 @@ must publish a version-matching heartbeat before the release is accepted. When
 the installed plugin source is also a Git checkout, the installer restores its
 `.git` metadata from the rollback copy before registration, preserving local
 history and remotes without adding that metadata to the release archive.
+Runtime installation persists `CODEX_APP_SERVER_WS_URL` only after checking for
+a conflicting user value, saves ownership metadata, broadcasts the Windows
+environment change, and starts the loopback server. Uninstall restores the
+prior value. It stops the recorded server only when no Codex Desktop process is
+still using it.
 
 The uninstaller uses Codex's supported `plugin remove` command, stops the
 watchdog, removes current-user startup, and deletes only a plugin directory
@@ -391,9 +408,10 @@ reject directory links before recursive removal.
 ## Known Limitations
 
 Retrying cannot repair a permanently expired or revoked login. Codex App must
-be running. An App update that removes or changes its local structured bridge
-temporarily prevents dispatch; this fails closed and backs off instead of
-falling back to visible navigation.
+be running. An App update that removes or changes its local structured protocol
+prevents dispatch; this fails closed at the controller limit instead of falling
+back to visible navigation. The first installation requires one Codex restart
+so Desktop can inherit `CODEX_APP_SERVER_WS_URL`.
 
 Missing, oversized, or invalid latest settings records also prevent dispatch
 and keep that task queued. This protects task settings instead of retrying with

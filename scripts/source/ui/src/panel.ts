@@ -55,7 +55,8 @@ type ManagementSnapshot = {
   max_consecutive_retries: number;
   initial_delay_seconds: number;
   max_delay_seconds: number;
-  delay_strategy: "fixed" | "exponential";
+  delay_increment_seconds: number;
+  delay_strategy: "fixed" | "linear" | "exponential";
   show_notifications: boolean;
   now: string;
   last_scan_at?: string;
@@ -63,6 +64,7 @@ type ManagementSnapshot = {
   active_retries: number;
   stopped_retries: number;
   watched_roots: number;
+  controller_state?: string;
   last_error?: string;
   notice?: string;
   retries: ManagedRetry[];
@@ -99,6 +101,7 @@ const elements = {
   initialDelayLabel: required<HTMLElement>("initial-delay-label"),
   initialDelay: required<HTMLInputElement>("initial-delay"),
   maxDelay: required<HTMLInputElement>("max-delay"),
+  delayIncrement: required<HTMLInputElement>("delay-increment"),
   delayPreview: required<HTMLElement>("delay-preview"),
   settingsError: required<HTMLElement>("settings-error"),
   notificationsToggle: required<HTMLInputElement>("notifications-toggle"),
@@ -162,6 +165,7 @@ function render(next: ManagementSnapshot): void {
     elements.maxConsecutiveRetries.value = String(next.max_consecutive_retries);
     elements.initialDelay.value = String(next.initial_delay_seconds);
     elements.maxDelay.value = String(next.max_delay_seconds);
+    elements.delayIncrement.value = String(next.delay_increment_seconds);
     for (const option of elements.delayStrategies) option.checked = option.value === next.delay_strategy;
     elements.notificationsToggle.checked = next.show_notifications;
   }
@@ -181,7 +185,19 @@ function renderService(next: ManagementSnapshot): void {
   dot.className = "status-dot";
   let label = "未运行";
   let detail = "未检测到有效心跳";
-  if (next.running && next.paused) {
+  if (next.running && next.controller_state === "codex_restart_required") {
+    label = "等待重启";
+    detail = "请重启一次 Codex，使后台恢复通道生效";
+    dot.classList.add("status-dot-warning");
+  } else if (next.running && next.controller_state === "codex_not_running") {
+    label = "等待 Codex";
+    detail = "Codex 启动后会继续处理等待中的任务";
+    dot.classList.add("status-dot-warning");
+  } else if (next.running && next.controller_state && !["ready", "starting"].includes(next.controller_state)) {
+    label = "恢复通道异常";
+    detail = `自动重试已停止继续空转：${controllerStateLabel(next.controller_state)}`;
+    dot.classList.add("status-dot-danger");
+  } else if (next.running && next.paused) {
     label = "已暂停";
     detail = "监控保持运行，新重试暂不执行";
     dot.classList.add("status-dot-warning");
@@ -383,6 +399,18 @@ function actionLabel(value?: string): string {
 }
 
 function stopReasonLabel(retry: ManagedRetry): string {
+  if (retry.stop_reason === "codex_restart_required") {
+    return "重启一次 Codex 后会自动恢复";
+  }
+  if (retry.stop_reason === "codex_home_not_shared") {
+    return "此任务不在当前 Codex 的共享会话目录中";
+  }
+  if (retry.stop_reason === "shared_app_server_port_conflict") {
+    return "后台恢复端口被其他程序占用";
+  }
+  if (retry.stop_reason?.startsWith("controller_") || retry.stop_reason?.startsWith("codex_background_") || retry.stop_reason === "app_server_request_failed") {
+    return "后台恢复通道连续失败，已停止空转";
+  }
   if (retry.stop_reason === "goal_empty_response_limit_block_failed") {
     return `目标连续空回复达到上限，恢复已停止，但自动设为受阻失败`;
   }
@@ -393,6 +421,20 @@ function stopReasonLabel(retry: ManagedRetry): string {
     return `无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries ?? retry.consecutive_retry} 达上限`;
   }
   return `本次恢复 ${retry.recovery_attempt}/${retry.max_recovery_attempts ?? retry.recovery_attempt} 达上限`;
+}
+
+function controllerStateLabel(value: string): string {
+  const labels: Record<string, string> = {
+    codex_restart_required: "需要重启 Codex",
+    codex_not_running: "Codex 尚未运行",
+    codex_home_not_shared: "任务目录未接入共享通道",
+    shared_app_server_port_conflict: "共享端口被占用",
+    codex_background_channel_unavailable: "共享通道不可用",
+    codex_background_dispatch_failed: "恢复请求失败",
+    controller_timeout: "恢复请求超时",
+    controller_unavailable: "控制器不可用",
+  };
+  return labels[value] ?? value;
 }
 
 function updatePromptState(): void {
@@ -407,6 +449,7 @@ function updatePromptState(): void {
   const strategy = selectedDelayStrategy();
   const initialDelay = Number(elements.initialDelay.value);
   const maxDelay = Number(elements.maxDelay.value);
+  const delayIncrement = Number(elements.delayIncrement.value);
   const recoveryAttempts = Number(elements.maxRecoveryAttempts.value);
   const consecutiveRetries = Number(elements.maxConsecutiveRetries.value);
   let settingsError = "";
@@ -414,17 +457,19 @@ function updatePromptState(): void {
     settingsError = "本次故障恢复上限应为 1 到 1000";
   } else if (!Number.isInteger(consecutiveRetries) || consecutiveRetries < 1 || consecutiveRetries > 100) {
     settingsError = "连续无进展重试上限应为 1 到 100";
-  } else if ((strategy !== "fixed" && strategy !== "exponential")
+  } else if ((strategy !== "fixed" && strategy !== "linear" && strategy !== "exponential")
     || !Number.isInteger(initialDelay) || initialDelay < 1 || initialDelay > 3600
-    || !Number.isInteger(maxDelay) || maxDelay < 1 || maxDelay > 86400) {
+    || !Number.isInteger(maxDelay) || maxDelay < 1 || maxDelay > 86400
+    || !Number.isInteger(delayIncrement) || delayIncrement < 1 || delayIncrement > 3600) {
     settingsError = "等待时间设置超出范围";
-  } else if (strategy === "exponential" && maxDelay < initialDelay) {
-    settingsError = "翻倍递增时，最大等待不能小于首次等待";
+  } else if (strategy !== "fixed" && maxDelay < initialDelay) {
+    settingsError = "递增等待时，最大等待不能小于首次等待";
   }
   elements.maxDelay.disabled = strategy === "fixed";
+  elements.delayIncrement.disabled = strategy !== "linear";
   elements.initialDelayLabel.textContent = strategy === "fixed" ? "固定间隔（秒）" : "首次等待（秒）";
   elements.settingsError.textContent = settingsError;
-  updateDelayPreview(strategy, initialDelay, maxDelay, consecutiveRetries);
+  updateDelayPreview(strategy, initialDelay, maxDelay, delayIncrement, consecutiveRetries);
   elements.saveSettings.disabled = Boolean(error) || Boolean(settingsError)
     || currentSettings() === savedSettings || busyCount > 0;
 }
@@ -436,6 +481,7 @@ function currentSettings(): string {
     max_consecutive_retries: Number(elements.maxConsecutiveRetries.value),
     initial_delay_seconds: Number(elements.initialDelay.value),
     max_delay_seconds: Number(elements.maxDelay.value),
+    delay_increment_seconds: Number(elements.delayIncrement.value),
     delay_strategy: selectedDelayStrategy(),
     show_notifications: elements.notificationsToggle.checked,
   });
@@ -448,23 +494,27 @@ function serializedSettings(value: ManagementSnapshot): string {
     max_consecutive_retries: value.max_consecutive_retries,
     initial_delay_seconds: value.initial_delay_seconds,
     max_delay_seconds: value.max_delay_seconds,
+    delay_increment_seconds: value.delay_increment_seconds,
     delay_strategy: value.delay_strategy,
     show_notifications: value.show_notifications,
   });
 }
 
-function selectedDelayStrategy(): "fixed" | "exponential" {
+function selectedDelayStrategy(): "fixed" | "linear" | "exponential" {
   const selected = elements.delayStrategies.find((option) => option.checked)?.value;
-  return selected === "fixed" ? "fixed" : "exponential";
+  if (selected === "fixed" || selected === "linear") return selected;
+  return "exponential";
 }
 
 function updateDelayPreview(
-  strategy: "fixed" | "exponential",
+  strategy: "fixed" | "linear" | "exponential",
   initialDelay: number,
   maxDelay: number,
+  delayIncrement: number,
   consecutiveRetries: number,
 ): void {
   if (!Number.isInteger(initialDelay) || initialDelay < 1 || !Number.isInteger(maxDelay) || maxDelay < 1
+    || !Number.isInteger(delayIncrement) || delayIncrement < 1
     || !Number.isInteger(consecutiveRetries) || consecutiveRetries < 1) {
     elements.delayPreview.textContent = "";
     return;
@@ -475,6 +525,7 @@ function updateDelayPreview(
   for (let index = 0; index < visibleCount; index += 1) {
     delays.push(strategy === "fixed" ? initialDelay : Math.min(delay, maxDelay));
     if (strategy === "exponential") delay = Math.min(delay * 2, maxDelay);
+    if (strategy === "linear") delay = Math.min(delay + delayIncrement, maxDelay);
   }
   const suffix = consecutiveRetries > visibleCount ? "，…" : "";
   elements.delayPreview.textContent = `等待序列：${delays.map(formatPreviewDelay).join("，")}${suffix}`;
@@ -540,6 +591,7 @@ elements.maxConsecutiveRetries.addEventListener("input", updatePromptState);
 for (const option of elements.delayStrategies) option.addEventListener("change", updatePromptState);
 elements.initialDelay.addEventListener("input", updatePromptState);
 elements.maxDelay.addEventListener("input", updatePromptState);
+elements.delayIncrement.addEventListener("input", updatePromptState);
 elements.notificationsToggle.addEventListener("change", updatePromptState);
 elements.savePrompt.addEventListener("click", () => void callTool("set_retry_prompt", { prompt: elements.retryPrompt.value }));
 elements.saveSettings.addEventListener("click", () => void callTool("set_retry_settings", JSON.parse(currentSettings()) as Record<string, unknown>));
@@ -553,7 +605,7 @@ window.setInterval(() => {
 if (new URLSearchParams(window.location.search).has("preview")) {
   render(previewSnapshot());
 } else {
-  app = new App({ name: "Codex Auto Retry", version: "0.6.0" });
+  app = new App({ name: "Codex Auto Retry", version: "0.7.0" });
   app.onerror = (error) => showNotice(error instanceof Error ? error.message : "连接失败", true);
   app.onhostcontextchanged = handleHostContext;
   app.ontoolresult = (result) => {
@@ -572,7 +624,7 @@ if (new URLSearchParams(window.location.search).has("preview")) {
 function previewSnapshot(): ManagementSnapshot {
   const now = Date.now();
   return {
-    version: "0.6.0",
+    version: "0.7.0",
     running: true,
     heartbeat_stale: false,
     paused: false,
@@ -581,7 +633,9 @@ function previewSnapshot(): ManagementSnapshot {
     max_consecutive_retries: 5,
     initial_delay_seconds: 5,
     max_delay_seconds: 300,
+    delay_increment_seconds: 2,
     delay_strategy: "exponential",
+    controller_state: "ready",
     show_notifications: true,
     now: new Date(now).toISOString(),
     last_scan_at: new Date(now - 1300).toISOString(),

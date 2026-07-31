@@ -15,6 +15,7 @@ type Config struct {
 	PollIntervalSeconds    int      `json:"poll_interval_seconds"`
 	InitialDelaySeconds    int      `json:"initial_delay_seconds"`
 	MaxDelaySeconds        int      `json:"max_delay_seconds"`
+	DelayIncrementSeconds  int      `json:"delay_increment_seconds"`
 	DelayStrategy          string   `json:"delay_strategy"`
 	MaxConsecutiveRetries  int      `json:"max_consecutive_retries"`
 	MaxRecoveryAttempts    int      `json:"max_recovery_attempts"`
@@ -26,7 +27,8 @@ type Config struct {
 	IncludeDefaultHome     bool     `json:"include_default_home"`
 	IncludeCockpitHomes    bool     `json:"include_cockpit_homes"`
 	PowerShellExecutable   string   `json:"powershell_executable,omitempty"`
-	RendererDebugPort      int      `json:"renderer_debug_port,omitempty"`
+	SharedAppServerPort    int      `json:"shared_app_server_port"`
+	ControllerFailureLimit int      `json:"controller_failure_limit"`
 	RetryPrompt            string   `json:"retry_prompt"`
 	ShowNotifications      bool     `json:"show_notifications"`
 }
@@ -42,10 +44,11 @@ const (
 	maxRecoveryAttemptsLimit   = 1000
 )
 
-const currentConfigVersion = 4
+const currentConfigVersion = 6
 
 const (
 	delayStrategyExponential = "exponential"
+	delayStrategyLinear      = "linear"
 	delayStrategyFixed       = "fixed"
 )
 
@@ -55,6 +58,7 @@ func defaultConfig() Config {
 		PollIntervalSeconds:    2,
 		InitialDelaySeconds:    5,
 		MaxDelaySeconds:        300,
+		DelayIncrementSeconds:  2,
 		DelayStrategy:          delayStrategyExponential,
 		MaxConsecutiveRetries:  5,
 		MaxRecoveryAttempts:    15,
@@ -64,6 +68,8 @@ func defaultConfig() Config {
 		UnknownMaxAttempts:     3,
 		IncludeDefaultHome:     true,
 		IncludeCockpitHomes:    true,
+		SharedAppServerPort:    49321,
+		ControllerFailureLimit: 3,
 		RetryPrompt:            defaultRetryPrompt,
 		ShowNotifications:      true,
 	}
@@ -93,6 +99,8 @@ func loadOrCreateConfig(path string) (Config, error) {
 	// Codex window. Version 2 uses independent background requests. Version 3
 	// added one ambiguous retry cap. Version 4 separates the consecutive retry
 	// guard from the per-fault recovery budget and makes delay behavior explicit.
+	// Version 5 adds a configurable increment for linear waits. Version 6 moves
+	// recovery to the shared local app-server channel used by current Codex App.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -126,6 +134,18 @@ func loadOrCreateConfig(path string) (Config, error) {
 			cfg.DelayStrategy = delayStrategyExponential
 			changed = true
 		}
+		if _, found := fields["delay_increment_seconds"]; !found {
+			cfg.DelayIncrementSeconds = defaultConfig().DelayIncrementSeconds
+			changed = true
+		}
+		if _, found := fields["shared_app_server_port"]; !found {
+			cfg.SharedAppServerPort = defaultConfig().SharedAppServerPort
+			changed = true
+		}
+		if _, found := fields["controller_failure_limit"]; !found {
+			cfg.ControllerFailureLimit = defaultConfig().ControllerFailureLimit
+			changed = true
+		}
 	}
 	if cfg.RetryPrompt == legacyRetryPrompt || cfg.RetryPrompt == "Continue." {
 		cfg.RetryPrompt = defaultRetryPrompt
@@ -152,12 +172,15 @@ func (c Config) validate() error {
 	if c.InitialDelaySeconds < 1 || c.InitialDelaySeconds > 3600 {
 		return errors.New("initial_delay_seconds must be between 1 and 3600")
 	}
-	if c.MaxDelaySeconds < 1 || c.MaxDelaySeconds > 86400 ||
-		(c.DelayStrategy == delayStrategyExponential && c.MaxDelaySeconds < c.InitialDelaySeconds) {
-		return errors.New("max_delay_seconds must be between 1 and 86400 and at least initial_delay_seconds for exponential delays")
+	if c.DelayIncrementSeconds < 1 || c.DelayIncrementSeconds > 3600 {
+		return errors.New("delay_increment_seconds must be between 1 and 3600")
 	}
-	if c.DelayStrategy != delayStrategyExponential && c.DelayStrategy != delayStrategyFixed {
-		return errors.New("delay_strategy must be exponential or fixed")
+	if c.DelayStrategy != delayStrategyExponential && c.DelayStrategy != delayStrategyLinear && c.DelayStrategy != delayStrategyFixed {
+		return errors.New("delay_strategy must be exponential, linear, or fixed")
+	}
+	if c.MaxDelaySeconds < 1 || c.MaxDelaySeconds > 86400 ||
+		(c.DelayStrategy != delayStrategyFixed && c.MaxDelaySeconds < c.InitialDelaySeconds) {
+		return errors.New("max_delay_seconds must be between 1 and 86400 and at least initial_delay_seconds for increasing delays")
 	}
 	if c.MaxConsecutiveRetries < 1 || c.MaxConsecutiveRetries > maxConsecutiveRetriesLimit {
 		return fmt.Errorf("max_consecutive_retries must be between 1 and %d", maxConsecutiveRetriesLimit)
@@ -180,8 +203,11 @@ func (c Config) validate() error {
 	if utf8.RuneCountInString(c.RetryPrompt) > maxRetryPromptRunes {
 		return fmt.Errorf("retry_prompt must not exceed %d characters", maxRetryPromptRunes)
 	}
-	if c.RendererDebugPort < 0 || c.RendererDebugPort > 65535 {
-		return errors.New("renderer_debug_port must be between 1 and 65535 when set")
+	if c.SharedAppServerPort < 1024 || c.SharedAppServerPort > 65535 {
+		return errors.New("shared_app_server_port must be between 1024 and 65535")
+	}
+	if c.ControllerFailureLimit < 1 || c.ControllerFailureLimit > 20 {
+		return errors.New("controller_failure_limit must be between 1 and 20")
 	}
 	return nil
 }

@@ -1,6 +1,6 @@
 {
   "name": "codex-auto-retry",
-  "version": "0.6.0+codex.20260729144907",
+  "version": "0.7.0+codex.20260731131405",
   "description": "Automatically resumes Codex tasks after recoverable provider failures, with a Windows tray controller and an embedded Codex panel.",
   "author": {
     "name": "TQY Local Tools"
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "Codex Auto Retry",
     "shortDescription": "Recover interrupted tasks with tray and Codex controls.",
-    "longDescription": "Runs a local, provider-independent watchdog that detects explicit provider failures and silent empty responses, then resumes the same task through Codex App's own background connection without adding a visible user message, focusing the App, or switching tasks. A Windows tray controller and embedded Codex panel show live countdowns, separate per-fault and consecutive no-progress limits, fixed or doubling waits, queue state, pause controls, and retry settings.",
+    "longDescription": "Runs a local, provider-independent watchdog that detects explicit provider failures and silent empty responses, then resumes the same task through a shared Codex app-server without adding a visible user message, focusing the App, or switching tasks. A Windows tray controller and embedded Codex panel show live countdowns, bounded controller health, separate per-fault and consecutive no-progress limits, fixed, linear, or doubling waits, queue state, pause controls, and retry settings.",
     "developerName": "TQY Local Tools",
     "category": "Productivity",
     "capabilities": [

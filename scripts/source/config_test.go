@@ -58,6 +58,9 @@ func TestVersionTwoConfigPreservesExplicitParallelLimit(t *testing.T) {
 	delete(legacyFields, "max_consecutive_retries")
 	delete(legacyFields, "max_recovery_attempts")
 	delete(legacyFields, "delay_strategy")
+	delete(legacyFields, "delay_increment_seconds")
+	delete(legacyFields, "shared_app_server_port")
+	delete(legacyFields, "controller_failure_limit")
 	delete(legacyFields, "show_notifications")
 	data, err = json.Marshal(legacyFields)
 	if err != nil {
@@ -72,7 +75,9 @@ func TestVersionTwoConfigPreservesExplicitParallelLimit(t *testing.T) {
 	}
 	if loaded.ConfigVersion != currentConfigVersion || loaded.MaxParallelRetries != 1 ||
 		loaded.MaxRecoveryAttempts != 15 || loaded.MaxConsecutiveRetries != 5 ||
-		loaded.DelayStrategy != delayStrategyExponential || !loaded.ShowNotifications {
+		loaded.DelayStrategy != delayStrategyExponential || loaded.DelayIncrementSeconds != 2 ||
+		loaded.SharedAppServerPort != defaultConfig().SharedAppServerPort ||
+		loaded.ControllerFailureLimit != defaultConfig().ControllerFailureLimit || !loaded.ShowNotifications {
 		t.Fatalf("version two settings were not migrated: %+v", loaded)
 	}
 }
@@ -102,7 +107,7 @@ func TestVersionThreeRetryLimitBecomesRecoveryBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if loaded.MaxRecoveryAttempts != 15 || loaded.MaxConsecutiveRetries != 5 ||
-		loaded.DelayStrategy != delayStrategyExponential {
+		loaded.DelayStrategy != delayStrategyExponential || loaded.DelayIncrementSeconds != 2 {
 		t.Fatalf("legacy retry limit was not migrated without changing its total budget: %+v", loaded)
 	}
 	written, err := os.ReadFile(path)
@@ -147,8 +152,59 @@ func TestConfigValidatesUserVisibleRetrySettings(t *testing.T) {
 	if err := config.validate(); err != nil {
 		t.Fatalf("fixed delay incorrectly required the exponential maximum: %v", err)
 	}
-	config.DelayStrategy = "linear"
+	config.DelayStrategy = delayStrategyLinear
+	config.MaxDelaySeconds = 9
+	if err := config.validate(); err == nil {
+		t.Fatal("linear delay accepted a maximum below the initial delay")
+	}
+	config.MaxDelaySeconds = 10
+	config.DelayIncrementSeconds = 0
+	if err := config.validate(); err == nil {
+		t.Fatal("linear delay accepted a zero increment")
+	}
+	config.DelayIncrementSeconds = 2
+	if err := config.validate(); err != nil {
+		t.Fatalf("linear delay settings were rejected: %v", err)
+	}
+	config.DelayStrategy = "unknown"
 	if err := config.validate(); err == nil {
 		t.Fatal("unknown delay strategy was accepted")
+	}
+}
+
+func TestVersionFiveMigrationPreservesInstalledRetryPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := []byte(`{
+  "config_version": 5,
+  "poll_interval_seconds": 2,
+  "initial_delay_seconds": 3,
+  "max_delay_seconds": 1800,
+  "delay_increment_seconds": 10,
+  "delay_strategy": "fixed",
+  "max_consecutive_retries": 100,
+  "max_recovery_attempts": 1000,
+  "max_parallel_retries": 4,
+  "start_ack_timeout_seconds": 30,
+  "auth_max_attempts": 6,
+  "unknown_max_attempts": 3,
+  "session_roots": null,
+  "include_default_home": true,
+  "include_cockpit_homes": true,
+  "retry_prompt": "继续",
+  "show_notifications": true
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadOrCreateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ConfigVersion != currentConfigVersion || loaded.InitialDelaySeconds != 3 ||
+		loaded.MaxDelaySeconds != 1800 || loaded.DelayIncrementSeconds != 10 ||
+		loaded.DelayStrategy != delayStrategyFixed || loaded.MaxConsecutiveRetries != 100 ||
+		loaded.MaxRecoveryAttempts != 1000 || loaded.RetryPrompt != "继续" ||
+		loaded.SharedAppServerPort != 49321 || loaded.ControllerFailureLimit != 3 {
+		t.Fatalf("version five migration changed the installed retry policy: %+v", loaded)
 	}
 }

@@ -110,8 +110,8 @@ func TestWindowsPowerShellExecutesFinalCompoundStatementFromStdin(t *testing.T) 
 }
 
 func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
-	if got := controllerFailureReason(DispatchResult{}, errRendererTargetNotFound); got != "codex_background_channel_unavailable" {
-		t.Fatalf("unexpected target reason: %s", got)
+	if got := controllerFailureReason(DispatchResult{}, errSharedServerUnavailable); got != "codex_background_channel_unavailable" {
+		t.Fatalf("unexpected shared-server reason: %s", got)
 	}
 	result := DispatchResult{Outcome: outcomeRetryLater, Reason: "thread_active"}
 	if got := controllerFailureReason(result, nil); got != result.Reason {
@@ -122,49 +122,5 @@ func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
 	}
 	if got := controllerFailureReason(DispatchResult{}, errResumeSettingsUnavailable); got != "thread_settings_unavailable" {
 		t.Fatalf("unexpected settings reason: %s", got)
-	}
-}
-
-func TestParseDebugPorts(t *testing.T) {
-	ports := parseDebugPorts("62482\r\n62482\r\n9222\r\n99999\r\n")
-	if len(ports) != 2 || ports[0] != 9222 || ports[1] != 62482 {
-		t.Fatalf("unexpected debug ports: %v", ports)
-	}
-}
-
-func TestRendererDispatchUsesOnlyBackgroundAppServerMethods(t *testing.T) {
-	required := []string{
-		"hydrate-background-threads",
-		"send-cli-request-for-host",
-		"thread/loaded/list",
-		"thread/resume",
-		"thread/inject_items",
-		"thread/goal/get",
-		"thread/goal/set",
-		"turn/start",
-	}
-	if !strings.Contains(rendererDispatchExpression, "subagent-empty-response-recovery") ||
-		!strings.Contains(rendererDispatchExpression, "resume_existing_child") {
-		t.Fatal("background controller does not notify the parent before resuming the existing subagent")
-	}
-	for _, value := range required {
-		if !strings.Contains(rendererDispatchExpression, value) {
-			t.Fatalf("background controller is missing %q", value)
-		}
-	}
-	forbidden := []string{
-		"codex://threads/",
-		"codex exec",
-		"UIAutomation",
-		"window.open",
-		"location.assign",
-		"location.replace",
-		"spawn_agent",
-		`request("thread/start"`,
-	}
-	for _, value := range forbidden {
-		if strings.Contains(rendererDispatchExpression, value) {
-			t.Fatalf("background controller contains foreground mechanism %q", value)
-		}
 	}
 }

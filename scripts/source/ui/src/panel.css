@@ -449,7 +449,7 @@ textarea:focus-visible,
 
 .segmented-control {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--panel-border);
   border-radius: 6px;
@@ -501,7 +501,7 @@ textarea:focus-visible,
 }
 
 .delay-preview {
-  grid-column: 3 / -1;
+  grid-column: 1 / -1;
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--panel-muted);

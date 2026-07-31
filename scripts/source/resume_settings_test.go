@@ -93,6 +93,31 @@ func TestLoadLatestResumeSettingsDoesNotFallBackPastInvalidLatestContext(t *test
 	}
 }
 
+func TestFindThreadResumeSettingsLoadsExactParentRollout(t *testing.T) {
+	home := t.TempDir()
+	threadID := "019fa94e-0103-7183-b405-36bd307b6dbb"
+	directory := filepath.Join(home, "sessions", "2026", "07", "31")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "rollout-2026-07-31T08-00-00-"+threadID+".jsonl")
+	line := marshalSyntheticTurnContext(t, syntheticSettingsPayload("parent-model", "high", "ignored"))
+	if err := os.WriteFile(path, line, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	settings, err := findThreadResumeSettings(home, threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Model != "parent-model" || settings.Effort != "high" || settings.CWD != `C:\workspace` {
+		t.Fatalf("parent settings were not preserved: %+v", settings)
+	}
+	if _, err := findThreadResumeSettings(home, "019fa94e-0103-7183-b405-36bd307b6dbc"); !errors.Is(err, errResumeSettingsUnavailable) {
+		t.Fatalf("missing parent rollout did not fail closed: %v", err)
+	}
+}
+
 func TestResumePermissionProfileMapping(t *testing.T) {
 	tests := []struct {
 		sandbox string

@@ -43,18 +43,23 @@ and exit. This is not a second watchdog or a separate retry engine.
 - If one target task is already active, delay only that task. Other failed
   tasks retain their own queue entries and can retry independently.
 - For an internal subagent empty reply, inject one deterministic recovery event
-  into its parent and continue the exact existing child thread. The watchdog is
-  the sole wake-up owner for that event: never spawn a replacement, replay the
-  failed turn, or start a second child turn while the original child is active.
-  Other subagent failure categories remain owned by the parent workflow.
+  into its parent and continue the exact existing child thread. If the parent is
+  unloaded, restore it with its own persisted task settings before injection.
+  The watchdog is the sole wake-up owner for that event: never spawn a
+  replacement, replay the failed turn, or start a second child turn while the
+  original child is active. Other subagent failure categories remain owned by
+  the parent workflow.
 - Count recovery only when the App-created `task_started` ID has a matching
   successful `task_complete`.
 - Stop at either independent safety limit: `max_recovery_attempts` bounds all
   automatic attempts in one fault (15 by default, 1-1000), while
   `max_consecutive_retries` bounds retries without a visible assistant reply or
   completed tool result (5 by default, 1-100). Visible progress resets only the
-  second count; success or a new user turn resets both. Controller connection
-  failures delay dispatch and consume neither budget.
+  second count; success or a new user turn resets both. Controller failures
+  consume neither budget. A closed Codex App waits, while other controller
+  failures stop after three consecutive failures by default instead of
+  refreshing the countdown forever. `codex_restart_required` means the user
+  must restart Codex once so Desktop inherits the shared app-server endpoint.
 
 ## Embedded Management
 
@@ -66,9 +71,9 @@ tasks, live countdowns, pause state, and the compatibility fallback text.
   `继续`, the maximum is 500 characters, and changes apply without restarting
   the watchdog. Normal retries do not send this text when silent continuation
   is supported.
-- Use `set_retry_settings` to change the fallback text, both retry limits, fixed
-  or doubling waits, first/fixed delay, maximum delay, and the watchdog's
-  retry-limit notification.
+- Use `set_retry_settings` to change the fallback text, both retry limits,
+  fixed, linear, or doubling waits, first/fixed delay, linear increment,
+  maximum delay, and the watchdog's retry-limit notification.
 - `show_notifications` controls only the watchdog alert shown when a retry limit
   is reached. Codex App's `ChatGPT finished a turn` popup is emitted before an
   empty response can be classified, so it cannot be selectively withdrawn. Use
@@ -100,15 +105,14 @@ checking status.
 
 ## Install Or Repair
 
-Run the build, compiled process smoke test, read-only installed-App probe,
-isolated native-protocol test, and installer:
+Run the build, shared-server/environment smoke tests, isolated protocol tests,
+and installer:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\build.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\mcp-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\tray-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\smoke-test.ps1"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\renderer-control-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\install.ps1"
@@ -117,16 +121,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 The MCP smoke test uses isolated local data and verifies all management tools,
 the embedded HTML resource, prompt changes, pause state, and atomic control
 commands. The tray smoke test verifies the native notification-area window,
-visible graphical settings window, heartbeat, and clean final status without touching Codex. The installed-App
-probe reads only a bounded App state summary through the
-production background transport. It must not resume, navigate, or modify a
-task. The isolated app-server tests use temporary `CODEX_HOME` directories;
-the empty-response test also uses a local fake provider and no real account.
+visible graphical settings window, heartbeat, and clean final status without
+touching Codex. The shared-server smoke test uses two WebSocket clients and a
+local fake provider to prove that a watchdog-started retry is visible to the
+simulated Desktop client. The environment test uses a random test-only user
+variable and restores it. The isolated app-server tests use temporary
+`CODEX_HOME` directories; the empty-response test also uses a local fake
+provider and no real account.
 Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces both
-executables, registers per-user Windows startup for the watchdog only, starts
-the watchdog without a visible window, and verifies its heartbeat. A new Codex
-task is required after plugin reinstall so Codex discovers the updated MCP
-tools and panel.
+executables, safely sets `CODEX_APP_SERVER_WS_URL`, registers per-user Windows
+startup for the watchdog only, starts the watchdog without a visible window,
+and verifies its heartbeat. Restart Codex once after the first installation;
+then open a new task so Codex discovers the updated MCP tools and panel.
 
 ## Remove
 
@@ -171,9 +177,9 @@ the fallback prompt or app-server error bodies.
   authentication outages, cooldown, and provider overload.
 - Repeated empty replies from an active goal share one chain. Exhaustion leaves
   a visible stopped entry and changes the native goal from `active` to
-  `blocked`; failure of that local control action retries up to 100 times with
-  backoff without changing the provider counters, then remains stopped with an
-  explicit goal-block failure reason.
+  `blocked`; failure of that local control action uses the configured controller
+  limit (three by default) without changing provider counters, then remains
+  stopped with an explicit goal-block failure reason.
 - Lower limited budgets may apply to generic 401/403 authentication failures
   and unknown errors.
 - No retry: user cancellation, invalid request or payload, missing model,

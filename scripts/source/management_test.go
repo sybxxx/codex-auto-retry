@@ -24,11 +24,12 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
-		Version:      appVersion,
-		Running:      true,
-		PID:          os.Getpid(),
-		LastScanAt:   now.Add(-time.Second),
-		WatchedRoots: 2,
+		Version:         appVersion,
+		Running:         true,
+		PID:             os.Getpid(),
+		LastScanAt:      now.Add(-time.Second),
+		WatchedRoots:    2,
+		ControllerState: "codex_restart_required",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,8 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.Running || snapshot.PendingRetries != 1 || snapshot.ActiveRetries != 1 || len(snapshot.Retries) != 2 {
+	if !snapshot.Running || snapshot.ControllerState != "codex_restart_required" ||
+		snapshot.PendingRetries != 1 || snapshot.ActiveRetries != 1 || len(snapshot.Retries) != 2 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
 	if snapshot.Retries[0].State != "running" || snapshot.Retries[0].RecoveryAttempt != 3 ||
@@ -164,6 +166,7 @@ func TestManagementUpdatesAllRetrySettings(t *testing.T) {
 		MaxRecoveryAttempts:   7,
 		InitialDelaySeconds:   9,
 		MaxDelaySeconds:       120,
+		DelayIncrementSeconds: 4,
 		DelayStrategy:         delayStrategyFixed,
 		ShowNotifications:     false,
 	}, now)
@@ -173,6 +176,7 @@ func TestManagementUpdatesAllRetrySettings(t *testing.T) {
 	if snapshot.RetryPrompt != "继续检查" || snapshot.MaxRecoveryAttempts != 7 ||
 		snapshot.MaxConsecutiveRetries != 3 || snapshot.DelayStrategy != delayStrategyFixed ||
 		snapshot.InitialDelaySeconds != 9 || snapshot.MaxDelaySeconds != 120 ||
+		snapshot.DelayIncrementSeconds != 4 ||
 		snapshot.ShowNotifications {
 		t.Fatalf("retry settings did not round trip: %+v", snapshot)
 	}
@@ -186,6 +190,7 @@ func TestManagementUpdatesCombinedLocalSettingsAndPause(t *testing.T) {
 		MaxRecoveryAttempts:   4,
 		InitialDelaySeconds:   6,
 		MaxDelaySeconds:       90,
+		DelayIncrementSeconds: 3,
 		DelayStrategy:         delayStrategyExponential,
 		ShowNotifications:     true,
 	}
@@ -198,7 +203,7 @@ func TestManagementUpdatesCombinedLocalSettingsAndPause(t *testing.T) {
 	}
 	if !snapshot.Paused || snapshot.MaxRecoveryAttempts != 4 || snapshot.MaxConsecutiveRetries != 2 ||
 		snapshot.DelayStrategy != delayStrategyExponential || snapshot.InitialDelaySeconds != 6 ||
-		snapshot.MaxDelaySeconds != 90 || !snapshot.ShowNotifications {
+		snapshot.MaxDelaySeconds != 90 || snapshot.DelayIncrementSeconds != 3 || !snapshot.ShowNotifications {
 		t.Fatalf("combined local settings did not round trip: %+v", snapshot)
 	}
 }

@@ -84,10 +84,24 @@ func main() {
 		logger.Printf("startup failed category=config")
 		return
 	}
-	daemon, err := newDaemon(config, dataDir, logger, newAppResumeRunner(config, dataDir))
+	runner := newAppResumeRunner(config, dataDir, logger)
+	var prepareErr error
+	if len(discoverSessionRoots(config)) > 0 {
+		prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		prepareErr = runner.Prepare(prepareCtx)
+		prepareCancel()
+	}
+	daemon, err := newDaemon(config, dataDir, logger, runner)
 	if err != nil {
 		logger.Printf("startup failed category=state")
 		return
+	}
+	if prepareErr != nil {
+		daemon.lastError = controllerFailureReason(DispatchResult{}, prepareErr)
+		daemon.controllerState = daemon.lastError
+		logger.Printf("controller preparation failed category=%s", daemon.lastError)
+	} else {
+		daemon.controllerState = "ready"
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

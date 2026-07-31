@@ -10,8 +10,10 @@ $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
 $statusPath = Join-Path $installDir 'status.json'
+$configPath = Join-Path $installDir 'config.json'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'CodexAutoRetry'
+. (Join-Path $PSScriptRoot 'environment.ps1')
 
 if (-not (Test-Path -LiteralPath $watchdogSource)) {
     throw "Built watchdog not found: $watchdogSource"
@@ -20,67 +22,92 @@ if (-not (Test-Path -LiteralPath $mcpSource)) {
     throw "Built MCP server not found: $mcpSource"
 }
 
-New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+$environmentName = 'CODEX_APP_SERVER_WS_URL'
+$environmentBefore = [Environment]::GetEnvironmentVariable($environmentName, 'User')
+$backupPath = Join-Path $installDir 'environment-backup.json'
+$backupExisted = Test-Path -LiteralPath $backupPath -PathType Leaf
+$backupBytes = if ($backupExisted) { [System.IO.File]::ReadAllBytes($backupPath) } else { $null }
+$environmentConfigured = $false
+$installationSucceeded = $false
+try {
+    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    $environment = Set-CodexAutoRetrySharedEnvironment -DataDir $installDir -ConfigPath $configPath
+    $environmentConfigured = $true
 
-$existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) }
-if ($existing) {
-    New-Item -ItemType File -Force -Path $stopSignal | Out-Null
-    $deadline = (Get-Date).AddSeconds(12)
-    do {
-        Start-Sleep -Milliseconds 250
-        $existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) }
-    } while ($existing -and (Get-Date) -lt $deadline)
+    $existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) }
     if ($existing) {
-        $existing | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+        New-Item -ItemType File -Force -Path $stopSignal | Out-Null
+        $deadline = (Get-Date).AddSeconds(12)
+        do {
+            Start-Sleep -Milliseconds 250
+            $existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) }
+        } while ($existing -and (Get-Date) -lt $deadline)
+        if ($existing) {
+            $existing | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+        }
+    }
+
+    $mcpProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcpTarget, [System.StringComparison]::OrdinalIgnoreCase) }
+    if ($mcpProcesses) {
+        $mcpProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 300
+    }
+    $settingsProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine.IndexOf($settingsTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        }
+    if ($settingsProcesses) {
+        $settingsProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 300
+    }
+
+    Copy-Item -LiteralPath $watchdogSource -Destination $watchdogTarget -Force
+    Copy-Item -LiteralPath $mcpSource -Destination $mcpTarget -Force
+    New-Item -Path $runKey -Force | Out-Null
+    Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" run' -f $watchdogTarget)
+    Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
+    $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList 'run' -WindowStyle Hidden -PassThru
+
+    $deadline = (Get-Date).AddSeconds(15)
+    $status = $null
+    do {
+        Start-Sleep -Milliseconds 300
+        if (Test-Path -LiteralPath $statusPath) {
+            try { $status = Get-Content -Raw -Encoding UTF8 -LiteralPath $statusPath | ConvertFrom-Json } catch { $status = $null }
+        }
+    } while ((-not $status -or -not $status.running -or $status.pid -ne $startedProcess.Id) -and (Get-Date) -lt $deadline)
+
+    if (-not $status -or -not $status.running -or $status.pid -ne $startedProcess.Id) {
+        throw "Watchdog did not publish a running heartbeat. Check $installDir\logs\daemon.log"
+    }
+
+    $installationSucceeded = $true
+    [pscustomobject]@{
+        Installed = $true
+        Running = $status.running
+        Version = $status.version
+        PID = $status.pid
+        Paused = [bool]$status.paused
+        MCPServerInstalled = Test-Path -LiteralPath $mcpTarget
+        InstallDirectory = $installDir
+        Startup = 'Current user sign-in'
+        SharedAppServer = $environment.Value
+        EnvironmentChanged = $environment.Changed
+        CodexRestartRequired = [string]$status.controller_state -eq 'codex_restart_required'
     }
 }
-
-$mcpProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcpTarget, [System.StringComparison]::OrdinalIgnoreCase) }
-if ($mcpProcesses) {
-    $mcpProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Milliseconds 300
-}
-$settingsProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.CommandLine -and
-        $_.CommandLine.IndexOf($settingsTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+finally {
+    if ($environmentConfigured -and -not $installationSucceeded) {
+        [Environment]::SetEnvironmentVariable($environmentName, $environmentBefore, 'User')
+        if ($null -eq $environmentBefore) { Remove-Item -Path "Env:$environmentName" -ErrorAction SilentlyContinue }
+        else { Set-Item -Path "Env:$environmentName" -Value $environmentBefore }
+        if ($backupExisted) { [System.IO.File]::WriteAllBytes($backupPath, $backupBytes) }
+        else { Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue }
+        Send-CodexAutoRetryEnvironmentChange
     }
-if ($settingsProcesses) {
-    $settingsProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Milliseconds 300
-}
-
-Copy-Item -LiteralPath $watchdogSource -Destination $watchdogTarget -Force
-Copy-Item -LiteralPath $mcpSource -Destination $mcpTarget -Force
-New-Item -Path $runKey -Force | Out-Null
-Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" run' -f $watchdogTarget)
-Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
-$startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList 'run' -WindowStyle Hidden -PassThru
-
-$deadline = (Get-Date).AddSeconds(15)
-$status = $null
-do {
-    Start-Sleep -Milliseconds 300
-    if (Test-Path -LiteralPath $statusPath) {
-        try { $status = Get-Content -Raw -Encoding UTF8 -LiteralPath $statusPath | ConvertFrom-Json } catch { $status = $null }
-    }
-} while ((-not $status -or -not $status.running -or $status.pid -ne $startedProcess.Id) -and (Get-Date) -lt $deadline)
-
-if (-not $status -or -not $status.running -or $status.pid -ne $startedProcess.Id) {
-    throw "Watchdog did not publish a running heartbeat. Check $installDir\logs\daemon.log"
-}
-
-[pscustomobject]@{
-    Installed = $true
-    Running = $status.running
-    Version = $status.version
-    PID = $status.pid
-    Paused = [bool]$status.paused
-    MCPServerInstalled = Test-Path -LiteralPath $mcpTarget
-    InstallDirectory = $installDir
-    Startup = 'Current user sign-in'
 }

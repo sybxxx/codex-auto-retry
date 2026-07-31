@@ -101,7 +101,7 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     $status = @{
-        version = '0.6.0'
+        version = '0.7.0'
         running = $true
         pid = $PID
         started_at = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
@@ -202,6 +202,7 @@ try {
         max_recovery_attempts = 1000
         initial_delay_seconds = 9
         max_delay_seconds = 120
+        delay_increment_seconds = 7
         delay_strategy = 'fixed'
         show_notifications = $false
     }
@@ -209,9 +210,10 @@ try {
         $settings.structuredContent.max_recovery_attempts -ne 1000 -or
         $settings.structuredContent.initial_delay_seconds -ne 9 -or
         $settings.structuredContent.max_delay_seconds -ne 120 -or
+        $settings.structuredContent.delay_increment_seconds -ne 7 -or
         $settings.structuredContent.delay_strategy -ne 'fixed' -or
         $settings.structuredContent.show_notifications) {
-        throw 'Full settings update did not take effect.'
+        throw "Full settings update did not take effect: $($settings.structuredContent | ConvertTo-Json -Compress -Depth 10)"
     }
     $paused = Call-MCPTool $process 7 'set_auto_retry_paused' @{ paused = $true }
     if (-not $paused.structuredContent.paused) { throw 'Pause control did not take effect.' }

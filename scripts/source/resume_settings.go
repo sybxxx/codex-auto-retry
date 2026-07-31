@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -121,6 +122,37 @@ func loadLatestResumeSettings(path string) (ResumeSettings, error) {
 		return ResumeSettings{}, fmt.Errorf("%w: %v", errResumeSettingsUnavailable, err)
 	}
 	return settings, nil
+}
+
+func findThreadResumeSettings(codexHome, threadID string) (ResumeSettings, error) {
+	codexHome = filepath.Clean(strings.TrimSpace(codexHome))
+	threadID = strings.ToLower(strings.TrimSpace(threadID))
+	if !filepath.IsAbs(codexHome) || !threadIDPattern.MatchString(threadID+".jsonl") {
+		return ResumeSettings{}, errResumeSettingsUnavailable
+	}
+	type candidate struct {
+		path    string
+		updated int64
+	}
+	candidates := make([]candidate, 0, 1)
+	for _, directory := range []string{"sessions", "archived_sessions"} {
+		root := filepath.Join(codexHome, directory)
+		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() || threadIDFromPath(path) != threadID {
+				return nil
+			}
+			info, err := entry.Info()
+			if err == nil {
+				candidates = append(candidates, candidate{path: filepath.Clean(path), updated: info.ModTime().UnixNano()})
+			}
+			return nil
+		})
+	}
+	if len(candidates) == 0 {
+		return ResumeSettings{}, fmt.Errorf("%w: parent rollout missing", errResumeSettingsUnavailable)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].updated > candidates[j].updated })
+	return loadLatestResumeSettings(candidates[0].path)
 }
 
 func findLatestMatchingLine(file *os.File, size int64, matches func([]byte) bool) ([]byte, bool, error) {

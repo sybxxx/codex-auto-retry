@@ -26,9 +26,10 @@ type setRetrySettingsInput struct {
 	RetryPrompt           string `json:"retry_prompt" jsonschema:"fallback text used only when silent continuation is unsupported, from 1 to 500 characters"`
 	MaxConsecutiveRetries int    `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress, from 1 to 100"`
 	MaxRecoveryAttempts   int    `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle, from 1 to 1000"`
-	InitialDelaySeconds   int    `json:"initial_delay_seconds" jsonschema:"fixed delay or first exponential delay, from 1 to 3600 seconds"`
-	MaxDelaySeconds       int    `json:"max_delay_seconds" jsonschema:"maximum exponential delay, from 1 to 86400 seconds"`
-	DelayStrategy         string `json:"delay_strategy" jsonschema:"fixed for a constant delay or exponential for doubling delays"`
+	InitialDelaySeconds   int    `json:"initial_delay_seconds" jsonschema:"fixed delay or first increasing delay, from 1 to 3600 seconds"`
+	MaxDelaySeconds       int    `json:"max_delay_seconds" jsonschema:"maximum increasing delay, from 1 to 86400 seconds"`
+	DelayIncrementSeconds int    `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry, from 1 to 3600 seconds"`
+	DelayStrategy         string `json:"delay_strategy" jsonschema:"fixed for a constant delay, exponential for doubling delays, or linear for a fixed increase each retry"`
 	ShowNotifications     bool   `json:"show_notifications" jsonschema:"whether Windows retry notifications are enabled"`
 }
 
@@ -95,7 +96,7 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Meta:        managementToolMeta(),
 		Name:        "set_retry_settings",
 		Title:       "修改自动重试设置",
-		Description: "同时修改后备重试文字、连续无进展重试上限、单次故障恢复上限、等待策略和插件达到上限时的通知设置。",
+		Description: "同时修改后备重试文字、连续无进展重试上限、单次故障恢复上限、固定、翻倍或线性等待策略，以及插件达到上限时的通知设置。",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "修改自动重试设置"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input setRetrySettingsInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
 		snapshot, err := service.setRetrySettings(RetrySettings(input), time.Now().UTC())

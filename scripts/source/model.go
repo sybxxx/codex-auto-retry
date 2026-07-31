@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const appVersion = "0.6.0"
+const appVersion = "0.7.0"
 
 type FailureClass string
 
@@ -195,15 +195,16 @@ type DispatchResult struct {
 }
 
 type StatusSnapshot struct {
-	Version        string    `json:"version"`
-	Running        bool      `json:"running"`
-	PID            int       `json:"pid"`
-	StartedAt      time.Time `json:"started_at"`
-	LastScanAt     time.Time `json:"last_scan_at"`
-	WatchedRoots   int       `json:"watched_roots"`
-	PendingRetries int       `json:"pending_retries"`
-	ActiveRetries  int       `json:"active_retries"`
-	Paused         bool      `json:"paused"`
-	LastError      string    `json:"last_error,omitempty"`
-	LogPath        string    `json:"log_path"`
+	Version         string    `json:"version"`
+	Running         bool      `json:"running"`
+	PID             int       `json:"pid"`
+	StartedAt       time.Time `json:"started_at"`
+	LastScanAt      time.Time `json:"last_scan_at"`
+	WatchedRoots    int       `json:"watched_roots"`
+	PendingRetries  int       `json:"pending_retries"`
+	ActiveRetries   int       `json:"active_retries"`
+	Paused          bool      `json:"paused"`
+	ControllerState string    `json:"controller_state,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
+	LogPath         string    `json:"log_path"`
 }

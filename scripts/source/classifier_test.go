@@ -36,7 +36,7 @@ func TestClassifyFailure(t *testing.T) {
 	}
 }
 
-func TestRetryDelayCaps(t *testing.T) {
+func TestExponentialRetryDelayCaps(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.InitialDelaySeconds = 5
 	cfg.MaxDelaySeconds = 60
@@ -44,6 +44,20 @@ func TestRetryDelayCaps(t *testing.T) {
 	for index, seconds := range want {
 		if got := int(retryDelay(index+1, cfg).Seconds()); got != seconds {
 			t.Fatalf("attempt %d delay = %d, want %d", index+1, got, seconds)
+		}
+	}
+}
+
+func TestLinearRetryDelayCaps(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.DelayStrategy = delayStrategyLinear
+	cfg.InitialDelaySeconds = 2
+	cfg.DelayIncrementSeconds = 2
+	cfg.MaxDelaySeconds = 10
+	want := []int{2, 4, 6, 8, 10, 10}
+	for index, seconds := range want {
+		if got := int(retryDelay(index+1, cfg).Seconds()); got != seconds {
+			t.Fatalf("attempt %d linear delay = %d, want %d", index+1, got, seconds)
 		}
 	}
 }

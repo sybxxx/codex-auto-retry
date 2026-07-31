@@ -335,13 +335,14 @@ func TestGoalStopControllerHasVisibleTerminalFailure(t *testing.T) {
 	threadID := "019fa94e-0103-7183-b405-36bd307b6dc6"
 	now := time.Now().UTC()
 	runner := &fakeResumeRunner{err: errors.New("controller unavailable")}
-	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	cfg := isolatedConfig(t.TempDir())
+	d := newTestDaemon(t, cfg, runner)
 	d.state.Threads[threadID] = ThreadState{
 		RecoveryAttempts: 4, ConsecutiveRetries: 4, GoalStatus: "active",
 		Stopped: &StoppedRetry{EventKey: "goal-limit-terminal", Class: classEmptyResponse, Reason: goalEmptyResponseStopReason,
 			Attempts: 4, MaxAttempts: 10, ConsecutiveRetries: 4, MaxConsecutive: 4, StoppedAt: now},
 		GoalStop: &GoalStopRequest{EventKey: "goal-limit-terminal", Reason: goalEmptyResponseStopReason,
-			RequestedAt: now, DueAt: now, DispatchFailures: maxGoalStopDispatchFailures - 1},
+			RequestedAt: now, DueAt: now, DispatchFailures: cfg.ControllerFailureLimit - 1},
 	}
 	jobs := d.dispatchDueLocked(now)
 	if len(jobs) != 1 || jobs[0].Kind != jobGoalBlock {

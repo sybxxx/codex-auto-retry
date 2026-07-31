@@ -381,7 +381,7 @@ try {
     $success = $true
 
     Write-Step 'Installation completed successfully.'
-    Write-Host 'Open a new Codex task to load the management panel. Automatic retry is already global.'
+    Write-Host 'Restart Codex once so it connects to the shared recovery service, then open a new task to load the management panel.'
     [pscustomobject]@{
         Installed = $true
         Running = -not $SkipRuntimeInstall

@@ -200,20 +200,24 @@ $strategyBox.Location = [System.Drawing.Point]::new(168, 190)
 $strategyBox.Size = [System.Drawing.Size]::new(120, 24)
 $strategyBox.DropDownStyle = 'DropDownList'
 [void]$strategyBox.Items.Add('翻倍递增')
+[void]$strategyBox.Items.Add('等差递增')
 [void]$strategyBox.Items.Add('固定间隔')
-$strategyBox.SelectedIndex = if ([string]$config.delay_strategy -eq 'fixed') { 1 } else { 0 }
+$strategyBox.SelectedIndex = switch ([string]$config.delay_strategy) {
+    'linear' { 1 }
+    'fixed' { 2 }
+    default { 0 }
+}
 $initialDelayLabel = New-Label '首次等待（秒）' 310 193 118 22
 $initialDelayBox = New-NumberBox 438 190 1 3600 ([int]$config.initial_delay_seconds) 120
 $settingsGroup.Controls.AddRange(@($strategyLabel, $strategyBox, $initialDelayLabel, $initialDelayBox))
 
 $maxDelayLabel = New-Label '最大等待（秒）' 18 235 145 22
 $maxDelayBox = New-NumberBox 168 232 1 86400 ([int]$config.max_delay_seconds) 120
-$previewLabel = New-Label '' 310 231 248 43
+$incrementLabel = New-Label '每次增加（秒）' 310 235 128 22
+$incrementBox = New-NumberBox 438 232 1 3600 ([int]$config.delay_increment_seconds) 120
+$previewLabel = New-Label '' 18 272 540 38
 $previewLabel.ForeColor = [System.Drawing.Color]::DimGray
-$settingsGroup.Controls.AddRange(@($maxDelayLabel, $maxDelayBox, $previewLabel))
-$hint = New-Label "目标保持暂停时，后续手动消息会独立重试。`r`nCodex 的轮次完成提醒由 Codex 自己的通知设置控制。" 18 272 540 38
-$hint.ForeColor = [System.Drawing.Color]::DimGray
-$settingsGroup.Controls.Add($hint)
+$settingsGroup.Controls.AddRange(@($maxDelayLabel, $maxDelayBox, $incrementLabel, $incrementBox, $previewLabel))
 
 function Assert-SettingsLayout {
     foreach ($pair in @(
@@ -221,13 +225,14 @@ function Assert-SettingsLayout {
         @($consecutiveLabel, $consecutiveBox, '连续无进展重试上限'),
         @($strategyLabel, $strategyBox, '等待策略'),
         @($initialDelayLabel, $initialDelayBox, '首次等待'),
-        @($maxDelayLabel, $maxDelayBox, '最大等待')
+        @($maxDelayLabel, $maxDelayBox, '最大等待'),
+        @($incrementLabel, $incrementBox, '每次增加')
     )) {
         if ($pair[0].Right -gt $pair[1].Left) {
             throw ("设置布局发生遮挡：" + [string]$pair[2])
         }
     }
-    foreach ($box in @($recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox, $maxDelayBox)) {
+    foreach ($box in @($recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox, $maxDelayBox, $incrementBox)) {
         if ($box.Left -lt 0 -or $box.Right -gt $settingsGroup.ClientSize.Width) {
             throw '设置输入框超出可见区域。'
         }
@@ -236,8 +241,11 @@ function Assert-SettingsLayout {
 Assert-SettingsLayout
 
 function Get-DelayStrategy {
-    if ($strategyBox.SelectedIndex -eq 1) { return 'fixed' }
-    return 'exponential'
+    switch ($strategyBox.SelectedIndex) {
+        1 { return 'linear' }
+        2 { return 'fixed' }
+        default { return 'exponential' }
+    }
 }
 
 function Format-PreviewDelay {
@@ -252,6 +260,7 @@ function Update-DelayPreview {
     $strategy = Get-DelayStrategy
     $initial = [long]$initialDelayBox.Value
     $maximum = [long]$maxDelayBox.Value
+    $increment = [long]$incrementBox.Value
     $count = [Math]::Min([int]$consecutiveBox.Value, 6)
     $values = @()
     $delay = $initial
@@ -259,10 +268,12 @@ function Update-DelayPreview {
         $value = if ($strategy -eq 'fixed') { $initial } else { [Math]::Min($delay, $maximum) }
         $values += (Format-PreviewDelay $value)
         if ($strategy -eq 'exponential') { $delay = [Math]::Min($delay * 2, $maximum) }
+        if ($strategy -eq 'linear') { $delay = [Math]::Min($delay + $increment, $maximum) }
     }
     $suffix = if ([int]$consecutiveBox.Value -gt $count) { '，…' } else { '' }
     $previewLabel.Text = '等待序列：' + ($values -join '，') + $suffix
-    $maxDelayBox.Enabled = $strategy -eq 'exponential'
+    $maxDelayBox.Enabled = $strategy -ne 'fixed'
+    $incrementBox.Enabled = $strategy -eq 'linear'
     $initialDelayLabel.Text = if ($strategy -eq 'fixed') { '固定间隔（秒）' } else { '首次等待（秒）' }
 }
 
@@ -298,6 +309,10 @@ function Get-StateText {
 
 function Get-StoppedStateText {
     param([string]$Reason)
+    if ($Reason -eq 'codex_restart_required') { return '等待重启 Codex' }
+    if ($Reason -eq 'codex_home_not_shared') { return '任务目录未接入' }
+    if ($Reason -eq 'shared_app_server_port_conflict') { return '恢复端口冲突' }
+    if ($Reason -like 'controller_*' -or $Reason -like 'codex_background_*' -or $Reason -eq 'app_server_request_failed') { return '恢复通道失败' }
     if ($Reason -eq 'goal_empty_response_limit_block_failed') { return '目标停止失败' }
     if ($Reason -eq 'goal_empty_response_limit') { return '目标空回复已停止' }
     return '达到上限'
@@ -343,6 +358,12 @@ function Update-RuntimeView {
     if (-not $running) {
         $serviceValue.Text = '后台服务未运行'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
+    } elseif ([string]$status.controller_state -eq 'codex_restart_required') {
+        $serviceValue.Text = '等待重启 Codex'
+        $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
+    } elseif ([string]$status.controller_state -eq 'codex_not_running') {
+        $serviceValue.Text = '等待 Codex 启动'
+        $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
     } elseif ($paused) {
         $serviceValue.Text = '已暂停'
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
@@ -459,6 +480,7 @@ $restartRetryButton.add_Click({ Invoke-TaskAction 'restart_retry' })
 $strategyBox.add_SelectedIndexChanged({ Update-DelayPreview })
 $initialDelayBox.add_ValueChanged({ Update-DelayPreview })
 $maxDelayBox.add_ValueChanged({ Update-DelayPreview })
+$incrementBox.add_ValueChanged({ Update-DelayPreview })
 $consecutiveBox.add_ValueChanged({ Update-DelayPreview })
 $closeButton.add_Click({ $form.Close() })
 $saveButton.add_Click({
@@ -468,7 +490,7 @@ $saveButton.add_Click({
         return
     }
     $delayStrategy = Get-DelayStrategy
-    if ($delayStrategy -eq 'exponential' -and [int]$maxDelayBox.Value -lt [int]$initialDelayBox.Value) {
+    if ($delayStrategy -ne 'fixed' -and [int]$maxDelayBox.Value -lt [int]$initialDelayBox.Value) {
         [System.Windows.Forms.MessageBox]::Show('最大等待时间不能小于首次等待时间。', 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
         return
     }
@@ -478,6 +500,7 @@ $saveButton.add_Click({
         max_consecutive_retries = [int]$consecutiveBox.Value
         initial_delay_seconds = [int]$initialDelayBox.Value
         max_delay_seconds = [int]$maxDelayBox.Value
+        delay_increment_seconds = [int]$incrementBox.Value
         delay_strategy = $delayStrategy
         show_notifications = [bool]$notificationsCheck.Checked
         paused = -not [bool]$enabledCheck.Checked

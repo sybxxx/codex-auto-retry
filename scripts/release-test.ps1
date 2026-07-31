@@ -29,6 +29,9 @@ try {
         'SHA256SUMS.txt',
         'payload\codex-auto-retry\.codex-plugin\plugin.json',
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
+        'payload\codex-auto-retry\scripts\environment.ps1',
+        'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry.exe',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry-mcp.exe'
@@ -72,6 +75,22 @@ try {
         [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $script), [ref]$tokens, [ref]$errors)
         if ($errors.Count -gt 0) {
             throw "PowerShell parse error in $script`: $($errors[0].Message)"
+        }
+    }
+    foreach ($relative in @(
+        'payload\codex-auto-retry\scripts\environment.ps1',
+        'payload\codex-auto-retry\scripts\install.ps1',
+        'payload\codex-auto-retry\scripts\uninstall.ps1',
+        'payload\codex-auto-retry\scripts\smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\environment-smoke-test.ps1'
+    )) {
+        $tokens = $null
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $relative), [ref]$tokens, [ref]$errors)
+        if ($errors.Count -gt 0) {
+            throw "PowerShell parse error in $relative`: $($errors[0].Message)"
         }
     }
     $settingsPath = Join-Path $root 'payload\codex-auto-retry\scripts\source\ui\settings.ps1'

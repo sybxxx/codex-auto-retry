@@ -9,16 +9,18 @@
 | `.mcp.json` | Launches the installed local MCP management server on demand through stdio. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
 | `scripts/status.ps1` | Reads the installed heartbeat without inspecting conversation content. |
-| `scripts/install.ps1` | Preserves configuration, closes watchdog/MCP/settings processes from the installed runtime, replaces the binaries, registers per-user startup, starts the watchdog, and verifies its heartbeat. |
-| `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, removes startup registration, and optionally preserves runtime data. |
+| `scripts/install.ps1` | Preserves configuration, safely owns the shared app-server environment value, replaces the binaries, registers per-user startup, starts the watchdog, and verifies its heartbeat. |
+| `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration, and optionally preserves runtime data. |
+| `scripts/environment.ps1` | Shared current-user environment ownership, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
 | `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds the watchdog and MCP executables. |
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
 | `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs mutation-free installer/uninstaller checks. |
 | `scripts/mcp-smoke-test.ps1` | Verifies MCP discovery, app resource metadata, isolated settings updates, and queued controls. |
 | `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible non-overlapping settings form, concurrent refresh stability, settings-process shutdown, heartbeat, and clean status shutdown. |
-| `scripts/smoke-test.ps1` | Runs an isolated process-level two-task retry and strict-correlation test through a mock background endpoint. |
-| `scripts/renderer-control-smoke-test.ps1` | Probes the installed Codex App's background bridge through production discovery and transport code without changing UI or tasks. |
-| `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, continuation beside an unchanged paused goal, fixed parent-event injection, and active-to-blocked goal closure against an isolated app-server and temporary `CODEX_HOME`. |
+| `scripts/smoke-test.ps1` | Runs the isolated shared-server and environment-ownership smoke tests. |
+| `scripts/shared-app-server-smoke-test.ps1` | Uses a real isolated Codex WebSocket app-server, two clients, and a local fake provider to prove Desktop-visible same-task recovery without a visible user message. |
+| `scripts/environment-smoke-test.ps1` | Proves safe environment ownership, idempotent endpoint updates, restoration, and conflict refusal through a random test-only user variable. |
+| `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, continuation beside an unchanged paused goal, settings-preserving resume of an unloaded parent before fixed event injection, and active-to-blocked goal closure against an isolated app-server and temporary `CODEX_HOME`. |
 | `scripts/empty-response-protocol-smoke-test.ps1` | Reproduces an HTTP 200 response with no model output through a local fake provider, then proves silent same-task recovery without adding a user message or replaying the original turn. |
 | `release/windows/deploy.ps1` | One-click deployment engine: validates the package, safely updates the personal marketplace, registers the plugin, installs the runtime, and verifies the result. |
 | `release/windows/uninstall-release.ps1` | Removes Codex registration, startup, and installed source while preserving runtime data unless full removal is explicitly requested. |
@@ -45,8 +47,11 @@ Source code lives under `scripts/source`.
 | `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, and the plugin's fixed subagent recovery event. |
 | `classifier.go` | Provider-independent retry decisions, empty-response classification, and limited authentication budgets. |
 | `runner.go` | Controller result validation, privacy-safe failure codes, PowerShell discovery support, and retry backoff. |
-| `resume_settings.go` | Reverse lookup and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
-| `renderer_control.go` | Loopback Codex target discovery, WebSocket transport, fixed background recovery programs, live goal/child rechecks, deterministic parent notification, exact-child continuation, post-limit goal blocking, and the narrow compatibility-text fallback. |
+| `resume_settings.go` | Reverse lookup, exact-thread rollout discovery, and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
+| `app_server_rpc.go` | Loopback JSON-RPC WebSocket transport, initialization, request correlation, and fail-closed handling of interactive server requests. |
+| `shared_server_windows.go` | Starts and records the one detached shared app-server, validates port and live-process ownership, and discovers the Codex CLI. |
+| `desktop_transport_windows.go` | Read-only detection of stopped, old Desktop-owned stdio, or shared-server Codex transport. |
+| `shared_controller.go` | Settings-preserving unloaded task and parent resume, live task/goal rechecks, deterministic parent notification, exact-child continuation, goal recovery/blocking, and silent normal continuation. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
 | `state.go` | Persistent cursors, pending and awaiting retries, turn correlation, migration, deduplication, and pruning. |
 | `config.go` | Versioned defaults, validation, legacy visible-UI migration, and user overrides. |
@@ -54,8 +59,7 @@ Source code lives under `scripts/source`.
 | `logger.go` | Size-limited, privacy-safe operational logging. |
 | `lock_windows.go` | Per-user single-instance file lock. |
 | `ui/settings.ps1` | Embedded Windows Forms status and settings window launched from the tray icon. |
-| `cmd/mock-cdp/main.go` | Test-only loopback DevTools endpoint used by the compiled process smoke test. |
-| `*_test.go` | Classification, parsing, privacy, migration, restart, mirroring, correlation, concurrency, and background-controller regression tests. |
+| `*_test.go` | Classification, parsing, privacy, migration, restart, mirroring, correlation, concurrency, controller bounds, shared-server ownership, and two-client recovery regression tests. |
 
 ## Embedded Panel Source
 
@@ -71,8 +75,9 @@ Node.js runtime.
 | --- | --- |
 | `%USERPROFILE%\plugins\codex-auto-retry` | Personal plugin source. |
 | `%USERPROFILE%\.codex\plugins\cache\personal\codex-auto-retry` | Codex's installed plugin cache. |
-| `%LOCALAPPDATA%\CodexAutoRetry` | Watchdog and MCP executables, configuration, controls, commands, state, heartbeat, lock, stop signal, and logs. |
+| `%LOCALAPPDATA%\CodexAutoRetry` | Watchdog and MCP executables, configuration, controls, commands, state, heartbeat, shared-server ownership, environment backup, lock, stop signal, and logs. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Current-user startup entry named `CodexAutoRetry`. |
+| `HKCU\Environment\CODEX_APP_SERVER_WS_URL` | Loopback WebSocket endpoint shared by Codex Desktop and the watchdog; installed with ownership backup and restored on uninstall. |
 
 ## Release Layout
 
@@ -101,8 +106,9 @@ empty-input continuation. The fallback prompt defaults to `继续`, is limited t
 turn. It is reloaded immediately before each normal-conversation dispatch. The
 per-fault recovery limit defaults to 15 and accepts values from 1 through 1000.
 The consecutive no-progress limit defaults to five and accepts values from 1
-through 100. Waiting can stay fixed or double from the initial delay up to the
-maximum; visible progress restarts that doubling sequence.
+through 100. Waiting can stay fixed, add `delay_increment_seconds` linearly, or
+double from the initial delay up to the maximum; visible progress restarts an
+increasing sequence.
 
 Configuration version 2 migrated the old forced single UI action to four
 independent background dispatch slots. A version 2 user override from one to
@@ -115,8 +121,9 @@ guard, and stores the wait strategy explicitly. Existing
 guard starts at five. `include_default_home` and
 `include_cockpit_homes` control automatic root discovery.
 `powershell_executable` optionally overrides Windows PowerShell discovery.
-`renderer_debug_port` is a diagnostic/test-only fixed-port override; normal
-installations discover Codex App automatically.
+Configuration version 5 adds the linear increment. Version 6 replaces the
+removed renderer debugging channel with `shared_app_server_port` and a bounded
+`controller_failure_limit` (three by default).
 
 `control.json` stores the persistent pause switch separately from
 `config.json`. One-use files under `commands` request `retry_now`,
@@ -135,9 +142,10 @@ by a later automatic turn.
   before broad transient matches.
 - Add session locations through `config.json` `session_roots`; do not hard-code
   provider credentials.
-- Adapt renderer bridge discovery in `renderer_control.go` when a verified
-  Codex App update changes its bundled export shape; keep recovery restricted
-  to fixed structured requests and loopback targets.
+- Adapt protocol calls in `shared_controller.go` and transport validation in
+  `app_server_rpc.go` when a verified Codex App update changes the app-server
+  schema; keep recovery restricted to fixed structured requests and the owned
+  loopback target.
 - Extend persisted resume settings in `resume_settings.go` only when the App
   protocol requires another task setting; never forward an entire
   `turn_context` or `thread_settings_applied` payload.

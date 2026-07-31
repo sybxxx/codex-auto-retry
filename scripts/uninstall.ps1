@@ -10,6 +10,7 @@ $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+. (Join-Path $PSScriptRoot 'environment.ps1')
 
 if (Test-Path -LiteralPath $installDir) {
     New-Item -ItemType File -Force -Path $stopSignal | Out-Null
@@ -38,6 +39,8 @@ if ($settingsProcesses) {
 }
 
 Remove-ItemProperty -Path $runKey -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
+$environmentResult = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir
+$sharedServerStopped = Stop-CodexAutoRetrySharedServerIfUnused -DataDir $installDir
 if (Test-Path -LiteralPath $installDir) {
     if ($KeepData) {
         foreach ($runtimeFile in @(
@@ -59,4 +62,7 @@ if (Test-Path -LiteralPath $installDir) {
 [pscustomobject]@{
     Installed = $false
     DataPreserved = [bool]$KeepData
+    EnvironmentRestored = [bool]$environmentResult.Restored
+    EnvironmentChangedByUser = [bool]$environmentResult.ChangedByUser
+    SharedServerStopped = [bool]$sharedServerStopped
 }

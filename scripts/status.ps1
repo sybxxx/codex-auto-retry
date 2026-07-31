@@ -30,6 +30,8 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     PendingRetries = $pendingRetries
     ActiveRetries = $activeRetries
     Paused = if ($status) { [bool]$status.paused } else { $false }
+    ControllerState = if ($status) { [string]$status.controller_state } else { $null }
+    CodexRestartRequired = if ($status) { [string]$status.controller_state -eq 'codex_restart_required' } else { $false }
     LastError = if ($status) { $status.last_error } else { $null }
     LogPath = Join-Path $installDir 'logs\daemon.log'
 }
