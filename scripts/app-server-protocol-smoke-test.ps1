@@ -204,7 +204,7 @@ stream_idle_timeout_ms = 250
     }
     $normalTurn = Read-UntilId $process 6
     $captured += $normalTurn.Lines
-    Start-Sleep -Milliseconds 800
+    Start-Sleep -Milliseconds 2500
     Send-Request $process @{ method = 'thread/read'; id = 7; params = @{ threadId = $normalThreadId; includeTurns = $false } }
     $finalRead = Read-UntilId $process 7
     $captured += $finalRead.Lines
@@ -310,6 +310,7 @@ stream_idle_timeout_ms = 250
         GoalStatePreserved = $true
         GoalRevisionObserved = $true
         ThreadSettingsPreserved = $true
+        FailedProviderThreadStatus = [string]$finalRead.Response.result.thread.status.type
         GoalNativeContinuationStarted = $true
         SilentNormalSameTaskTurnStarted = $true
         HeldGoalConversationStarted = $true

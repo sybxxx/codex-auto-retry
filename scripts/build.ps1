@@ -42,7 +42,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Go vet failed.' }
     & go build -trimpath -ldflags '-s -w -H=windowsgui' -o $watchdogOutput .
     if ($LASTEXITCODE -ne 0) { throw 'Watchdog build failed.' }
-    & go build -trimpath -ldflags '-s -w' -o $mcpOutput .
+    # The MCP transport still uses inherited stdio handles, but the GUI
+    # subsystem prevents Windows from allocating a visible console window.
+    & go build -trimpath -ldflags '-s -w -H=windowsgui' -o $mcpOutput .
     if ($LASTEXITCODE -ne 0) { throw 'MCP server build failed.' }
 }
 finally {

@@ -506,6 +506,44 @@ func TestAppGoalUpdatedAtAcceptsProtocolTimestampFormats(t *testing.T) {
 	}
 }
 
+func TestThreadReadAcceptsStringSourceFromDesktop(t *testing.T) {
+	var result appThreadReadResult
+	if err := json.Unmarshal([]byte(`{"thread":{"id":"019fbc66-486e-7182-ab34-14d84e4f7ce5","parentThreadId":null,"status":{"type":"systemError"},"source":"vscode"}}`), &result); err != nil {
+		t.Fatalf("Desktop string source was rejected: %v", err)
+	}
+	if result.Thread == nil || result.Thread.Status.Type != "systemError" || appThreadParentID(result.Thread.ParentThreadID, result.Thread.Source) != "" {
+		t.Fatalf("Desktop string source changed thread semantics: %+v", result.Thread)
+	}
+}
+
+func TestThreadReadFindsSubagentParentFromObjectSource(t *testing.T) {
+	source := json.RawMessage(`{"subAgent":{"thread_spawn":{"parent_thread_id":"019fbc66-486e-7182-ab34-14d84e4f7ce6"}}}`)
+	if got := appThreadParentID("", source); got != "019fbc66-486e-7182-ab34-14d84e4f7ce6" {
+		t.Fatalf("subagent parent decoded as %q", got)
+	}
+}
+
+func TestClassifyAppServerErrorRetainsFailedMethodWithoutMessageContent(t *testing.T) {
+	for method, want := range map[string]string{
+		"thread/loaded/list":  "app_server_loaded_list_failed",
+		"thread/resume":       "app_server_thread_resume_failed",
+		"thread/read":         "app_server_thread_read_failed",
+		"thread/goal/get":     "app_server_goal_read_failed",
+		"thread/goal/set":     "app_server_goal_update_failed",
+		"turn/start":          "app_server_turn_start_failed",
+		"thread/inject_items": "app_server_subagent_inject_failed",
+	} {
+		err := &appServerRequestError{Method: method, Code: -32600, Message: "provider-specific private details"}
+		if got := classifyAppServerError(err); got != want {
+			t.Fatalf("method %s classified as %s, want %s", method, got, want)
+		}
+		transportErr := &appServerCallError{Method: method, Err: context.DeadlineExceeded}
+		if got := classifyAppServerError(transportErr); got != want {
+			t.Fatalf("transport method %s classified as %s, want %s", method, got, want)
+		}
+	}
+}
+
 func containsString(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {

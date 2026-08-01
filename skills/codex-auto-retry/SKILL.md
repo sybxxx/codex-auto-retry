@@ -130,8 +130,9 @@ variable and restores it. The isolated app-server tests use temporary
 provider and no real account.
 Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces both
 executables, safely sets `CODEX_APP_SERVER_WS_URL`, registers per-user Windows
-startup for the watchdog only, starts the watchdog without a visible window,
-and verifies its heartbeat. Restart Codex once after the first installation;
+startup for the watchdog only, points the plugin at the direct installed MCP
+executable, starts both GUI-subsystem processes without a visible console, and
+verifies the watchdog heartbeat. Restart Codex once after the first installation;
 then open a new task so Codex discovers the updated MCP tools and panel.
 
 ## Remove

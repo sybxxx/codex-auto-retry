@@ -6,13 +6,13 @@
 | --- | --- |
 | `.codex-plugin/plugin.json` | Codex plugin identity, catalog metadata, skill discovery, and MCP server declaration. |
 | `.gitignore`, `.gitattributes` | Keep local runtime state out of public source and make cross-platform line endings deterministic. |
-| `.mcp.json` | Launches the installed local MCP management server on demand through stdio. |
+| `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
 | `scripts/status.ps1` | Reads the installed heartbeat without inspecting conversation content. |
 | `scripts/install.ps1` | Preserves configuration, safely owns the shared app-server environment value, replaces the binaries, registers per-user startup, starts the watchdog, and verifies its heartbeat. |
 | `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration, and optionally preserves runtime data. |
 | `scripts/environment.ps1` | Shared current-user environment ownership, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
-| `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds the watchdog and MCP executables. |
+| `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds both Windows executables with the GUI subsystem. |
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
 | `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs mutation-free installer/uninstaller checks. |
 | `scripts/mcp-smoke-test.ps1` | Verifies MCP discovery, app resource metadata, isolated settings updates, and queued controls. |
@@ -22,7 +22,7 @@
 | `scripts/environment-smoke-test.ps1` | Proves safe environment ownership, idempotent endpoint updates, restoration, and conflict refusal through a random test-only user variable. |
 | `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, continuation beside an unchanged paused goal, settings-preserving resume of an unloaded parent before fixed event injection, and active-to-blocked goal closure against an isolated app-server and temporary `CODEX_HOME`. |
 | `scripts/empty-response-protocol-smoke-test.ps1` | Reproduces an HTTP 200 response with no model output through a local fake provider, then proves silent same-task recovery without adding a user message or replaying the original turn. |
-| `release/windows/deploy.ps1` | One-click deployment engine: validates the package, safely updates the personal marketplace, registers the plugin, installs the runtime, and verifies the result. |
+| `release/windows/deploy.ps1` | One-click deployment engine: validates the package, writes the direct background MCP launcher, safely updates the personal marketplace, registers the plugin, installs the runtime, and verifies the result. |
 | `release/windows/uninstall-release.ps1` | Removes Codex registration, startup, and installed source while preserving runtime data unless full removal is explicitly requested. |
 | `release/windows/common.ps1` | Shared path-safety, JSON, executable validation, and Codex CLI discovery helpers for release deployment. |
 | `release/windows/安装.cmd`, `release/windows/卸载.cmd` | Double-click entry points for nontechnical Windows users. |

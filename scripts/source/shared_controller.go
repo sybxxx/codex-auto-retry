@@ -28,7 +28,7 @@ type appThreadReadResult struct {
 		ID             string          `json:"id"`
 		ParentThreadID string          `json:"parentThreadId"`
 		Status         appThreadStatus `json:"status"`
-		Source         map[string]any  `json:"source"`
+		Source         json.RawMessage `json:"source"`
 	} `json:"thread"`
 }
 
@@ -408,14 +408,18 @@ func (c *sharedAppServerController) injectSubagentNotice(
 	}, nil)
 }
 
-func appThreadParentID(direct string, source map[string]any) string {
+func appThreadParentID(direct string, source json.RawMessage) string {
 	if direct != "" {
 		return direct
 	}
-	subagent, _ := source["subAgent"].(map[string]any)
+	var value map[string]any
+	if len(source) == 0 || json.Unmarshal(source, &value) != nil {
+		return ""
+	}
+	subagent, _ := value["subAgent"].(map[string]any)
 	spawn, _ := subagent["thread_spawn"].(map[string]any)
-	value, _ := spawn["parent_thread_id"].(string)
-	return value
+	parentID, _ := spawn["parent_thread_id"].(string)
+	return parentID
 }
 
 func appGoalUpdatedAt(goal *appGoal) time.Time {
@@ -502,7 +506,9 @@ func classifyAppServerError(err error) string {
 		return "thread_settings_unavailable"
 	}
 	var requestError *appServerRequestError
+	method := ""
 	if errors.As(err, &requestError) {
+		method = requestError.Method
 		message := strings.ToLower(requestError.Message)
 		switch {
 		case strings.Contains(message, "active"), strings.Contains(message, "already running"), strings.Contains(message, "in progress"):
@@ -514,6 +520,28 @@ func classifyAppServerError(err error) string {
 		case strings.Contains(message, "not initialized"), strings.Contains(message, "not ready"):
 			return "codex_app_not_ready"
 		}
+	}
+	if method == "" {
+		var callError *appServerCallError
+		if errors.As(err, &callError) {
+			method = callError.Method
+		}
+	}
+	switch method {
+	case "thread/loaded/list":
+		return "app_server_loaded_list_failed"
+	case "thread/resume":
+		return "app_server_thread_resume_failed"
+	case "thread/read":
+		return "app_server_thread_read_failed"
+	case "thread/goal/get":
+		return "app_server_goal_read_failed"
+	case "thread/goal/set":
+		return "app_server_goal_update_failed"
+	case "turn/start":
+		return "app_server_turn_start_failed"
+	case "thread/inject_items":
+		return "app_server_subagent_inject_failed"
 	}
 	return "app_server_request_failed"
 }

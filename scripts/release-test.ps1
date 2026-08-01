@@ -11,6 +11,20 @@ $testRoot = Join-Path $env:TEMP ('codex-auto-retry-release-test-' + [guid]::NewG
 $installLauncher = ([string][char]0x5b89) + ([char]0x88c5) + '.cmd'
 $uninstallLauncher = ([string][char]0x5378) + ([char]0x8f7d) + '.cmd'
 $installReadme = 'README-' + ([char]0x5b89) + ([char]0x88c5) + ([char]0x8bf4) + ([char]0x660e) + '.txt'
+
+function Get-PeSubsystem {
+    param([string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 256 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+        throw "Not a PE executable: $Path"
+    }
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+    $optionalHeader = $peOffset + 24
+    if ($optionalHeader + 70 -gt $bytes.Length) { throw "Invalid PE optional header: $Path" }
+    return [BitConverter]::ToUInt16($bytes, $optionalHeader + 68)
+}
+
 try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
     Expand-Archive -LiteralPath $archive -DestinationPath $testRoot -Force
@@ -28,6 +42,7 @@ try {
         'release-manifest.json',
         'SHA256SUMS.txt',
         'payload\codex-auto-retry\.codex-plugin\plugin.json',
+        'payload\codex-auto-retry\.mcp.json',
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
@@ -68,6 +83,19 @@ try {
         $sumCount++
     }
     if ($sumCount -lt 8) { throw 'Release checksum list is incomplete.' }
+
+    $payloadRoot = Join-Path $root 'payload\codex-auto-retry'
+    $payloadMcpConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $payloadRoot '.mcp.json') | ConvertFrom-Json
+    $payloadMcpServer = $payloadMcpConfig.mcpServers.'codex-auto-retry'
+    $payloadArgs = @($payloadMcpServer.args)
+    if ([string]$payloadMcpServer.command -ne 'powershell.exe' -or
+        [Array]::IndexOf($payloadArgs, '-WindowStyle') -lt 0 -or
+        [Array]::IndexOf($payloadArgs, 'Hidden') -lt 0) {
+        throw 'Portable MCP fallback is not configured to remain hidden.'
+    }
+    if ((Get-PeSubsystem (Join-Path $payloadRoot 'scripts\bin\codex-auto-retry-mcp.exe')) -ne 2) {
+        throw 'MCP executable must use the Windows GUI subsystem.'
+    }
 
     foreach ($script in @('common.ps1', 'deploy.ps1', 'uninstall-release.ps1')) {
         $tokens = $null
@@ -121,11 +149,30 @@ try {
         $ErrorActionPreference = $savedPreference
     }
 
+    $testProfile = Join-Path $testRoot 'install-profile'
+    $testLocalAppData = Join-Path $testRoot 'install-local-app-data'
+    $installOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'deploy.ps1') `
+        -UserProfileRoot $testProfile `
+        -LocalAppDataRoot $testLocalAppData `
+        -SkipCodexCheck `
+        -SkipPluginRegistration `
+        -SkipRuntimeInstall 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw "Isolated installer test failed:`n$installOutput" }
+    $installedMcpConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $testProfile 'plugins\codex-auto-retry\.mcp.json') | ConvertFrom-Json
+    $installedMcpServer = $installedMcpConfig.mcpServers.'codex-auto-retry'
+    $installedMcpArgs = @($installedMcpServer.args)
+    $expectedMcpCommand = Join-Path $testLocalAppData 'CodexAutoRetry\codex-auto-retry-mcp.exe'
+    if (-not [string]::Equals([string]$installedMcpServer.command, $expectedMcpCommand, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $installedMcpArgs.Count -ne 1 -or [string]$installedMcpArgs[0] -ne 'mcp') {
+        throw 'Installed plugin did not replace the shell wrapper with the direct MCP launcher.'
+    }
+
     [pscustomobject]@{
         Archive = $archive
         TopLevelFolder = $roots[0].Name
         FilesVerified = $sumCount
         InstallerDryRun = 'passed'
+        DirectMcpInstall = 'passed'
         UninstallerDryRun = 'passed'
         Status = 'release verified'
     }

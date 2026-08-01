@@ -14,6 +14,7 @@ import (
 var errAppServerRequest = errors.New("Codex app-server request failed")
 
 type appServerRequestError struct {
+	Method  string
 	Code    int
 	Message string
 }
@@ -24,6 +25,19 @@ func (e *appServerRequestError) Error() string {
 
 func (e *appServerRequestError) Unwrap() error {
 	return errAppServerRequest
+}
+
+type appServerCallError struct {
+	Method string
+	Err    error
+}
+
+func (e *appServerCallError) Error() string {
+	return "Codex app-server call failed"
+}
+
+func (e *appServerCallError) Unwrap() error {
+	return e.Err
 }
 
 type appServerRPCClient struct {
@@ -84,16 +98,16 @@ func (c *appServerRPCClient) Call(ctx context.Context, method string, params any
 	_ = c.connection.SetWriteDeadline(deadline)
 	request := map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}
 	if err := c.connection.WriteJSON(request); err != nil {
-		return err
+		return &appServerCallError{Method: method, Err: err}
 	}
 	_ = c.connection.SetReadDeadline(deadline)
 	for {
 		_, data, err := c.connection.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return &appServerCallError{Method: method, Err: ctx.Err()}
 			}
-			return err
+			return &appServerCallError{Method: method, Err: err}
 		}
 		var message appServerWireMessage
 		if json.Unmarshal(data, &message) != nil {
@@ -108,13 +122,13 @@ func (c *appServerRPCClient) Call(ctx context.Context, method string, params any
 			continue
 		}
 		if message.Error != nil {
-			return &appServerRequestError{Code: message.Error.Code, Message: message.Error.Message}
+			return &appServerRequestError{Method: method, Code: message.Error.Code, Message: message.Error.Message}
 		}
 		if destination == nil || len(message.Result) == 0 || string(message.Result) == "null" {
 			return nil
 		}
 		if err := json.Unmarshal(message.Result, destination); err != nil {
-			return fmt.Errorf("decode app-server result: %w", err)
+			return &appServerCallError{Method: method, Err: fmt.Errorf("decode app-server result: %w", err)}
 		}
 		return nil
 	}

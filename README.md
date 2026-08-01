@@ -172,7 +172,9 @@ and state by default.
 The watchdog and MCP management server are installed under
 `%LOCALAPPDATA%\CodexAutoRetry`. Only the watchdog and its tray icon start at
 the current user's Windows sign-in. The MCP server starts on demand through Codex and exits with
-its Codex connection. Runtime state, heartbeat, configuration, controls, and
+its Codex connection. The release installer gives Codex the executable's direct
+absolute path, and both binaries use the Windows GUI subsystem, so task loading
+does not open PowerShell or console windows. Runtime state, heartbeat, configuration, controls, and
 privacy-safe logs remain in the same local directory. Plugin management
 commands live in `skills/codex-auto-retry/SKILL.md`.
 

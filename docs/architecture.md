@@ -116,8 +116,10 @@ UI surface that caused both reported failures.
 
 ## Management Data Flow
 
-1. Codex launches `codex-auto-retry-mcp.exe mcp` through the plugin's stdio MCP
-   declaration. The process never starts at Windows sign-in.
+1. Codex launches `codex-auto-retry-mcp.exe mcp` directly through the plugin's
+   stdio declaration. Release deployment rewrites the portable declaration to
+   the installed absolute path before plugin registration. The GUI-subsystem
+   process never opens a console and never starts at Windows sign-in.
 2. `get_auto_retry_status` reads atomic snapshots of `status.json`,
    `state.json`, `control.json`, and `config.json`. It exposes task IDs,
    privacy-safe short labels, retry categories, attempts, actions, and due
@@ -356,7 +358,7 @@ becoming additional writers for `state.json`.
   output. It proves that silent continuation sends exactly one additional
   provider request, retains the original prompt in context, creates no visible
   user item, and stores the recovered assistant reply in the same task.
-- `mcp-smoke-test.ps1` launches the console-subsystem MCP binary with isolated
+- `mcp-smoke-test.ps1` launches the GUI-subsystem MCP binary with isolated
   data. It verifies all seven tools, nested and compatibility UI metadata, the
   `text/html;profile=mcp-app` resource, structured status, prompt and pause
   updates, and atomic retry-now/cancel command submission.
@@ -370,9 +372,10 @@ becoming additional writers for `state.json`.
   inspected with Playwright at desktop and narrow widths. The MCP Apps client
   handles host theme variables, safe-area insets, and automatic iframe sizing.
 - `release-test.ps1` extracts the distributable ZIP, verifies every listed
-  SHA-256 hash, checks its one-folder layout and required payload, parses all
-  deployment scripts with the PowerShell AST parser, and executes mutation-free
-  install and uninstall dry runs.
+  SHA-256 hash, checks its one-folder layout and required payload, checks the
+  GUI PE subsystem, parses all deployment scripts with the PowerShell AST
+  parser, executes dry runs, and performs an isolated plugin-only install to
+  prove that the PowerShell fallback is replaced by the direct MCP launcher.
 
 ## Release And Upgrade Boundary
 
