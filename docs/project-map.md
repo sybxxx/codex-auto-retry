@@ -8,9 +8,11 @@
 | `.gitignore`, `.gitattributes` | Keep local runtime state out of public source and make cross-platform line endings deterministic. |
 | `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
-| `scripts/status.ps1` | Reads the installed heartbeat without inspecting conversation content. |
-| `scripts/install.ps1` | Preserves configuration, safely owns the shared app-server environment value, replaces the binaries, registers per-user startup, starts the watchdog, and verifies its heartbeat. |
+| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale services without inspecting conversation content. |
+| `scripts/install.ps1` | Transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, registers per-user startup, and rolls back on failure. |
 | `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration, and optionally preserves runtime data. |
+| `scripts/safe-disable.ps1` | Independent break-glass cleanup for plugin-owned processes, startup, and endpoint; never removes chat data or user-owned `CODEX_API_KEY`. |
+| `docs/shared-backend-safety.md` | Operational contract for fail-open startup, opt-in shared mode, transactional rollback, emergency disable, and stale-heartbeat diagnostics. |
 | `scripts/environment.ps1` | Shared current-user environment ownership, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
 | `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds both Windows executables with the GUI subsystem. |
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
@@ -42,14 +44,15 @@ Source code lives under `scripts/source`.
 | `management.go` | Privacy-bounded queue snapshots, process-backed heartbeat freshness, settings updates, and management command submission. |
 | `mcp_server.go` | Official Go MCP SDK wiring, management tools, and the embedded MCP App resource. |
 | `tray_windows.go` | Native notification-area icon, live tooltip/countdown, menu controls, and graphical settings-process lifecycle. |
-| `process_windows.go` | Read-only Windows process-liveness verification for stale heartbeat rejection. |
+| `process_windows.go` | Windows process-liveness verification, Codex Desktop detection, hidden inherited-console attributes, and owned process-tree cleanup. |
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, parent-to-child recovery-event routing, rollout paths, and mirrored-session detection. |
 | `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, and the plugin's fixed subagent recovery event. |
 | `classifier.go` | Provider-independent retry decisions, empty-response classification, and limited authentication budgets. |
 | `runner.go` | Controller result validation, privacy-safe failure codes, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup, exact-thread rollout discovery, and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
 | `app_server_rpc.go` | Loopback JSON-RPC WebSocket transport, initialization, request correlation, and fail-closed handling of interactive server requests. |
-| `shared_server_windows.go` | Starts and records the one detached shared app-server, validates port and live-process ownership, and discovers the Codex CLI. |
+| `shared_server_windows.go` | Starts and records the opt-in shared app-server in one hidden inherited console, validates loopback health and versioned process ownership, migrates the older detached launch after Codex closes, and discovers the Codex CLI. |
+| `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
 | `desktop_transport_windows.go` | Read-only detection of stopped, old Desktop-owned stdio, or shared-server Codex transport. |
 | `shared_controller.go` | Settings-preserving unloaded task and parent resume, live task/goal rechecks, deterministic parent notification, exact-child continuation, goal recovery/blocking, and silent normal continuation. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
@@ -77,7 +80,7 @@ Node.js runtime.
 | `%USERPROFILE%\.codex\plugins\cache\personal\codex-auto-retry` | Codex's installed plugin cache. |
 | `%LOCALAPPDATA%\CodexAutoRetry` | Watchdog and MCP executables, configuration, controls, commands, state, heartbeat, shared-server ownership, environment backup, lock, stop signal, and logs. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Current-user startup entry named `CodexAutoRetry`. |
-| `HKCU\Environment\CODEX_APP_SERVER_WS_URL` | Loopback WebSocket endpoint shared by Codex Desktop and the watchdog; installed with ownership backup and restored on uninstall. |
+| `HKCU\Environment\CODEX_APP_SERVER_WS_URL` | Optional loopback WebSocket endpoint; written only after explicit shared-mode health checks, with ownership backup and safe restoration. |
 
 ## Release Layout
 
@@ -123,7 +126,9 @@ guard starts at five. `include_default_home` and
 `powershell_executable` optionally overrides Windows PowerShell discovery.
 Configuration version 5 adds the linear increment. Version 6 replaces the
 removed renderer debugging channel with `shared_app_server_port` and a bounded
-`controller_failure_limit` (three by default).
+`controller_failure_limit` (three by default). Version 7 adds
+`shared_app_server_enabled`, which defaults to false so Codex remains fail-open
+on its official backend.
 
 `control.json` stores the persistent pause switch separately from
 `config.json`. One-use files under `commands` request `retry_now`,

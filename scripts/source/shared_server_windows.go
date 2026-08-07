@@ -4,9 +4,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -20,13 +22,13 @@ import (
 )
 
 const (
-	detachedProcess       = 0x00000008
-	createNewProcessGroup = 0x00000200
+	sharedServerLaunchMode = "hidden_inherited_console_v1"
 )
 
 var (
-	errSharedServerUnavailable  = errors.New("shared Codex app-server is unavailable")
-	errSharedServerPortConflict = errors.New("shared Codex app-server port is occupied")
+	errSharedServerUnavailable       = errors.New("shared Codex app-server is unavailable")
+	errSharedServerPortConflict      = errors.New("shared Codex app-server port is occupied")
+	errSharedServerMigrationDeferred = errors.New("shared Codex app-server migration is waiting for Codex to close")
 )
 
 type sharedServerState struct {
@@ -34,16 +36,21 @@ type sharedServerState struct {
 	Endpoint   string    `json:"endpoint"`
 	CodexHome  string    `json:"codex_home"`
 	Executable string    `json:"executable"`
+	ExecutableHash string  `json:"executable_hash"`
+	Owner      string    `json:"owner"`
+	Version    string    `json:"version"`
 	StartedAt  time.Time `json:"started_at"`
+	LaunchMode string    `json:"launch_mode,omitempty"`
 }
 
 type sharedServerManager struct {
-	config    Config
-	dataDir   string
-	logger    *safeLogger
-	endpoint  string
-	codexHome string
-	mu        sync.Mutex
+	config        Config
+	dataDir       string
+	logger        *safeLogger
+	endpoint      string
+	codexHome     string
+	mu            sync.Mutex
+	migrationOnce sync.Once
 }
 
 func newSharedServerManager(config Config, dataDir string, logger *safeLogger) *sharedServerManager {
@@ -74,8 +81,12 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 	defer m.mu.Unlock()
 	if m.probe(ctx) == nil {
 		state, err := m.readState()
-		if err == nil && validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) &&
+		if err == nil && state.Owner == sharedServerOwner && state.Version == appVersion && validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) &&
+			state.ExecutableHash == executableHash(state.Executable) &&
 			m.SupportsHome(state.CodexHome) && m.ownsProcess(ctx, state) {
+			if state.LaunchMode != sharedServerLaunchMode {
+				m.scheduleLaunchMigration()
+			}
 			return nil
 		}
 		return errSharedServerPortConflict
@@ -99,7 +110,14 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 		err := m.probe(probeCtx)
 		cancel()
 		if err == nil {
-			return nil
+			state, stateErr := m.readState()
+			if stateErr == nil && state.Owner == sharedServerOwner && state.Version == appVersion &&
+				validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) && m.SupportsHome(state.CodexHome) &&
+				state.ExecutableHash == executableHash(state.Executable) &&
+				m.ownsProcess(ctx, state) {
+				return nil
+			}
+			return errSharedServerUnavailable
 		}
 		select {
 		case <-ctx.Done():
@@ -108,6 +126,94 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 		}
 	}
 	return errSharedServerUnavailable
+}
+
+func (m *sharedServerManager) scheduleLaunchMigration() {
+	m.migrationOnce.Do(func() {
+		if m.logger != nil {
+			m.logger.Printf("shared app-server console migration scheduled")
+		}
+		go m.waitForDesktopExitAndMigrate()
+	})
+}
+
+func (m *sharedServerManager) waitForDesktopExitAndMigrate() {
+	for {
+		if codexDesktopRunning() {
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err := m.migrateLegacyLaunch(ctx)
+		cancel()
+		if err == nil {
+			if m.logger != nil {
+				m.logger.Printf("shared app-server console migration completed")
+			}
+			return
+		}
+		if !errors.Is(err, errSharedServerMigrationDeferred) && m.logger != nil {
+			m.logger.Printf("shared app-server console migration delayed category=server_migration")
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func (m *sharedServerManager) migrateLegacyLaunch(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.readState()
+	if err != nil {
+		return err
+	}
+	if state.LaunchMode == sharedServerLaunchMode {
+		return nil
+	}
+	if codexDesktopRunning() {
+		return errSharedServerMigrationDeferred
+	}
+	if m.probe(ctx) == nil {
+		if !validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) ||
+			!m.SupportsHome(state.CodexHome) || !m.ownsProcess(ctx, state) {
+			return errSharedServerPortConflict
+		}
+		stopCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		err = terminateProcessTree(stopCtx, state.PID)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		connection, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", m.config.SharedAppServerPort), 200*time.Millisecond)
+		if dialErr != nil {
+			break
+		}
+		_ = connection.Close()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	connection, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", m.config.SharedAppServerPort), 200*time.Millisecond)
+	if dialErr == nil {
+		_ = connection.Close()
+		return errSharedServerPortConflict
+	}
+	executable := state.Executable
+	if info, statErr := os.Stat(executable); statErr != nil || info.IsDir() {
+		executable, err = findCodexExecutable()
+		if err != nil {
+			return err
+		}
+	}
+	hash := executableHash(executable)
+	if hash == "" {
+		return errors.New("Codex executable hash could not be verified")
+	}
+	return m.start(executable)
 }
 
 func (m *sharedServerManager) readState() (sharedServerState, error) {
@@ -168,6 +274,13 @@ func (m *sharedServerManager) probe(ctx context.Context) error {
 }
 
 func (m *sharedServerManager) start(executable string) error {
+	if info, err := os.Stat(executable); err != nil || info.IsDir() {
+		return errors.New("Codex executable is missing")
+	}
+	hash := executableHash(executable)
+	if hash == "" {
+		return errors.New("Codex executable hash could not be verified")
+	}
 	arguments := []string{
 		"-c", "features.code_mode_host=true",
 		"app-server", "--analytics-default-enabled", "--listen", m.endpoint,
@@ -182,10 +295,7 @@ func (m *sharedServerManager) start(executable string) error {
 	defer devNull.Close()
 	command.Stdout = devNull
 	command.Stderr = devNull
-	command.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: detachedProcess | createNewProcessGroup,
-	}
+	command.SysProcAttr = hiddenInheritedConsoleAttributes()
 	if err := command.Start(); err != nil {
 		return err
 	}
@@ -195,15 +305,31 @@ func (m *sharedServerManager) start(executable string) error {
 	}
 	state := sharedServerState{
 		PID: pid, Endpoint: m.endpoint, CodexHome: m.codexHome,
-		Executable: executable, StartedAt: time.Now().UTC(),
+		Executable: executable, Owner: sharedServerOwner, Version: appVersion,
+		ExecutableHash: hash,
+		StartedAt: time.Now().UTC(), LaunchMode: sharedServerLaunchMode,
 	}
 	if err := writeJSONAtomic(filepath.Join(m.dataDir, "shared-server.json"), state); err != nil {
+		_ = terminateProcessTree(context.Background(), pid)
 		return err
 	}
 	if m.logger != nil {
 		m.logger.Printf("shared app-server starting pid=%d port=%d", pid, m.config.SharedAppServerPort)
 	}
 	return nil
+}
+
+func executableHash(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func findCodexExecutable() (string, error) {

@@ -28,6 +28,31 @@ type stateAwareRunner struct {
 
 func (r *stateAwareRunner) ControllerState(context.Context) string { return r.state }
 
+type lifecycleRunner struct {
+	*fakeResumeRunner
+	mu       sync.Mutex
+	statuses []string
+	errs     []error
+}
+
+func (r *lifecycleRunner) RetryThreadStatus(context.Context, string, string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.errs) > 0 {
+		err := r.errs[0]
+		r.errs = r.errs[1:]
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(r.statuses) == 0 {
+		return "idle", nil
+	}
+	status := r.statuses[0]
+	r.statuses = r.statuses[1:]
+	return status, nil
+}
+
 func (f *fakeResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {
 	f.mu.Lock()
 	f.jobs = append(f.jobs, job)
@@ -84,6 +109,30 @@ func TestRestartRequiredRetryReopensAfterCodexUsesSharedServer(t *testing.T) {
 		thread.Pending.ConsecutiveRetry != 4 || thread.Pending.DispatchFailures != 0 ||
 		thread.RecoveryAttempts != 5 || thread.ConsecutiveRetries != 4 || !thread.Pending.DueAt.Equal(now) {
 		t.Fatalf("restart-required retry was not reopened without losing its provider budget: %+v", thread)
+	}
+}
+
+func TestCodexNotRunningStatusClearsWithoutReopeningStoppedRetry(t *testing.T) {
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0421"
+	now := time.Now().UTC()
+	runner := &stateAwareRunner{fakeResumeRunner: successfulRunner(), state: "ready"}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.controllerState = "codex_not_running"
+	d.state.Threads[threadID] = ThreadState{Stopped: &StoppedRetry{
+		EventKey: "event", FailedTurnID: "failed", FailedAt: now.Add(-time.Minute),
+		Class: classServer, StoppedAt: now.Add(-time.Second), Attempts: 4, MaxAttempts: 15,
+		ConsecutiveRetries: 3, MaxConsecutive: 5, Reason: "codex_not_running",
+	}}
+	if !d.controllerRestartReady(context.Background(), now) {
+		t.Fatal("restarted Codex was not detected")
+	}
+	d.mu.Lock()
+	d.reopenRestartRequiredLocked(now)
+	d.mu.Unlock()
+	thread := daemonThreadSnapshot(d, threadID)
+	if d.controllerState != "ready" || thread.Stopped == nil || thread.Pending != nil ||
+		thread.Stopped.Reason != "codex_not_running" {
+		t.Fatalf("Codex restart reopened a user-stopped retry or left stale service state: controller=%s thread=%+v", d.controllerState, thread)
 	}
 }
 
@@ -246,6 +295,74 @@ func newTestDaemon(t *testing.T, cfg Config, runner resumeRunner) *daemon {
 		t.Fatal(err)
 	}
 	return d
+}
+
+func TestStateWriteFailureDoesNotStopWatchdog(t *testing.T) {
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	writes := 0
+	d.writeState = func(string, any) error {
+		writes++
+		if writes == 1 {
+			return errors.New("sharing violation")
+		}
+		return nil
+	}
+	now := time.Now().UTC()
+	if err := d.tick(context.Background(), now); err != nil {
+		t.Fatalf("transient state write stopped the watchdog: %v", err)
+	}
+	if d.lastError != "state_write_deferred" {
+		t.Fatalf("state write failure was not exposed: %q", d.lastError)
+	}
+	if err := d.tick(context.Background(), now.Add(time.Second)); err != nil {
+		t.Fatalf("recovered state write stopped the watchdog: %v", err)
+	}
+	if writes != 2 || d.lastError != "" {
+		t.Fatalf("state persistence did not recover on the next tick: writes=%d last_error=%q", writes, d.lastError)
+	}
+}
+
+func TestDisabledSharedBackendStopsAwaitingRetryInsteadOfRequeueing(t *testing.T) {
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0427"
+	now := time.Now().UTC()
+	d.mu.Lock()
+	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey: "disabled-event", FailedTurnID: "failed-turn", Class: classServer,
+		Attempt: 1, MaxAttempts: 15, ConsecutiveRetry: 1, MaxConsecutive: 5,
+		DispatchFailures: 1, DispatchStartedAt: now,
+	}}
+	d.rescheduleAwaitingWithPolicyLocked(threadID, d.state.Threads[threadID], now, "shared_app_server_disabled", true)
+	d.mu.Unlock()
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil || thread.Stopped.Reason != "shared_app_server_disabled" {
+		t.Fatalf("disabled backend was requeued instead of stopped: %+v", thread)
+	}
+}
+
+func TestStatusWriteFailureDoesNotStopWatchdog(t *testing.T) {
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	writes := 0
+	d.writeStatusFile = func(string, any) error {
+		writes++
+		if writes == 1 {
+			return errors.New("sharing violation")
+		}
+		return nil
+	}
+	now := time.Now().UTC()
+	if err := d.tick(context.Background(), now); err != nil {
+		t.Fatalf("transient status write stopped the watchdog: %v", err)
+	}
+	if !d.statusWriteDeferred {
+		t.Fatal("status write failure was not retained for recovery logging")
+	}
+	if err := d.tick(context.Background(), now.Add(time.Second)); err != nil {
+		t.Fatalf("recovered status write stopped the watchdog: %v", err)
+	}
+	if writes != 2 || d.statusWriteDeferred {
+		t.Fatalf("status persistence did not recover on the next tick: writes=%d deferred=%v", writes, d.statusWriteDeferred)
+	}
 }
 
 func TestDaemonBaselinesHistoryAndDispatchesNewFailure(t *testing.T) {
@@ -730,7 +847,7 @@ func TestControllerFailureReschedulesSameProviderAttempt(t *testing.T) {
 	}
 }
 
-func TestCodexNotRunningWaitDoesNotConsumeFailureOrProviderCounters(t *testing.T) {
+func TestCodexNotRunningStopsWithoutLoopingOrConsumingProviderCounters(t *testing.T) {
 	threadID := "019f9e7a-022b-77d2-bccc-5394d292caf4"
 	now := time.Now().UTC()
 	runner := &fakeResumeRunner{result: DispatchResult{Outcome: outcomeRetryLater, Reason: "codex_not_running"}}
@@ -747,10 +864,13 @@ func TestCodexNotRunningWaitDoesNotConsumeFailureOrProviderCounters(t *testing.T
 	go d.runJob(context.Background(), jobs[0])
 	d.waitForJobs()
 	thread := daemonThreadSnapshot(d, threadID)
-	if thread.Pending == nil || thread.Pending.DispatchFailures != 0 || thread.Pending.Attempt != 5 ||
-		thread.RecoveryAttempts != 4 || thread.ConsecutiveRetries != 3 ||
-		thread.Pending.DueAt.Before(now.Add(14*time.Second)) {
-		t.Fatalf("waiting for Codex changed retry accounting or polled too quickly: %+v", thread)
+	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil ||
+		thread.Stopped.Reason != "codex_not_running" || thread.Stopped.Attempts != 4 ||
+		thread.Stopped.ConsecutiveRetries != 3 || thread.RecoveryAttempts != 4 || thread.ConsecutiveRetries != 3 {
+		t.Fatalf("closed Codex kept retrying or changed provider accounting: %+v", thread)
+	}
+	if jobs = d.dispatchDueLocked(now.Add(time.Hour)); len(jobs) != 0 {
+		t.Fatalf("closed Codex dispatched another retry: %+v", jobs)
 	}
 }
 
@@ -927,6 +1047,109 @@ func TestMissingStartAcknowledgementReschedules(t *testing.T) {
 	}
 }
 
+func TestInactiveAcknowledgedRetryNeedsTwoLifecycleChecks(t *testing.T) {
+	threadID := "019fa17c-1e5f-7dc3-bae5-e84666ffc203"
+	cfg := isolatedConfig(t.TempDir())
+	cfg.MaxRecoveryAttempts = 3
+	cfg.MaxConsecutiveRetries = 100
+	runner := &lifecycleRunner{fakeResumeRunner: successfulRunner(), statuses: []string{"idle", "idle"}}
+	d := newTestDaemon(t, cfg, runner)
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{
+		RecoveryAttempts: 3, ConsecutiveRetries: 3,
+		Awaiting: &AwaitingRetry{
+			EventKey: "event", FailedTurnID: "failed", RetryTurnID: "retry-turn",
+			Class: classUnknown, Attempt: 3, MaxAttempts: 3,
+			ConsecutiveRetry: 3, MaxConsecutive: 100,
+			StartedAt: now.Add(-2 * stoppedRetryDisplayWindow), DispatchStartedAt: now.Add(-2 * stoppedRetryDisplayWindow),
+			StartDeadline: now.Add(-2 * stoppedRetryDisplayWindow),
+		},
+	}
+	d.reconcileAwaitingLifecycle(context.Background(), now)
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Awaiting == nil || thread.Awaiting.LifecycleChecks != 1 || thread.Stopped != nil {
+		t.Fatalf("first inactive probe changed retry too early: %+v", thread)
+	}
+	d.reconcileAwaitingLifecycle(context.Background(), now.Add(awaitingLifecycleProbeInterval))
+	thread = daemonThreadSnapshot(d, threadID)
+	if thread.Awaiting != nil || thread.Pending != nil || thread.Stopped == nil ||
+		thread.Stopped.Reason != "recovery_attempt_limit" || thread.Stopped.MaxConsecutive != 100 || !thread.Stopped.Historical {
+		t.Fatalf("second inactive probe did not stop the exhausted chain safely: %+v", thread)
+	}
+	if jobs := d.dispatchDueLocked(now.Add(awaitingLifecycleProbeInterval)); len(jobs) != 0 {
+		t.Fatalf("stale acknowledged retry created a duplicate job: %+v", jobs)
+	}
+}
+
+func TestActiveAcknowledgedRetrySurvivesLifecycleProbe(t *testing.T) {
+	threadID := "019fa17c-1e5f-7dc3-bae5-e84666ffc204"
+	runner := &lifecycleRunner{fakeResumeRunner: successfulRunner(), statuses: []string{"active"}}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey: "event", FailedTurnID: "failed", RetryTurnID: "retry-turn", Class: classServer,
+		Attempt: 1, MaxAttempts: 15, ConsecutiveRetry: 1, MaxConsecutive: 5,
+		StartedAt: now.Add(-time.Minute), DispatchStartedAt: now.Add(-time.Minute),
+		StartDeadline: now.Add(-time.Minute), LifecycleChecks: 1, DispatchFailures: 2,
+	}}
+	d.reconcileAwaitingLifecycle(context.Background(), now)
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Awaiting == nil || thread.Awaiting.LifecycleChecks != 0 ||
+		thread.Awaiting.DispatchFailures != 0 || thread.Pending != nil {
+		t.Fatalf("active retry was incorrectly recovered as stale: %+v", thread)
+	}
+}
+
+func TestAcknowledgedRetryStopsImmediatelyWhenCodexCloses(t *testing.T) {
+	threadID := "019fa17c-1e5f-7dc3-bae5-e84666ffc205"
+	runner := &lifecycleRunner{
+		fakeResumeRunner: successfulRunner(),
+		errs:             []error{&controllerReasonError{reason: "codex_not_running"}},
+	}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{
+		RecoveryAttempts: 4, ConsecutiveRetries: 3,
+		Awaiting: &AwaitingRetry{
+			EventKey: "event", FailedTurnID: "failed", RetryTurnID: "retry-turn", Class: classServer,
+			Attempt: 5, MaxAttempts: 15, ConsecutiveRetry: 4, MaxConsecutive: 5,
+			StartedAt: now.Add(-time.Minute), DispatchStartedAt: now.Add(-time.Minute),
+			StartDeadline: now.Add(-time.Minute),
+		},
+	}
+	d.reconcileAwaitingLifecycle(context.Background(), now)
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Awaiting != nil || thread.Pending != nil || thread.Stopped == nil ||
+		thread.Stopped.Reason != "codex_not_running" || thread.RecoveryAttempts != 4 ||
+		thread.ConsecutiveRetries != 3 || d.controllerState != "codex_not_running" {
+		t.Fatalf("closed Codex left an acknowledged retry polling in the background: %+v", thread)
+	}
+	if jobs := d.dispatchDueLocked(now.Add(time.Hour)); len(jobs) != 0 {
+		t.Fatalf("closed Codex redispatched an acknowledged retry: %+v", jobs)
+	}
+}
+
+func TestLifecycleProbeFailuresStopAtControllerLimit(t *testing.T) {
+	threadID := "019fa17c-1e5f-7dc3-bae5-e84666ffc206"
+	runner := &lifecycleRunner{fakeResumeRunner: successfulRunner(), errs: []error{errors.New("controller unavailable")}}
+	cfg := isolatedConfig(t.TempDir())
+	d := newTestDaemon(t, cfg, runner)
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey: "event", FailedTurnID: "failed", RetryTurnID: "retry-turn", Class: classServer,
+		Attempt: 2, MaxAttempts: 15, ConsecutiveRetry: 2, MaxConsecutive: 5,
+		DispatchFailures: cfg.ControllerFailureLimit - 1,
+		StartedAt:        now.Add(-time.Minute), DispatchStartedAt: now.Add(-time.Minute),
+		StartDeadline: now.Add(-time.Minute),
+	}}
+	d.reconcileAwaitingLifecycle(context.Background(), now)
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Awaiting != nil || thread.Pending != nil || thread.Stopped == nil ||
+		thread.Stopped.Reason != "controller_unavailable" {
+		t.Fatalf("lifecycle controller failures did not reach a bounded terminal state: %+v", thread)
+	}
+}
+
 func TestDispatchHonorsParallelLimitAndKeepsThreadsIndependent(t *testing.T) {
 	cfg := isolatedConfig(t.TempDir())
 	cfg.MaxParallelRetries = 2
@@ -1055,6 +1278,7 @@ func TestMirroredHistoryDoesNotCancelPendingRetry(t *testing.T) {
 	if thread.Pending == nil && thread.Awaiting == nil {
 		t.Fatal("mirrored history cancelled the pending retry")
 	}
+	d.waitForJobs()
 }
 
 func daemonThreadSnapshot(d *daemon, threadID string) ThreadState {

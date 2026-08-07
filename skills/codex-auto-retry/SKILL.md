@@ -56,16 +56,24 @@ and exit. This is not a second watchdog or a separate retry engine.
   `max_consecutive_retries` bounds retries without a visible assistant reply or
   completed tool result (5 by default, 1-100). Visible progress resets only the
   second count; success or a new user turn resets both. Controller failures
-  consume neither budget. A closed Codex App waits, while other controller
-  failures stop after three consecutive failures by default instead of
-  refreshing the countdown forever. `codex_restart_required` means the user
-  must restart Codex once so Desktop inherits the shared app-server endpoint.
+  consume neither budget. A closed Codex App immediately stops the affected
+  recovery with `codex_not_running`; restart it manually from the panel after
+  Codex is open again. Other controller failures stop after three consecutive
+  failures by default instead of refreshing the countdown forever.
+  `codex_restart_required` means the user must restart Codex once after the
+  optional shared mode is enabled so Desktop inherits the shared endpoint.
 
 ## Embedded Management
 
 When the MCP tools are available, use `get_auto_retry_status` to display the
 embedded panel and return current state. The panel shows all pending and active
-tasks, live countdowns, pause state, and the compatibility fallback text.
+tasks, live countdowns, pause state, shared-backend opt-in state, and the
+compatibility fallback text.
+
+- Use `set_shared_app_server_enabled` only when the user explicitly requests
+  silent shared-backend recovery. Enabling runs ownership and health checks;
+  failure leaves Codex's environment unchanged. Disabling restores only the
+  plugin-owned endpoint and stops only the plugin-owned server.
 
 - Use `set_retry_prompt` to change only the fallback text. The default is
   `继续`, the maximum is 500 characters, and changes apply without restarting
@@ -129,11 +137,17 @@ variable and restores it. The isolated app-server tests use temporary
 `CODEX_HOME` directories; the empty-response test also uses a local fake
 provider and no real account.
 Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces both
-executables, safely sets `CODEX_APP_SERVER_WS_URL`, registers per-user Windows
+executables, leaves `CODEX_APP_SERVER_WS_URL` untouched by default (or sets it
+only after the explicit shared-mode health gate), registers per-user Windows
 startup for the watchdog only, points the plugin at the direct installed MCP
 executable, starts both GUI-subsystem processes without a visible console, and
-verifies the watchdog heartbeat. Restart Codex once after the first installation;
-then open a new task so Codex discovers the updated MCP tools and panel.
+launches the shared Codex app-server with one hidden inherited console so its
+Playwright, Node REPL, code-mode, and shell descendants do not create separate
+Windows Terminal windows. An older detached server is replaced automatically
+after Codex fully exits, and the installer verifies the watchdog heartbeat.
+Restart Codex once only after enabling the optional shared mode or changing its
+launch mode; then open a new task so Codex discovers the updated MCP tools and
+panel.
 
 ## Remove
 
@@ -188,3 +202,20 @@ the fallback prompt or app-server error bodies.
 
 If a permanent login failure remains after the limited retry budget, explain
 that re-authentication is required; do not weaken authentication or security.
+
+## Shared Backend Safety
+
+Shared app-server recovery is opt-in. Treat `shared_app_server_enabled=false`
+as the safe default and never add `CODEX_APP_SERVER_WS_URL` to the user's
+global environment during an ordinary install. The optional enable operation
+must verify loopback ownership, a WebSocket health handshake, executable and
+plugin version, and the recorded live PID before publishing the endpoint.
+Installation and update are transactional; a failed health check restores the
+previous binary, config, endpoint, and startup entry.
+
+For a startup emergency, run `scripts/safe-disable.ps1` directly. It is
+watchdog-independent, stops only processes proven to belong to this plugin,
+restores only the endpoint in `environment-backup.json`, removes only the
+plugin's startup entry, broadcasts the environment change, and never removes
+chat data or a user-owned `CODEX_API_KEY`. Stale PID or heartbeat data must be
+shown as `后台服务未运行`, never as healthy `running`.

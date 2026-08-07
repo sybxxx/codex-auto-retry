@@ -50,6 +50,7 @@ type ManagementSnapshot = {
   running: boolean;
   heartbeat_stale: boolean;
   paused: boolean;
+  shared_app_server_enabled: boolean;
   retry_prompt: string;
   max_recovery_attempts: number;
   max_consecutive_retries: number;
@@ -90,6 +91,8 @@ const elements = {
   queueList: required<HTMLElement>("queue-list"),
   scanTime: required<HTMLElement>("scan-time"),
   pauseToggle: required<HTMLInputElement>("pause-toggle"),
+  sharedAppServerToggle: required<HTMLInputElement>("shared-app-server-toggle"),
+  sharedAppServerDescription: required<HTMLElement>("shared-app-server-description"),
   pauseDescription: required<HTMLElement>("pause-description"),
   retryPrompt: required<HTMLTextAreaElement>("retry-prompt"),
   promptCount: required<HTMLElement>("prompt-count"),
@@ -159,6 +162,7 @@ function render(next: ManagementSnapshot): void {
   elements.version.textContent = next.version ? `v${next.version}` : "";
   elements.retryPrompt.disabled = false;
   elements.pauseToggle.disabled = false;
+  elements.sharedAppServerToggle.disabled = false;
   if (!keepSettingsDraft) {
     elements.retryPrompt.value = next.retry_prompt;
     elements.maxRecoveryAttempts.value = String(next.max_recovery_attempts);
@@ -171,6 +175,10 @@ function render(next: ManagementSnapshot): void {
   }
   savedSettings = serializedSettings(next);
   elements.pauseToggle.checked = !next.paused;
+  elements.sharedAppServerToggle.checked = next.shared_app_server_enabled;
+  elements.sharedAppServerDescription.textContent = next.shared_app_server_enabled
+    ? "正在使用插件拥有且已通过健康检查的后台"
+    : "默认关闭，不影响 Codex 官方后台";
   updatePromptState();
   renderService(next);
   renderMetrics(next);
@@ -190,8 +198,12 @@ function renderService(next: ManagementSnapshot): void {
     detail = "请重启一次 Codex，使后台恢复通道生效";
     dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state === "codex_not_running") {
-    label = "等待 Codex";
-    detail = "Codex 启动后会继续处理等待中的任务";
+    label = "Codex 已退出";
+    detail = "相关任务已停止自动重试；启动 Codex 后可手动重新开始";
+    dot.classList.add("status-dot-danger");
+  } else if (next.running && next.controller_state === "shared_app_server_disabled") {
+    label = "共享后台已关闭";
+    detail = "Codex 继续使用官方后台；打开共享后台后才会执行静默恢复";
     dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state && !["ready", "starting"].includes(next.controller_state)) {
     label = "恢复通道异常";
@@ -399,6 +411,12 @@ function actionLabel(value?: string): string {
 }
 
 function stopReasonLabel(retry: ManagedRetry): string {
+  if (retry.stop_reason === "codex_not_running") {
+    return "Codex 已退出，自动重试已停止";
+  }
+  if (retry.stop_reason === "shared_app_server_disabled") {
+    return "共享后台模式已关闭，Codex 仍使用官方后台";
+  }
   if (retry.stop_reason === "codex_restart_required") {
     return "重启一次 Codex 后会自动恢复";
   }
@@ -426,7 +444,8 @@ function stopReasonLabel(retry: ManagedRetry): string {
 function controllerStateLabel(value: string): string {
   const labels: Record<string, string> = {
     codex_restart_required: "需要重启 Codex",
-    codex_not_running: "Codex 尚未运行",
+    codex_not_running: "Codex 已退出，自动重试已停止",
+    shared_app_server_disabled: "共享后台模式已关闭，Codex 使用官方后台",
     codex_home_not_shared: "任务目录未接入共享通道",
     shared_app_server_port_conflict: "共享端口被占用",
     codex_background_channel_unavailable: "共享通道不可用",
@@ -544,6 +563,7 @@ function setBusy(active: boolean): void {
   elements.refreshButton.disabled = busy;
   elements.refreshButton.classList.toggle("is-spinning", busy);
   elements.pauseToggle.disabled = busy || !snapshot;
+  elements.sharedAppServerToggle.disabled = busy || !snapshot;
   document.querySelectorAll<HTMLButtonElement>(".queue-action").forEach((button) => {
     button.disabled = busy;
   });
@@ -562,6 +582,9 @@ async function callTool(name: string, args: Record<string, unknown> = {}, quiet 
     if (next) render(next);
     else if (result.isError) throw new Error(result.content?.find((item) => item.text)?.text ?? "操作失败");
   } catch (error) {
+    if (name === "set_shared_app_server_enabled" && snapshot) {
+      elements.sharedAppServerToggle.checked = snapshot.shared_app_server_enabled;
+    }
     if (!quiet) showNotice(error instanceof Error ? error.message : "操作失败", true);
   } finally {
     if (!quiet) setBusy(false);
@@ -585,6 +608,13 @@ function showNotice(message: string, isError: boolean): void {
 
 elements.refreshButton.addEventListener("click", () => void callTool("get_auto_retry_status"));
 elements.pauseToggle.addEventListener("change", () => void callTool("set_auto_retry_paused", { paused: !elements.pauseToggle.checked }));
+elements.sharedAppServerToggle.addEventListener("change", () => {
+  const enabled = elements.sharedAppServerToggle.checked;
+  elements.sharedAppServerDescription.textContent = enabled
+    ? "正在使用插件拥有且已通过健康检查的后台"
+    : "默认关闭，不影响 Codex 官方后台";
+  void callTool("set_shared_app_server_enabled", { enabled });
+});
 elements.retryPrompt.addEventListener("input", updatePromptState);
 elements.maxRecoveryAttempts.addEventListener("input", updatePromptState);
 elements.maxConsecutiveRetries.addEventListener("input", updatePromptState);
@@ -605,7 +635,7 @@ window.setInterval(() => {
 if (new URLSearchParams(window.location.search).has("preview")) {
   render(previewSnapshot());
 } else {
-  app = new App({ name: "Codex Auto Retry", version: "0.7.1" });
+  app = new App({ name: "Codex Auto Retry", version: "0.7.3" });
   app.onerror = (error) => showNotice(error instanceof Error ? error.message : "连接失败", true);
   app.onhostcontextchanged = handleHostContext;
   app.ontoolresult = (result) => {
@@ -624,10 +654,11 @@ if (new URLSearchParams(window.location.search).has("preview")) {
 function previewSnapshot(): ManagementSnapshot {
   const now = Date.now();
   return {
-    version: "0.7.1",
+    version: "0.7.3",
     running: true,
     heartbeat_stale: false,
     paused: false,
+    shared_app_server_enabled: false,
     retry_prompt: "继续",
     max_recovery_attempts: 15,
     max_consecutive_retries: 5,

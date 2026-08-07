@@ -123,4 +123,13 @@ func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
 	if got := controllerFailureReason(DispatchResult{}, errResumeSettingsUnavailable); got != "thread_settings_unavailable" {
 		t.Fatalf("unexpected settings reason: %s", got)
 	}
+	if got := controllerFailureReason(DispatchResult{}, &controllerReasonError{reason: "codex_not_running"}); got != "codex_not_running" {
+		t.Fatalf("explicit controller reason was lost: %s", got)
+	}
+	if got := controllerFailureReason(DispatchResult{}, errSharedAppServerDisabled); got != "shared_app_server_disabled" {
+		t.Fatalf("disabled shared mode error was not classified: %s", got)
+	}
+	if got := controllerFailureReason(DispatchResult{Outcome: outcomeRetryLater, Reason: "shared_app_server_disabled"}, nil); got != "shared_app_server_disabled" || !controllerFailureNeedsAction(got) {
+		t.Fatalf("disabled shared mode was not treated as a terminal fail-open condition: %s", got)
+	}
 }

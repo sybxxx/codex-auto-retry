@@ -82,6 +82,17 @@
             </label>
           </div>
 
+          <div class="setting-row shared-server-row">
+            <div class="setting-copy">
+              <label for="shared-app-server-toggle">共享 Codex 后台</label>
+              <span id="shared-app-server-description">默认关闭，不影响 Codex 官方后台</span>
+            </div>
+            <label class="switch" title="启用前会检查端口、握手、版本和进程归属">
+              <input id="shared-app-server-toggle" type="checkbox" role="switch" />
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+
           <div class="prompt-setting">
             <div class="prompt-label-row">
               <label for="retry-prompt">后备重试文字</label>

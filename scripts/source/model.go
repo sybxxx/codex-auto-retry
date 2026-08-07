@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const appVersion = "0.7.1"
+const appVersion = "0.7.3"
 
 type FailureClass string
 
@@ -18,10 +18,11 @@ const (
 )
 
 type RetryDecision struct {
-	Retry       bool
-	Class       FailureClass
-	MaxAttempts int
-	Reason      string
+	Retry          bool
+	Class          FailureClass
+	MaxAttempts    int
+	MaxConsecutive int
+	Reason         string
 }
 
 type RelevantEvent struct {
@@ -69,25 +70,27 @@ const (
 )
 
 type AwaitingRetry struct {
-	EventKey            string       `json:"event_key"`
-	FailedTurnID        string       `json:"failed_turn_id"`
-	FailedAt            time.Time    `json:"failed_at,omitempty"`
-	OriginTurnStartedAt time.Time    `json:"origin_turn_started_at,omitempty"`
-	RetryTurnID         string       `json:"retry_turn_id,omitempty"`
-	Class               FailureClass `json:"class"`
-	Action              RetryAction  `json:"action"`
-	Attempt             int          `json:"attempt"`
-	MaxAttempts         int          `json:"max_attempts,omitempty"`
-	ConsecutiveRetry    int          `json:"consecutive_retry"`
-	MaxConsecutive      int          `json:"max_consecutive_retries,omitempty"`
-	DispatchFailures    int          `json:"dispatch_failures,omitempty"`
-	ParentNotified      bool         `json:"parent_notified,omitempty"`
-	GoalLimitRestart    bool         `json:"goal_limit_restart,omitempty"`
-	DispatchStartedAt   time.Time    `json:"dispatch_started_at"`
-	StartDeadline       time.Time    `json:"start_deadline"`
-	StartedAt           time.Time    `json:"started_at,omitempty"`
-	CodexHome           string       `json:"codex_home"`
-	RolloutPath         string       `json:"rollout_path,omitempty"`
+	EventKey             string       `json:"event_key"`
+	FailedTurnID         string       `json:"failed_turn_id"`
+	FailedAt             time.Time    `json:"failed_at,omitempty"`
+	OriginTurnStartedAt  time.Time    `json:"origin_turn_started_at,omitempty"`
+	RetryTurnID          string       `json:"retry_turn_id,omitempty"`
+	Class                FailureClass `json:"class"`
+	Action               RetryAction  `json:"action"`
+	Attempt              int          `json:"attempt"`
+	MaxAttempts          int          `json:"max_attempts,omitempty"`
+	ConsecutiveRetry     int          `json:"consecutive_retry"`
+	MaxConsecutive       int          `json:"max_consecutive_retries,omitempty"`
+	DispatchFailures     int          `json:"dispatch_failures,omitempty"`
+	ParentNotified       bool         `json:"parent_notified,omitempty"`
+	GoalLimitRestart     bool         `json:"goal_limit_restart,omitempty"`
+	DispatchStartedAt    time.Time    `json:"dispatch_started_at"`
+	StartDeadline        time.Time    `json:"start_deadline"`
+	StartedAt            time.Time    `json:"started_at,omitempty"`
+	LifecycleChecks      int          `json:"lifecycle_checks,omitempty"`
+	LastLifecycleCheckAt time.Time    `json:"last_lifecycle_check_at,omitempty"`
+	CodexHome            string       `json:"codex_home"`
+	RolloutPath          string       `json:"rollout_path,omitempty"`
 }
 
 type GoalStopRequest struct {
@@ -112,6 +115,7 @@ type StoppedRetry struct {
 	ConsecutiveRetries  int          `json:"consecutive_retries"`
 	MaxConsecutive      int          `json:"max_consecutive_retries"`
 	Reason              string       `json:"reason"`
+	Historical          bool         `json:"historical,omitempty"`
 }
 
 type ThreadState struct {
@@ -195,16 +199,17 @@ type DispatchResult struct {
 }
 
 type StatusSnapshot struct {
-	Version         string    `json:"version"`
-	Running         bool      `json:"running"`
-	PID             int       `json:"pid"`
-	StartedAt       time.Time `json:"started_at"`
-	LastScanAt      time.Time `json:"last_scan_at"`
-	WatchedRoots    int       `json:"watched_roots"`
-	PendingRetries  int       `json:"pending_retries"`
-	ActiveRetries   int       `json:"active_retries"`
-	Paused          bool      `json:"paused"`
-	ControllerState string    `json:"controller_state,omitempty"`
-	LastError       string    `json:"last_error,omitempty"`
-	LogPath         string    `json:"log_path"`
+	Version                string    `json:"version"`
+	Running                bool      `json:"running"`
+	PID                    int       `json:"pid"`
+	StartedAt              time.Time `json:"started_at"`
+	LastScanAt             time.Time `json:"last_scan_at"`
+	WatchedRoots           int       `json:"watched_roots"`
+	PendingRetries         int       `json:"pending_retries"`
+	ActiveRetries          int       `json:"active_retries"`
+	Paused                 bool      `json:"paused"`
+	SharedAppServerEnabled bool      `json:"shared_app_server_enabled"`
+	ControllerState        string    `json:"controller_state,omitempty"`
+	LastError              string    `json:"last_error,omitempty"`
+	LogPath                string    `json:"log_path"`
 }

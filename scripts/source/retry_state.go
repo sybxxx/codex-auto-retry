@@ -42,6 +42,11 @@ func (d *daemon) reloadConfigLocked() {
 		return
 	}
 	d.config = config
+	if !config.SharedAppServerEnabled {
+		d.controllerState = "shared_app_server_disabled"
+	} else if d.controllerState == "shared_app_server_disabled" {
+		d.controllerState = "starting"
+	}
 	for threadID, thread := range d.state.Threads {
 		if thread.Awaiting != nil {
 			recoveryLimit, consecutiveLimit := retryLimits(thread.Awaiting.Class, config)
@@ -454,6 +459,16 @@ func retryLimitsForDecision(decision RetryDecision, config Config) (int, int) {
 		if decision.MaxAttempts < recoveryLimit {
 			recoveryLimit = decision.MaxAttempts
 		}
+	}
+	if decision.MaxConsecutive > 0 {
+		if decision.MaxConsecutive < consecutiveLimit {
+			consecutiveLimit = decision.MaxConsecutive
+		}
+	} else if decision.MaxAttempts > 0 && decision.Class != classUnknown {
+		// Authentication failures retain their deliberately conservative
+		// per-class ceiling for both counters. Unknown provider failures are
+		// different: their 3-attempt classifier guard must not silently replace
+		// the user-configured no-progress ceiling shown in the panel.
 		if decision.MaxAttempts < consecutiveLimit {
 			consecutiveLimit = decision.MaxAttempts
 		}

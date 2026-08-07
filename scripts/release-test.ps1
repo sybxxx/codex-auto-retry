@@ -45,6 +45,8 @@ try {
         'payload\codex-auto-retry\.mcp.json',
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
+        'payload\codex-auto-retry\scripts\safe-disable.ps1',
+        'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
@@ -108,6 +110,8 @@ try {
     foreach ($relative in @(
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\install.ps1',
+        'payload\codex-auto-retry\scripts\safe-disable.ps1',
+        'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\uninstall.ps1',
         'payload\codex-auto-retry\scripts\smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',

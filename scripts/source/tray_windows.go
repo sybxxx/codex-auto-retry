@@ -24,14 +24,15 @@ import (
 var settingsPowerShell string
 
 const (
-	wmDestroy       = 0x0002
-	wmCommand       = 0x0111
-	wmTimer         = 0x0113
-	wmClose         = 0x0010
-	wmNull          = 0x0000
-	wmLButtonDblClk = 0x0203
-	wmRButtonUp     = 0x0205
-	wmAppTray       = 0x8001
+	wmDestroy          = 0x0002
+	wmCommand          = 0x0111
+	wmTimer            = 0x0113
+	wmClose            = 0x0010
+	wmNull             = 0x0000
+	wmLButtonDblClk    = 0x0203
+	wmRButtonUp        = 0x0205
+	wmAppTray          = 0x8001
+	taskbarCreatedName = "TaskbarCreated"
 
 	nimAdd     = 0
 	nimModify  = 1
@@ -100,6 +101,7 @@ var (
 	shell32                 = windows.NewLazySystemDLL("shell32.dll")
 	kernel32                = windows.NewLazySystemDLL("kernel32.dll")
 	procRegisterClassEx     = user32.NewProc("RegisterClassExW")
+	procRegisterWindowMsg   = user32.NewProc("RegisterWindowMessageW")
 	procCreateWindowEx      = user32.NewProc("CreateWindowExW")
 	procDefWindowProc       = user32.NewProc("DefWindowProcW")
 	procDestroyWindow       = user32.NewProc("DestroyWindow")
@@ -136,14 +138,21 @@ type trayApp struct {
 	lastGoalStopped     int
 	lastGoalFailed      int
 	lastRestartRequired int
+	lastCodexStopped    int
 	initialized         bool
 	settingsMu          sync.Mutex
 	settingsOpen        bool
+	taskbarCreated      uint32
+	restoreIconFunc     func()
 }
 
 func runTray(ctx context.Context, cancel context.CancelFunc, dataDir string, logger *safeLogger) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	taskbarCreated, err := registerTaskbarCreatedMessage()
+	if err != nil {
+		return err
+	}
 	className, _ := windows.UTF16PtrFromString(fmt.Sprintf("CodexAutoRetryTray-%d", os.Getpid()))
 	instance, _, _ := procGetModuleHandle.Call(0)
 	icon, _, _ := procLoadIcon.Call(0, 32512)
@@ -157,7 +166,8 @@ func runTray(ctx context.Context, cancel context.CancelFunc, dataDir string, log
 	}
 	app := &trayApp{
 		hwnd: hwnd, dataDir: dataDir, logger: logger, cancel: cancel,
-		service: newManagementService(dataDir),
+		taskbarCreated: taskbarCreated,
+		service:        newManagementService(dataDir),
 		icons: map[string]uintptr{
 			"running": loadSharedIcon(32516),
 			"waiting": loadSharedIcon(32515),
@@ -197,6 +207,10 @@ func trayWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		return result
 	}
 	app := value.(*trayApp)
+	if app.taskbarCreated != 0 && message == app.taskbarCreated {
+		app.handleTaskbarCreated()
+		return 0
+	}
 	switch message {
 	case wmTimer:
 		app.refresh()
@@ -225,6 +239,29 @@ func trayWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	return result
 }
 
+func (a *trayApp) handleTaskbarCreated() {
+	if a.restoreIconFunc != nil {
+		a.restoreIconFunc()
+		return
+	}
+	a.restoreIcon()
+}
+
+func registerTaskbarCreatedMessage() (uint32, error) {
+	name, err := windows.UTF16PtrFromString(taskbarCreatedName)
+	if err != nil {
+		return 0, fmt.Errorf("encode %s message name: %w", taskbarCreatedName, err)
+	}
+	result, _, callErr := procRegisterWindowMsg.Call(uintptr(unsafe.Pointer(name)))
+	if result == 0 {
+		if callErr == nil {
+			callErr = windows.GetLastError()
+		}
+		return 0, fmt.Errorf("register %s message: %w", taskbarCreatedName, callErr)
+	}
+	return uint32(result), nil
+}
+
 func (a *trayApp) addIcon() bool {
 	data := notifyIconData{Size: uint32(unsafe.Sizeof(notifyIconData{})), HWnd: a.hwnd, ID: 1, Flags: nifMessage | nifIcon | nifTip, CallbackMessage: wmAppTray, Icon: a.icons["running"]}
 	copyUTF16(data.Tip[:], "Codex Auto Retry")
@@ -235,6 +272,26 @@ func (a *trayApp) addIcon() bool {
 func (a *trayApp) removeIcon() {
 	data := notifyIconData{Size: uint32(unsafe.Sizeof(notifyIconData{})), HWnd: a.hwnd, ID: 1}
 	procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&data)))
+}
+
+func (a *trayApp) restoreIcon() {
+	// Explorer owns the notification area. When it restarts, it forgets every
+	// icon even though this process and its hidden window are still alive. Clear
+	// the local cache so refresh cannot incorrectly skip the first NIM_MODIFY.
+	a.lastTip = ""
+	a.lastIcon = ""
+	if !restoreTrayIcon(a.addIcon, a.removeIcon, a.refresh) {
+		a.logger.Printf("tray icon restore failed category=tray_icon")
+	}
+}
+
+func restoreTrayIcon(add func() bool, remove func(), refresh func()) bool {
+	remove()
+	if !add() {
+		return false
+	}
+	refresh()
+	return true
 }
 
 func (a *trayApp) refresh() {
@@ -248,6 +305,9 @@ func (a *trayApp) refresh() {
 	if snapshot.ControllerState == "codex_restart_required" {
 		tip = "Codex Auto Retry - 请重启一次 Codex"
 		iconState = "paused"
+	} else if snapshot.ControllerState == "codex_not_running" && snapshot.StoppedRetries > 0 {
+		tip = "Codex Auto Retry - Codex 已退出，重试已停止"
+		iconState = "stopped"
 	} else if snapshot.Paused {
 		tip = "Codex Auto Retry - 已暂停"
 		iconState = "paused"
@@ -265,8 +325,11 @@ func (a *trayApp) refresh() {
 	goalStopped := goalEmptyResponseStoppedCount(snapshot.Retries)
 	goalFailed := goalEmptyResponseBlockFailedCount(snapshot.Retries)
 	restartRequired := stoppedReasonCount(snapshot.Retries, "codex_restart_required")
+	codexStopped := stoppedReasonCount(snapshot.Retries, "codex_not_running")
 	if a.initialized && snapshot.ShowNotifications && restartRequired > a.lastRestartRequired {
 		a.notify("需要重启 Codex", "重启一次 Codex 后，等待中的自动重试会自行恢复。")
+	} else if a.initialized && snapshot.ShowNotifications && codexStopped > a.lastCodexStopped {
+		a.notify("Codex 已退出", "相关任务已停止自动重试。启动 Codex 后可从设置中重新开始。")
 	} else if a.initialized && snapshot.ShowNotifications && goalFailed > a.lastGoalFailed {
 		a.notify("目标停止失败", "目标恢复已停止，但自动设为受阻失败。请从面板重新开始或检查 Codex 状态。")
 	} else if a.initialized && snapshot.ShowNotifications && goalStopped > a.lastGoalStopped {
@@ -278,6 +341,7 @@ func (a *trayApp) refresh() {
 	a.lastGoalStopped = goalStopped
 	a.lastGoalFailed = goalFailed
 	a.lastRestartRequired = restartRequired
+	a.lastCodexStopped = codexStopped
 	a.initialized = true
 }
 

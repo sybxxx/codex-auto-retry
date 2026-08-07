@@ -37,6 +37,10 @@ type setPausedInput struct {
 	Paused bool `json:"paused" jsonschema:"true to pause new retry dispatches, false to resume them"`
 }
 
+type setSharedAppServerInput struct {
+	Enabled bool `json:"enabled" jsonschema:"true only after the optional shared Codex app-server passes its ownership and health checks"`
+}
+
 type threadControlInput struct {
 	ThreadID string `json:"thread_id" jsonschema:"Codex task identifier from the current retry queue"`
 }
@@ -111,6 +115,17 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "暂停或恢复自动重试"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input setPausedInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
 		snapshot, err := service.setPaused(input.Paused, time.Now().UTC())
+		return nil, snapshot, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Meta:        managementToolMeta(),
+		Name:        "set_shared_app_server_enabled",
+		Title:       "启用或关闭共享后台",
+		Description: "显式启用或关闭可选的共享 Codex 后台。启用前会检查回环端口、WebSocket 握手、可执行文件和进程归属；失败时不会修改 Codex 环境。",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "共享后台模式"},
+	}, func(_ context.Context, _ *mcp.CallToolRequest, input setSharedAppServerInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
+		snapshot, err := service.setSharedAppServerEnabled(input.Enabled, time.Now().UTC())
 		return nil, snapshot, err
 	})
 

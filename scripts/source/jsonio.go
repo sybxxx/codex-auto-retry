@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const atomicReplaceAttempts = 8
+const (
+	atomicReplaceAttempts = 12
+	atomicReplaceMaxDelay = 250 * time.Millisecond
+)
 
 func writeJSONAtomic(path string, value any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -47,7 +50,7 @@ func writeJSONAtomic(path string, value any) error {
 }
 
 func replaceFileWithRetry(source, destination string) error {
-	delay := 10 * time.Millisecond
+	delay := 15 * time.Millisecond
 	var err error
 	for attempt := 1; attempt <= atomicReplaceAttempts; attempt++ {
 		err = os.Rename(source, destination)
@@ -58,8 +61,11 @@ func replaceFileWithRetry(source, destination string) error {
 			break
 		}
 		time.Sleep(delay)
-		if delay < 80*time.Millisecond {
+		if delay < atomicReplaceMaxDelay {
 			delay *= 2
+			if delay > atomicReplaceMaxDelay {
+				delay = atomicReplaceMaxDelay
+			}
 		}
 	}
 	return err

@@ -101,7 +101,7 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     $status = @{
-        version = '0.7.1'
+        version = '0.7.3'
         running = $true
         pid = $PID
         started_at = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
@@ -152,6 +152,7 @@ try {
         'set_retry_prompt',
         'set_retry_settings',
         'set_auto_retry_paused',
+        'set_shared_app_server_enabled',
         'retry_now',
         'cancel_retry',
         'restart_retry'
@@ -189,6 +190,7 @@ try {
         $status.structuredContent.stopped_retries -ne 1 -or
         $status.structuredContent.max_consecutive_retries -ne 5 -or
         $status.structuredContent.max_recovery_attempts -ne 15 -or
+        $status.structuredContent.shared_app_server_enabled -or
         $status.structuredContent.delay_strategy -ne 'exponential' -or
         $pendingRetry.recovery_attempt -ne 4 -or
         $pendingRetry.consecutive_retry -ne 1) {

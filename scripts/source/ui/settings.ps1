@@ -309,6 +309,7 @@ function Get-StateText {
 
 function Get-StoppedStateText {
     param([string]$Reason)
+    if ($Reason -eq 'codex_not_running') { return 'Codex 已退出' }
     if ($Reason -eq 'codex_restart_required') { return '等待重启 Codex' }
     if ($Reason -eq 'codex_home_not_shared') { return '任务目录未接入' }
     if ($Reason -eq 'shared_app_server_port_conflict') { return '恢复端口冲突' }
@@ -330,6 +331,22 @@ function Get-ClassText {
         'unknown' { '未知故障' }
         default { '未分类' }
     }
+}
+
+$stoppedRetryDisplayWindow = [TimeSpan]::FromHours(1)
+
+function Test-StoppedRetryVisible {
+    param($Stopped)
+    if (-not $Stopped -or [bool]$Stopped.historical) { return $false }
+    $now = [DateTimeOffset]::UtcNow
+    foreach ($timestamp in @([string]$Stopped.failed_at, [string]$Stopped.stopped_at)) {
+        if ([string]::IsNullOrWhiteSpace($timestamp)) { continue }
+        try {
+            $age = $now - [DateTimeOffset]::Parse($timestamp)
+            if ($age -ge [TimeSpan]::Zero -and $age -gt $stoppedRetryDisplayWindow) { return $false }
+        } catch { }
+    }
+    return $true
 }
 
 function Update-ActionButtons {
@@ -362,8 +379,8 @@ function Update-RuntimeView {
         $serviceValue.Text = '等待重启 Codex'
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
     } elseif ([string]$status.controller_state -eq 'codex_not_running') {
-        $serviceValue.Text = '等待 Codex 启动'
-        $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
+        $serviceValue.Text = 'Codex 已退出，重试已停止'
+        $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ($paused) {
         $serviceValue.Text = '已暂停'
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
@@ -414,6 +431,7 @@ function Update-RuntimeView {
                 $consecutive = [int]$thread.awaiting.consecutive_retry
                 $maxConsecutive = [int]$thread.awaiting.max_consecutive_retries
             } elseif ($thread.stopped) {
+                if (-not (Test-StoppedRetryVisible $thread.stopped)) { continue }
                 $rowState = 'stopped'
                 $stoppedCount++
                 $failureClass = [string]$thread.stopped.class

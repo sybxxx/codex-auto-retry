@@ -71,3 +71,13 @@ func TestSharedServerUsesConfiguredCodexHome(t *testing.T) {
 		t.Fatalf("shared server ignored CODEX_HOME: %s", manager.codexHome)
 	}
 }
+
+func TestSharedServerStateMarksHiddenInheritedConsole(t *testing.T) {
+	state := sharedServerState{LaunchMode: sharedServerLaunchMode, Owner: sharedServerOwner, Version: appVersion}
+	if state.LaunchMode != "hidden_inherited_console_v1" {
+		t.Fatalf("unexpected shared-server launch mode: %s", state.LaunchMode)
+	}
+	if state.Owner != sharedServerOwner || state.Version != appVersion {
+		t.Fatalf("shared-server ownership marker is incomplete: %+v", state)
+	}
+}

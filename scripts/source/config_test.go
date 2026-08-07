@@ -207,4 +207,58 @@ func TestVersionFiveMigrationPreservesInstalledRetryPolicy(t *testing.T) {
 		loaded.SharedAppServerPort != 49321 || loaded.ControllerFailureLimit != 3 {
 		t.Fatalf("version five migration changed the installed retry policy: %+v", loaded)
 	}
+	if loaded.SharedAppServerEnabled {
+		t.Fatal("shared app-server mode must remain disabled when migrating an older config")
+	}
+}
+
+func TestSharedAppServerIsOptInByDefault(t *testing.T) {
+	config := defaultConfig()
+	if config.SharedAppServerEnabled {
+		t.Fatal("shared app-server mode is enabled by default")
+	}
+	if err := config.validate(); err != nil {
+		t.Fatalf("default config is invalid: %v", err)
+	}
+}
+
+func TestConfigMigrationAddsDisabledSharedAppServerField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	legacy := `{
+  "config_version": 6,
+  "poll_interval_seconds": 2,
+  "initial_delay_seconds": 5,
+  "max_delay_seconds": 300,
+  "delay_increment_seconds": 2,
+  "delay_strategy": "exponential",
+  "max_consecutive_retries": 5,
+  "max_recovery_attempts": 15,
+  "max_parallel_retries": 4,
+  "start_ack_timeout_seconds": 30,
+  "auth_max_attempts": 6,
+  "unknown_max_attempts": 3,
+  "include_default_home": true,
+  "include_cockpit_homes": true,
+  "shared_app_server_port": 49321,
+  "controller_failure_limit": 3,
+  "retry_prompt": "缁х画",
+  "show_notifications": true
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadOrCreateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ConfigVersion != currentConfigVersion || loaded.SharedAppServerEnabled {
+		t.Fatalf("migration did not default shared mode to disabled: %+v", loaded)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(written), "shared_app_server_enabled") {
+		t.Fatalf("migrated config omitted shared mode field: %s", written)
+	}
 }

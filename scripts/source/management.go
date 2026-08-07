@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,29 +31,37 @@ type ManagedRetry struct {
 	StopReason            string       `json:"stop_reason,omitempty" jsonschema:"privacy-safe reason why retries stopped"`
 }
 
+// Stopped entries are useful immediately after a limit is reached because
+// they explain why recovery stopped. They are not executable queue items,
+// though, and keeping every historical stop in the queue makes an otherwise
+// single-task session look like many pending jobs. Keep a short visible window
+// for the explicit reason, while retaining the durable state for diagnostics.
+const stoppedRetryDisplayWindow = time.Hour
+
 type ManagementSnapshot struct {
-	Version               string         `json:"version" jsonschema:"watchdog version"`
-	Running               bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
-	HeartbeatStale        bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
-	Paused                bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
-	RetryPrompt           string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
-	MaxConsecutiveRetries int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
-	MaxRecoveryAttempts   int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
-	InitialDelaySeconds   int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
-	MaxDelaySeconds       int            `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
-	DelayIncrementSeconds int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
-	DelayStrategy         string         `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
-	ShowNotifications     bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
-	Now                   string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
-	LastScanAt            string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
-	PendingRetries        int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
-	ActiveRetries         int            `json:"active_retries" jsonschema:"number of retries starting or running"`
-	StoppedRetries        int            `json:"stopped_retries" jsonschema:"number of retry chains stopped at their attempt limit"`
-	WatchedRoots          int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
-	LastError             string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
-	ControllerState       string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
-	Notice                string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
-	Retries               []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
+	Version                string         `json:"version" jsonschema:"watchdog version"`
+	Running                bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
+	HeartbeatStale         bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
+	Paused                 bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
+	RetryPrompt            string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
+	MaxConsecutiveRetries  int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
+	MaxRecoveryAttempts    int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
+	InitialDelaySeconds    int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
+	MaxDelaySeconds        int            `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
+	DelayIncrementSeconds  int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
+	DelayStrategy          string         `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
+	ShowNotifications      bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
+	SharedAppServerEnabled bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
+	Now                    string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
+	LastScanAt             string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
+	PendingRetries         int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
+	ActiveRetries          int            `json:"active_retries" jsonschema:"number of retries starting or running"`
+	StoppedRetries         int            `json:"stopped_retries" jsonschema:"number of retry chains stopped at their attempt limit"`
+	WatchedRoots           int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
+	LastError              string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
+	ControllerState        string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
+	Notice                 string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
+	Retries                []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
 }
 
 type managementService struct {
@@ -126,23 +135,24 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 	retries = visibleRetries
 
 	snapshot := ManagementSnapshot{
-		Version:               appVersion,
-		Running:               running,
-		HeartbeatStale:        heartbeatStale,
-		Paused:                control.Paused,
-		RetryPrompt:           config.RetryPrompt,
-		MaxConsecutiveRetries: config.MaxConsecutiveRetries,
-		MaxRecoveryAttempts:   config.MaxRecoveryAttempts,
-		InitialDelaySeconds:   config.InitialDelaySeconds,
-		MaxDelaySeconds:       config.MaxDelaySeconds,
-		DelayIncrementSeconds: config.DelayIncrementSeconds,
-		DelayStrategy:         config.DelayStrategy,
-		ShowNotifications:     config.ShowNotifications,
-		Now:                   now.Format(time.RFC3339Nano),
-		PendingRetries:        pending,
-		ActiveRetries:         active,
-		StoppedRetries:        stopped,
-		Retries:               retries,
+		Version:                appVersion,
+		Running:                running,
+		HeartbeatStale:         heartbeatStale,
+		Paused:                 control.Paused,
+		RetryPrompt:            config.RetryPrompt,
+		MaxConsecutiveRetries:  config.MaxConsecutiveRetries,
+		MaxRecoveryAttempts:    config.MaxRecoveryAttempts,
+		InitialDelaySeconds:    config.InitialDelaySeconds,
+		MaxDelaySeconds:        config.MaxDelaySeconds,
+		DelayIncrementSeconds:  config.DelayIncrementSeconds,
+		DelayStrategy:          config.DelayStrategy,
+		ShowNotifications:      config.ShowNotifications,
+		SharedAppServerEnabled: config.SharedAppServerEnabled,
+		Now:                    now.Format(time.RFC3339Nano),
+		PendingRetries:         pending,
+		ActiveRetries:          active,
+		StoppedRetries:         stopped,
+		Retries:                retries,
 	}
 	if statusFound {
 		if running {
@@ -156,6 +166,62 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		}
 	}
 	return snapshot, nil
+}
+
+func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Time) (ManagementSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	config, err := loadOrCreateConfig(m.configPath)
+	if err != nil {
+		return ManagementSnapshot{}, err
+	}
+	if config.SharedAppServerEnabled == enabled {
+		snapshot, snapshotErr := m.snapshotLocked(now.UTC())
+		if snapshotErr == nil {
+			snapshot.Notice = "共享后台模式未改变"
+		}
+		return snapshot, snapshotErr
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if enabled {
+		if err := enableSharedAppServer(ctx, m.dataDir, config); err != nil {
+			return ManagementSnapshot{}, err
+		}
+		config.SharedAppServerEnabled = true
+		if err := config.validate(); err != nil {
+			_ = disableSharedAppServer(context.Background(), m.dataDir, config)
+			return ManagementSnapshot{}, err
+		}
+		if err := writeJSONAtomic(m.configPath, config); err != nil {
+			_ = disableSharedAppServer(context.Background(), m.dataDir, config)
+			return ManagementSnapshot{}, fmt.Errorf("save shared app-server setting: %w", err)
+		}
+	} else {
+		config.SharedAppServerEnabled = false
+		if err := config.validate(); err != nil {
+			return ManagementSnapshot{}, err
+		}
+		// Persist the fail-open setting before tearing down the endpoint. If the
+		// cleanup is interrupted, the next watchdog tick still cannot take over
+		// Codex's backend.
+		if err := writeJSONAtomic(m.configPath, config); err != nil {
+			return ManagementSnapshot{}, fmt.Errorf("save shared app-server setting: %w", err)
+		}
+		if err := disableSharedAppServer(ctx, m.dataDir, config); err != nil {
+			return ManagementSnapshot{}, err
+		}
+	}
+	snapshot, err := m.snapshotLocked(now.UTC())
+	if err == nil {
+		if enabled {
+			snapshot.Notice = "共享后台模式已启用；重启 Codex 后生效"
+		} else {
+			snapshot.Notice = "共享后台模式已关闭，Codex 将使用官方后台"
+		}
+	}
+	return snapshot, err
 }
 
 type RetrySettings struct {
@@ -361,7 +427,7 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 				Action:                thread.Awaiting.Action,
 			})
 		}
-		if thread.Stopped != nil {
+		if thread.Stopped != nil && stoppedRetryIsVisible(thread.Stopped, now) {
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
 				Label:                 "任务 " + shortThreadID(threadID),
@@ -391,4 +457,20 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 		return retries[i].ThreadID < retries[j].ThreadID
 	})
 	return retries
+}
+
+func stoppedRetryIsVisible(stopped *StoppedRetry, now time.Time) bool {
+	if stopped == nil || stopped.StoppedAt.IsZero() {
+		return stopped != nil
+	}
+	if stopped.Historical {
+		return false
+	}
+	if !stopped.FailedAt.IsZero() && !stopped.FailedAt.After(now) && now.Sub(stopped.FailedAt) > stoppedRetryDisplayWindow {
+		return false
+	}
+	if stopped.StoppedAt.After(now) {
+		return true
+	}
+	return now.Sub(stopped.StoppedAt) <= stoppedRetryDisplayWindow
 }

@@ -7,7 +7,8 @@ param(
     [switch]$DryRun,
     [switch]$SkipCodexCheck,
     [switch]$SkipPluginRegistration,
-    [switch]$SkipRuntimeInstall
+    [switch]$SkipRuntimeInstall,
+    [switch]$EnableSharedAppServer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -173,10 +174,12 @@ function Set-InstalledMcpLauncher {
 }
 
 function Install-Runtime {
-    param([string]$PluginPath)
+    param([string]$PluginPath, [bool]$EnableSharedAppServer)
 
     $script = Join-Path $PluginPath 'scripts\install.ps1'
-    $output = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script 2>&1 | Out-String)
+    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $script)
+    if ($EnableSharedAppServer) { $arguments += '-EnableSharedAppServer' }
+    $output = (& powershell.exe @arguments 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
         throw "The watchdog installer failed. Exit code: $LASTEXITCODE"
     }
@@ -221,7 +224,8 @@ function Verify-Installation {
         [string]$PluginId,
         [string]$ExpectedBaseVersion,
         [bool]$VerifyPlugin,
-        [bool]$VerifyRuntime
+        [bool]$VerifyRuntime,
+        [bool]$ExpectedSharedAppServer
     )
 
     $pluginManifest = Read-JsonDocument -Path (Join-Path $PluginPath '.codex-plugin\plugin.json')
@@ -270,6 +274,10 @@ function Verify-Installation {
         if ($null -eq $process -or -not $process.ExecutablePath -or
             -not [string]::Equals($process.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw 'The watchdog heartbeat does not match a running installed process.'
+        }
+        $config = Read-JsonDocument -Path (Join-Path $RuntimePath 'config.json')
+        if ($null -eq $config -or [bool]$config.shared_app_server_enabled -ne $ExpectedSharedAppServer) {
+            throw 'The installed shared app-server mode does not match the requested setting.'
         }
         $runProperty = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
         $runValue = if ($null -eq $runProperty) { $null } else { $runProperty.CodexAutoRetry }
@@ -409,12 +417,12 @@ try {
     if (-not $SkipRuntimeInstall) {
         Write-Step 'Installing and starting the background watchdog...'
         $runtimeAttempted = $true
-        [void](Install-Runtime -PluginPath $pluginTarget)
+        [void](Install-Runtime -PluginPath $pluginTarget -EnableSharedAppServer:$EnableSharedAppServer)
     }
 
     Write-Step 'Verifying the completed installation...'
     $baseVersion = ([string]$manifest.pluginVersion -split '\+', 2)[0]
-    Verify-Installation -PluginPath $pluginTarget -RuntimePath $runtimePath -Cli $cli -PluginId $pluginId -ExpectedBaseVersion $baseVersion -VerifyPlugin (-not $SkipPluginRegistration) -VerifyRuntime (-not $SkipRuntimeInstall)
+    Verify-Installation -PluginPath $pluginTarget -RuntimePath $runtimePath -Cli $cli -PluginId $pluginId -ExpectedBaseVersion $baseVersion -VerifyPlugin (-not $SkipPluginRegistration) -VerifyRuntime (-not $SkipRuntimeInstall) -ExpectedSharedAppServer:$EnableSharedAppServer
     $success = $true
 
     Write-Step 'Installation completed successfully.'
@@ -465,7 +473,7 @@ catch {
         }
         if (($runtimeAttempted -or $existingRuntimeWasRunning) -and $pluginExisted -and
             (Test-Path -LiteralPath (Join-Path $pluginTarget 'scripts\install.ps1') -PathType Leaf)) {
-            [void](Install-Runtime -PluginPath $pluginTarget)
+            [void](Install-Runtime -PluginPath $pluginTarget -EnableSharedAppServer:$EnableSharedAppServer)
         }
     }
     catch {

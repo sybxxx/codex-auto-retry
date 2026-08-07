@@ -72,24 +72,39 @@ The watchdog retries network failures, timeouts, rate limits, HTTP 5xx
 responses, interrupted streams, successful completions with no final model
 reply, and temporarily unavailable authentication services within the
 configured dual limits. Ambiguous or
-persistent authentication failures may have a lower safety limit. A closed
-Codex App delays recovery without consuming an attempt. Other local controller
-failures stop after three consecutive failures by default instead of
-refreshing a countdown forever. A task that still uses Codex's old per-process
-transport stops with `codex_restart_required` and asks for one Codex restart.
+persistent authentication failures may have a lower safety limit. Unknown
+provider failures keep their separate recovery safety budget but still use the
+configured consecutive no-progress limit. If Codex App exits, the watchdog
+stops the affected retry immediately without consuming another provider
+attempt, so it does not keep a countdown running against a closed application.
+The stopped task is shown with its reason and can be restarted manually after
+Codex is open again. Other local controller failures stop after three consecutive
+failures by default instead of refreshing a countdown forever. A task that
+still uses Codex's old per-process transport stops with
+`codex_restart_required` and asks for one Codex restart.
 User cancellation, invalid requests, missing models, context length errors,
 policy failures, permission failures, and approval failures are not retried.
+
+Runtime state is written atomically. A temporary Windows sharing violation from
+an indexer, security scanner, or settings reader is retried for several seconds;
+if it still cannot be replaced, the watchdog keeps its in-memory state, reports
+`state_write_deferred`, and retries persistence on the next scan instead of
+exiting and removing the tray icon.
 
 ## Windows Tray Controller
 
 The watchdog owns one notification-area icon; it does not install or start a
 second background application. Hovering the icon shows whether retry is
 running, paused, waiting, active, or stopped, including the nearest live
-countdown. Double-clicking opens the graphical settings window. The right-click
-menu opens settings, pauses or resumes dispatch, and exits the watchdog.
+countdown. If Windows Explorer restarts, the watchdog automatically registers
+the icon again and restores its current state. Double-clicking opens the
+graphical settings window. The right-click menu opens settings, pauses or
+resumes dispatch, and exits the watchdog.
 
-The graphical window shows every waiting, active, and exhausted task using only
-privacy-safe task IDs. It edits the fallback retry text, both retry limits,
+The graphical window shows current waiting and active tasks, plus a short-lived
+exhausted record immediately after a limit is reached, using only privacy-safe
+task IDs. Older stopped records remain durable but are not counted as current
+retry work. It edits the fallback retry text, both retry limits,
 fixed, linear, or doubling waits, first/fixed delay, linear increment, maximum delay, and the watchdog's
 retry-limit notification.
 An exhausted task can be restarted with a fresh attempt budget. These settings
@@ -173,15 +188,21 @@ The watchdog and MCP management server are installed under
 `%LOCALAPPDATA%\CodexAutoRetry`. Only the watchdog and its tray icon start at
 the current user's Windows sign-in. The MCP server starts on demand through Codex and exits with
 its Codex connection. The release installer gives Codex the executable's direct
-absolute path, and both binaries use the Windows GUI subsystem, so task loading
-does not open PowerShell or console windows. Runtime state, heartbeat, configuration, controls, and
+absolute path, and both plugin binaries use the Windows GUI subsystem. The
+watchdog also starts the shared Codex app-server inside one hidden inherited
+console, so Playwright, Node REPL, code-mode, and shell subprocesses reuse that
+hidden console instead of opening separate Windows Terminal windows. An upgrade
+from the older detached launch waits until Codex is fully closed, terminates only
+that owned app-server process tree, and starts the corrected server before the
+next launch. Runtime state, heartbeat, configuration, controls, and
 privacy-safe logs remain in the same local directory. Plugin management
 commands live in `skills/codex-auto-retry/SKILL.md`.
 
 The installer refuses to overwrite a different existing
 `CODEX_APP_SERVER_WS_URL`, records the environment value it owns, and restores
-the prior user value on uninstall. If Codex was open during the first install,
-restart Codex once. The panel and tray show that requirement instead of
+the prior user value on uninstall. If Codex was open during the first install
+or the hidden-console launch upgrade, fully exit and restart Codex once. The
+panel and tray show that requirement instead of
 repeatedly pretending to retry.
 
 After installing or updating the plugin, open a new Codex task so the updated
@@ -222,3 +243,24 @@ the watchdog alert shown when a retry limit is reached.
 Third-party license notices for the WebSocket transport, MCP SDKs, and embedded
 panel libraries are in
 `THIRD_PARTY_NOTICES.md`.
+
+## Fail-Open Shared Backend Safety
+
+The shared Codex app-server is opt-in. A fresh install defaults
+`shared_app_server_enabled` to `false` and does not write the global
+`CODEX_APP_SERVER_WS_URL`, so a broken plugin cannot redirect Codex away from
+its official backend. The watchdog reports that recovery is disabled and
+stops queued retries with a visible reason instead of spinning forever.
+
+Enable the shared mode only after the health check passes. The management panel
+uses `set_shared_app_server_enabled`; the Windows installer accepts
+`-EnableSharedAppServer`. Both paths require a loopback endpoint, a successful
+WebSocket handshake, a versioned executable, and a process whose path and
+command line match the plugin-owned state. `CODEX_API_KEY` is never read for
+mutation and is never removed.
+
+If startup or an upgrade is broken, run `scripts/safe-disable.ps1`. This
+break-glass script is independent of the watchdog: it removes only the plugin's
+startup entry, stops only plugin-owned processes, restores only the endpoint
+recorded in `environment-backup.json`, broadcasts the environment change, and
+leaves chats, state, logs, and user-owned credentials intact.

@@ -32,11 +32,11 @@ Three recovery channels were evaluated:
    requests without a window, but it would own a second in-memory copy of a task
    already loaded by Codex Desktop. That risks stale UI state and concurrent
    rollout ownership.
-3. The selected design launches one loopback WebSocket app-server and sets
-   `CODEX_APP_SERVER_WS_URL` so Codex Desktop connects to that exact server after
-   one restart. The watchdog becomes another client of the same server. Both
-   clients receive the same lifecycle notifications, and no renderer or window
-   API is involved.
+3. The selected design can launch one loopback WebSocket app-server and set
+   `CODEX_APP_SERVER_WS_URL` only when the user explicitly enables shared mode.
+   The watchdog becomes another client of the same server after Codex restarts.
+   With shared mode disabled, Codex remains on its official backend and the
+   watchdog fails closed without writing the global endpoint.
 
 The third option preserves native behavior while removing the shared visible
 UI surface that caused both reported failures.
@@ -149,7 +149,10 @@ Codex tasks have panels open.
 `tray_windows.go` owns the notification-area icon and hidden message window on
 the watchdog's UI thread. It reads the same management snapshot once per
 second, derives the nearest countdown, and updates only its tooltip and menu.
-The icon does not inspect Codex windows, activate Codex, or navigate tasks.
+The icon does not inspect Codex windows, activate Codex, or navigate tasks. It
+also registers the system `TaskbarCreated` message; when Explorer recreates the
+notification area, the watchdog removes and re-adds its icon, clears its local
+tooltip cache, and refreshes the current visual state.
 
 Double-click launches the embedded `ui/settings.ps1` as one visible Windows
 Forms settings process. The form reads the same privacy-bounded status,
@@ -164,6 +167,16 @@ Only one settings process is launched from a watchdog instance at a time.
 `shared_server_windows.go`, `desktop_transport_windows.go`,
 `app_server_rpc.go`, and `shared_controller.go` jointly own the recovery
 transport.
+
+The shared app-server is a console-subsystem Codex process, but it is launched
+with one new console whose window is hidden. Console-subsystem descendants such
+as Playwright MCP, Node REPL, the code-mode host, and PowerShell then inherit
+that same hidden console. Launching the server detached would leave those
+children without a console and Windows would create a separate visible Windows
+Terminal window for each one. State records the launch mode; an older detached
+server remains available while Codex is open, then the watchdog waits for the
+Desktop process to exit, terminates only that owned process tree, and replaces
+it with the hidden-console server.
 
 - The server listens only on `127.0.0.1`; `wss`, hostnames, credentials, paths,
   and a different port are rejected.
@@ -217,19 +230,29 @@ waiting always uses the configured interval. Linear waiting adds the configured
 increment, while doubling multiplies by two; both are capped by the maximum and
 follow the no-progress counter, so useful progress restarts the wait sequence.
 
-Generic 401/403 authentication errors and unknown provider errors have limited
-budgets that can only lower the two configured limits. Invalid payloads, context limits,
+Generic 401/403 authentication errors have a conservative budget that can lower
+both configured limits. Unknown provider errors keep a separate recovery safety
+budget, but continue to use the configured consecutive no-progress limit so an
+internal classifier ceiling cannot be displayed as the user's setting. Invalid payloads, context limits,
 missing models, policy errors, approval failures, permissions, and user
 cancellation are never retried. Controller transport failures are tracked
 separately and consume neither provider retry counter. They are bounded by
-`controller_failure_limit`; `codex_not_running` is a wait state rather than a
-failure.
+`controller_failure_limit`, including read failures while checking an
+acknowledged retry turn. `codex_not_running` is terminal for the affected
+chain at both the pending-dispatch and acknowledged-turn stages: the watchdog
+clears the retry state, records the explicit stop reason, and waits for a manual
+restart command after Codex is open again. This prevents a closed desktop from
+causing an unbounded background polling loop.
 
 Every task has separate pending, awaiting, recovery-attempt, consecutive
 no-progress, and dispatch-failure state.
 Due tasks are dispatched up to `max_parallel_retries` instead of competing for
 one navigation surface. Activity in one task delays only that task. It cannot
 cancel or block another task's queue entry.
+
+Stopped records remain durable for diagnosis, but the management queue exposes
+only a short recent-stop window. Older stopped records are history, not tasks
+waiting to retry, so they do not inflate the current queue counts.
 
 An internal subagent is not treated as a replacement user task. For an empty
 reply, its persisted `parentThreadId` or `subAgent` source selects the exact
@@ -258,6 +281,11 @@ last-started and last-aborted turn IDs, background actions, retry turn IDs,
 dispatch deadlines, parent-notification acknowledgement, durable goal-stop
 requests, exhausted retry records, and rollout paths.
 Atomic replacement prevents partial state files.
+Windows sharing violations during replacement are retried with a multi-second
+bounded backoff. If the target remains temporarily locked, the daemon retains
+the authoritative in-memory state, publishes `state_write_deferred`, and tries
+again on the next scan. A persistence hiccup is therefore visible but does not
+terminate the watchdog or its tray controller.
 
 A pending retry moves to `awaiting` before background dispatch begins, so a
 fast `task_started` cannot be lost. A matching start attaches its turn ID. A
@@ -396,11 +424,22 @@ must publish a version-matching heartbeat before the release is accepted. When
 the installed plugin source is also a Git checkout, the installer restores its
 `.git` metadata from the rollback copy before registration, preserving local
 history and remotes without adding that metadata to the release archive.
-Runtime installation persists `CODEX_APP_SERVER_WS_URL` only after checking for
-a conflicting user value, saves ownership metadata, broadcasts the Windows
-environment change, and starts the loopback server. Uninstall restores the
-prior value. It stops the recorded server only when no Codex Desktop process is
-still using it.
+Runtime installation is fail-open by default: it does not write
+`CODEX_APP_SERVER_WS_URL`, and a new configuration has
+`shared_app_server_enabled=false`. The explicit shared-mode path first starts
+and validates a versioned, plugin-owned loopback server and completes a
+WebSocket health handshake; only then does it atomically publish the endpoint
+and startup entry. A failed candidate restores the previous binaries,
+configuration, environment value, and startup entry. Uninstall and the
+independent `scripts/safe-disable.ps1` restore only the endpoint recorded in
+`environment-backup.json`; neither path removes `CODEX_API_KEY` or chat/state
+data by default.
+
+The shared-server ownership record includes the plugin owner, version, PID,
+absolute executable, endpoint, and Codex home. Cleanup checks all of those
+fields plus the live process command line before stopping a process. Status
+readers also check the PID and heartbeat age, so a stale `running=true` JSON
+file is presented as “后台服务未运行”.
 
 The uninstaller uses Codex's supported `plugin remove` command, stops the
 watchdog, removes current-user startup, and deletes only a plugin directory
@@ -413,8 +452,9 @@ reject directory links before recursive removal.
 Retrying cannot repair a permanently expired or revoked login. Codex App must
 be running. An App update that removes or changes its local structured protocol
 prevents dispatch; this fails closed at the controller limit instead of falling
-back to visible navigation. The first installation requires one Codex restart
-so Desktop can inherit `CODEX_APP_SERVER_WS_URL`.
+back to visible navigation. When shared mode is enabled, Codex requires one
+restart to inherit `CODEX_APP_SERVER_WS_URL`; the default fail-open mode does
+not require that restart.
 
 Missing, oversized, or invalid latest settings records also prevent dispatch
 and keep that task queued. This protects task settings instead of retrying with

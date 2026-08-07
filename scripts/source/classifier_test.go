@@ -36,6 +36,17 @@ func TestClassifyFailure(t *testing.T) {
 	}
 }
 
+func TestUnknownFailureKeepsConfiguredNoProgressLimit(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.MaxConsecutiveRetries = 100
+	cfg.UnknownMaxAttempts = 3
+	decision := classifyFailure("vendor channel temporarily broke in an undocumented way", cfg)
+	recovery, consecutive := retryLimitsForDecision(decision, cfg)
+	if recovery != 3 || consecutive != 100 {
+		t.Fatalf("unknown failure limits = recovery %d, consecutive %d; want 3 and 100", recovery, consecutive)
+	}
+}
+
 func TestExponentialRetryDelayCaps(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.InitialDelaySeconds = 5

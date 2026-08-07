@@ -28,6 +28,7 @@ type Config struct {
 	IncludeCockpitHomes    bool     `json:"include_cockpit_homes"`
 	PowerShellExecutable   string   `json:"powershell_executable,omitempty"`
 	SharedAppServerPort    int      `json:"shared_app_server_port"`
+	SharedAppServerEnabled bool     `json:"shared_app_server_enabled"`
 	ControllerFailureLimit int      `json:"controller_failure_limit"`
 	RetryPrompt            string   `json:"retry_prompt"`
 	ShowNotifications      bool     `json:"show_notifications"`
@@ -44,7 +45,7 @@ const (
 	maxRecoveryAttemptsLimit   = 1000
 )
 
-const currentConfigVersion = 6
+const currentConfigVersion = 7
 
 const (
 	delayStrategyExponential = "exponential"
@@ -69,6 +70,7 @@ func defaultConfig() Config {
 		IncludeDefaultHome:     true,
 		IncludeCockpitHomes:    true,
 		SharedAppServerPort:    49321,
+		SharedAppServerEnabled: false,
 		ControllerFailureLimit: 3,
 		RetryPrompt:            defaultRetryPrompt,
 		ShowNotifications:      true,
@@ -101,6 +103,8 @@ func loadOrCreateConfig(path string) (Config, error) {
 	// guard from the per-fault recovery budget and makes delay behavior explicit.
 	// Version 5 adds a configurable increment for linear waits. Version 6 moves
 	// recovery to the shared local app-server channel used by current Codex App.
+	// Version 7 makes that channel an explicit opt-in so a broken plugin cannot
+	// prevent Codex from starting with its own official backend.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -144,6 +148,10 @@ func loadOrCreateConfig(path string) (Config, error) {
 		}
 		if _, found := fields["controller_failure_limit"]; !found {
 			cfg.ControllerFailureLimit = defaultConfig().ControllerFailureLimit
+			changed = true
+		}
+		if _, found := fields["shared_app_server_enabled"]; !found {
+			cfg.SharedAppServerEnabled = defaultConfig().SharedAppServerEnabled
 			changed = true
 		}
 	}

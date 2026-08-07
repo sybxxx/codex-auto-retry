@@ -159,8 +159,8 @@ func (d *daemon) runGoalBlockJob(ctx context.Context, job RetryJob) {
 		d.rescheduleGoalBlockLocked(job.ThreadID, &thread, finishedAt, "controller_invalid_result")
 	}
 	d.state.Threads[job.ThreadID] = thread
-	if stateErr := writeJSONAtomic(d.statePath, d.state); stateErr != nil {
-		d.lastError = stateErr.Error()
+	if stateErr := d.persistStateLocked(); stateErr != nil {
+		d.logger.Printf("state save deferred category=state_write")
 	}
 	_ = d.writeStatusLocked(true, len(discoverSessionRoots(d.config)))
 }

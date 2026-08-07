@@ -37,7 +37,7 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.Running || snapshot.ControllerState != "codex_restart_required" ||
+	if !snapshot.Running || snapshot.ControllerState != "codex_restart_required" || snapshot.SharedAppServerEnabled ||
 		snapshot.PendingRetries != 1 || snapshot.ActiveRetries != 1 || len(snapshot.Retries) != 2 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
@@ -62,6 +62,11 @@ func TestManagementShowsStoppedRetryAndQueuesRestart(t *testing.T) {
 	if err := writeJSONAtomic(service.statePath, state); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
+		Version: appVersion, Running: true, PID: os.Getpid(), LastScanAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	snapshot, err := service.snapshot(now)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +83,38 @@ func TestManagementShowsStoppedRetryAndQueuesRestart(t *testing.T) {
 	commands, _, err := loadControlCommandFiles(service.commandDir)
 	if err != nil || len(commands) != 1 || commands[0].Command.Action != commandRestartRetry {
 		t.Fatalf("restart command missing: commands=%+v err=%v", commands, err)
+	}
+}
+
+func TestManagementDoesNotMixExpiredStopsIntoCurrentQueue(t *testing.T) {
+	dataDir := t.TempDir()
+	service := newManagementService(dataDir)
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	state := newRuntimeState()
+	state.Threads["019f9d5d-9c82-75b1-b7c0-20a658af0423"] = ThreadState{Stopped: &StoppedRetry{
+		Class: classUnknown, FailedAt: now.Add(-stoppedRetryDisplayWindow - time.Minute), Attempts: 3, MaxAttempts: 3,
+		ConsecutiveRetries: 3, MaxConsecutive: 100,
+		StoppedAt: now.Add(-stoppedRetryDisplayWindow - time.Minute), Reason: "recovery_attempt_limit",
+	}}
+	state.Threads["019f9d5d-9c82-75b1-b7c0-20a658af0424"] = ThreadState{Awaiting: &AwaitingRetry{
+		Class: classServer, Attempt: 1, MaxAttempts: 15, ConsecutiveRetry: 1, MaxConsecutive: 5,
+		RetryTurnID: "retry-turn",
+	}}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
+		Version: appVersion, Running: true, PID: os.Getpid(), LastScanAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.StoppedRetries != 0 || snapshot.ActiveRetries != 1 || len(snapshot.Retries) != 1 ||
+		snapshot.Retries[0].State != "running" {
+		t.Fatalf("historical stop was mixed into current queue: %+v", snapshot)
 	}
 }
 
@@ -154,6 +191,23 @@ func TestManagementRejectsStaleRunningStatus(t *testing.T) {
 	}
 	if snapshot.Running || snapshot.Version != appVersion || snapshot.ActiveRetries != 0 || len(snapshot.Retries) != 0 {
 		t.Fatalf("dead process was reported as running: %+v", snapshot)
+	}
+}
+
+func TestManagementRejectsOldHeartbeatFromLiveProcess(t *testing.T) {
+	service := newManagementService(t.TempDir())
+	now := time.Now().UTC()
+	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
+		Version: appVersion, Running: true, PID: os.Getpid(), LastScanAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Running || !snapshot.HeartbeatStale {
+		t.Fatalf("old heartbeat was reported as healthy: %+v", snapshot)
 	}
 }
 

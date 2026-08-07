@@ -35,10 +35,26 @@ type controllerStateRunner interface {
 	ControllerState(context.Context) string
 }
 
+// retryLifecycleReader is optional so the daemon can safely inspect a turn
+// that was acknowledged by Codex but never produced a matching completion.
+// The probe is read-only and deliberately kept out of resumeRunner's required
+// dispatch contract so test and fallback runners remain compatible.
+type retryLifecycleReader interface {
+	RetryThreadStatus(context.Context, string, string) (string, error)
+}
+
 var (
 	errControllerTimeout       = errors.New("app controller timed out")
 	errControllerInvalidResult = errors.New("app controller returned an invalid result")
 )
+
+type controllerReasonError struct {
+	reason string
+}
+
+func (e *controllerReasonError) Error() string {
+	return e.reason
+}
 
 func newAppResumeRunner(config Config, dataDir string, logger *safeLogger) *appResumeRunner {
 	return &appResumeRunner{
@@ -58,6 +74,14 @@ func (r *appResumeRunner) ControllerState(ctx context.Context) string {
 		return controllerFailureReason(DispatchResult{}, err)
 	}
 	return state
+}
+
+func (r *appResumeRunner) RetryThreadStatus(ctx context.Context, threadID, codexHome string) (string, error) {
+	reader, ok := r.controller.(retryLifecycleReader)
+	if !ok {
+		return "", errors.New("retry lifecycle reader is unavailable")
+	}
+	return reader.RetryThreadStatus(ctx, threadID, codexHome)
 }
 
 func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {
@@ -171,6 +195,12 @@ func controllerFailureReason(result DispatchResult, err error) string {
 			return reason
 		}
 	}
+	var reasonError *controllerReasonError
+	if errors.As(err, &reasonError) {
+		if reason := safeReasonCode(reasonError.reason); reason != "" {
+			return reason
+		}
+	}
 	switch {
 	case errors.Is(err, errControllerTimeout):
 		return "controller_timeout"
@@ -184,6 +214,8 @@ func controllerFailureReason(result DispatchResult, err error) string {
 		return "controller_invalid_result"
 	case errors.Is(err, errCodexRestartRequired):
 		return "codex_restart_required"
+	case errors.Is(err, errSharedAppServerDisabled):
+		return "shared_app_server_disabled"
 	case errors.Is(err, errResumeSettingsUnavailable):
 		return "thread_settings_unavailable"
 	default:

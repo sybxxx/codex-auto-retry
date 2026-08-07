@@ -9,6 +9,7 @@ $dataDir = Join-Path $testRoot 'data'
 $conflictDir = Join-Path $testRoot 'conflict'
 $configPath = Join-Path $dataDir 'config.json'
 $name = 'CODEX_AUTO_RETRY_ENV_TEST_' + [guid]::NewGuid().ToString('N')
+$apiKeyBefore = [Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User')
 try {
     New-Item -ItemType Directory -Force -Path $dataDir, $conflictDir | Out-Null
     [System.IO.File]::WriteAllText(
@@ -73,6 +74,7 @@ try {
         PreviousValueRestored = $true
         ConflictingValuePreserved = $true
         FailedInstallRolledBack = $true
+        ApiKeyUntouched = ([Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User') -eq $apiKeyBefore)
     }
 }
 finally {
@@ -84,5 +86,8 @@ finally {
         if ($resolved.StartsWith($tempPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+    if ([Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User') -ne $apiKeyBefore) {
+        throw 'Environment ownership smoke test changed CODEX_API_KEY.'
     }
 }

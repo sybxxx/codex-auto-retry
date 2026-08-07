@@ -86,7 +86,7 @@ func main() {
 	}
 	runner := newAppResumeRunner(config, dataDir, logger)
 	var prepareErr error
-	if len(discoverSessionRoots(config)) > 0 {
+	if config.SharedAppServerEnabled || len(discoverSessionRoots(config)) > 0 {
 		prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		prepareErr = runner.Prepare(prepareCtx)
 		prepareCancel()
@@ -96,7 +96,10 @@ func main() {
 		logger.Printf("startup failed category=state")
 		return
 	}
-	if prepareErr != nil {
+	if !config.SharedAppServerEnabled {
+		daemon.controllerState = "shared_app_server_disabled"
+		logger.Printf("shared app-server disabled; Codex remains on its official backend")
+	} else if prepareErr != nil {
 		daemon.lastError = controllerFailureReason(DispatchResult{}, prepareErr)
 		daemon.controllerState = daemon.lastError
 		logger.Printf("controller preparation failed category=%s", daemon.lastError)

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -309,6 +311,23 @@ func TestSharedControllerResumesUnloadedTaskAndDesktopObservesRetry(t *testing.T
 	}
 }
 
+func TestSharedControllerLifecycleProbeIsReadOnly(t *testing.T) {
+	threadID := "019fa94e-0103-7183-b405-36bd307b6dc0"
+	home := `C:\Users\test\.codex`
+	fake := newFakeAppServer(t, threadID)
+	fake.markLoaded(threadID)
+	fake.status = "active"
+	controller := newTestSharedController(fake, home)
+	status, err := controller.RetryThreadStatus(context.Background(), threadID, home)
+	if err != nil || status != "active" {
+		t.Fatalf("lifecycle probe returned status=%q err=%v", status, err)
+	}
+	calls, _, providerRequests := fake.snapshot()
+	if providerRequests != 0 || containsString(calls, "thread/resume") || containsString(calls, "turn/start") {
+		t.Fatalf("lifecycle probe performed a recovery side effect: calls=%v requests=%d", calls, providerRequests)
+	}
+}
+
 func TestSharedControllerLoadsParentBeforeResumingUnloadedSubagent(t *testing.T) {
 	threadID := "019fa94e-0103-7183-b405-36bd307b6dba"
 	parentThreadID := "019fa94e-0103-7183-b405-36bd307b6dbb"
@@ -489,6 +508,47 @@ func TestSharedControllerRequiresOneCodexRestartForLegacyTransport(t *testing.T)
 	)
 	if err != nil || result.Outcome != outcomeRetryLater || result.Reason != "codex_restart_required" {
 		t.Fatalf("legacy transport did not produce a bounded restart state: result=%+v err=%v", result, err)
+	}
+}
+
+func TestSharedControllerReportsClosedCodexWithoutStartingARecovery(t *testing.T) {
+	controller := &sharedAppServerController{
+		server:  staticSharedServer{home: `C:\Users\test\.codex`},
+		checker: staticDesktopChecker{state: desktopStopped},
+	}
+	result, err := controller.Dispatch(
+		context.Background(), "019fa94e-0103-7183-b405-36bd307b6db7", "继续", testResumeSettings(),
+		time.Now().UTC(), time.Time{}, "", false, false, classServer, `C:\Users\test\.codex`,
+	)
+	if err != nil || result.Outcome != outcomeRetryLater || result.Reason != "codex_not_running" {
+		t.Fatalf("closed Codex was not reported as a terminal controller condition: result=%+v err=%v", result, err)
+	}
+	if _, err := controller.RetryThreadStatus(context.Background(), "019fa94e-0103-7183-b405-36bd307b6db7", `C:\Users\test\.codex`); err == nil ||
+		controllerFailureReason(DispatchResult{}, err) != "codex_not_running" {
+		t.Fatalf("closed Codex lifecycle probe lost its explicit reason: %v", err)
+	}
+}
+
+func TestSharedControllerFailsOpenWhenSharedModeIsDisabled(t *testing.T) {
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	if err := writeJSONAtomic(filepath.Join(dataDir, "config.json"), config); err != nil {
+		t.Fatal(err)
+	}
+	controller := &sharedAppServerController{
+		server:     staticSharedServer{home: `C:\Users\test\.codex`},
+		checker:    staticDesktopChecker{state: desktopSharedServer},
+		configPath: filepath.Join(dataDir, "config.json"),
+	}
+	result, err := controller.Dispatch(
+		context.Background(), "019fa94e-0103-7183-b405-36bd307b6db7", "缁х画", testResumeSettings(),
+		time.Now().UTC(), time.Time{}, "", false, false, classServer, `C:\Users\test\.codex`,
+	)
+	if err != nil || result.Outcome != outcomeRetryLater || result.Reason != "shared_app_server_disabled" {
+		t.Fatalf("disabled shared mode did not fail open: result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "environment-backup.json")); !os.IsNotExist(err) {
+		t.Fatalf("disabled mode unexpectedly wrote environment ownership state: %v", err)
 	}
 }
 

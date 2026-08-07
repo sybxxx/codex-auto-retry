@@ -66,3 +66,47 @@ func TestWriteJSONAtomicSurvivesBriefWindowsReaderLock(t *testing.T) {
 		t.Fatalf("atomic replacement wrote the wrong value: %v", value)
 	}
 }
+
+func TestWriteJSONAtomicSurvivesExtendedWindowsReaderLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{\"version\":1}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pathPointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(
+		pathPointer,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(1200 * time.Millisecond)
+		_ = windows.CloseHandle(handle)
+		close(released)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-released:
+		default:
+			_ = windows.CloseHandle(handle)
+		}
+	})
+
+	started := time.Now()
+	if err := writeJSONAtomic(path, map[string]int{"version": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < time.Second {
+		t.Fatalf("atomic replacement did not wait for the extended reader lock: %s", elapsed)
+	}
+}

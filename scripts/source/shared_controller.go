@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,9 +20,11 @@ type sharedAppServerController struct {
 	server            sharedServer
 	checker           desktopTransportChecker
 	settingsForThread func(string, string) (ResumeSettings, error)
+	configPath        string
 }
 
 var errCodexRestartRequired = errors.New("Codex must restart to use the shared app-server")
+var errSharedAppServerDisabled = errors.New("shared Codex app-server mode is disabled")
 
 type appThreadReadResult struct {
 	Thread *struct {
@@ -56,10 +59,18 @@ func newSharedAppServerController(config Config, dataDir string, logger *safeLog
 			configuredExecutable: config.PowerShellExecutable,
 		},
 		settingsForThread: findThreadResumeSettings,
+		configPath:        filepath.Join(dataDir, "config.json"),
 	}
 }
 
 func (c *sharedAppServerController) Prepare(ctx context.Context) error {
+	enabled, err := c.sharedServerEnabled()
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return errSharedAppServerDisabled
+	}
 	if err := c.server.Ensure(ctx); err != nil {
 		return err
 	}
@@ -74,6 +85,13 @@ func (c *sharedAppServerController) Prepare(ctx context.Context) error {
 }
 
 func (c *sharedAppServerController) Readiness(ctx context.Context) (string, error) {
+	enabled, err := c.sharedServerEnabled()
+	if err != nil {
+		return "", err
+	}
+	if !enabled {
+		return "shared_app_server_disabled", nil
+	}
 	state, err := c.checker.State(ctx)
 	if err != nil {
 		return "", err
@@ -93,6 +111,52 @@ func (c *sharedAppServerController) Readiness(ctx context.Context) (string, erro
 	}
 }
 
+// RetryThreadStatus performs a read-only lifecycle probe. It never resumes an
+// unloaded thread and never starts a turn; that matters because this path is
+// used to recover state left behind by a previous watchdog process.
+func (c *sharedAppServerController) RetryThreadStatus(ctx context.Context, threadID, codexHome string) (string, error) {
+	enabled, err := c.sharedServerEnabled()
+	if err != nil {
+		return "", err
+	}
+	if !enabled {
+		return "", &controllerReasonError{reason: "shared_app_server_disabled"}
+	}
+	if !c.server.SupportsHome(codexHome) {
+		return "", &controllerReasonError{reason: "codex_home_not_shared"}
+	}
+	result, ready, err := c.preflight(ctx, false)
+	if err != nil {
+		return "", err
+	}
+	if !ready {
+		if result.Reason != "" {
+			return "", &controllerReasonError{reason: result.Reason}
+		}
+		return "", errSharedServerUnavailable
+	}
+	client, err := dialAppServerRPC(ctx, c.server.Endpoint())
+	if err != nil {
+		return "", errSharedServerUnavailable
+	}
+	defer client.Close()
+	loaded, err := appThreadLoaded(ctx, client, threadID)
+	if err != nil {
+		return "", err
+	}
+	if !loaded {
+		return "unloaded", nil
+	}
+	thread, err := readAppThread(ctx, client, threadID)
+	if err != nil {
+		return "", err
+	}
+	if thread.Thread == nil || thread.Thread.Status.Type == "" {
+		return "", errors.New("thread status is unavailable")
+	}
+	return thread.Thread.Status.Type, nil
+}
+
 func (c *sharedAppServerController) Dispatch(
 	ctx context.Context,
 	threadID string,
@@ -106,6 +170,13 @@ func (c *sharedAppServerController) Dispatch(
 	failureClass FailureClass,
 	codexHome string,
 ) (DispatchResult, error) {
+	enabled, err := c.sharedServerEnabled()
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	if !enabled {
+		return retryLaterResult("shared_app_server_disabled", parentNotified), nil
+	}
 	if !c.server.SupportsHome(codexHome) {
 		return retryLaterResult("codex_home_not_shared", parentNotified), nil
 	}
@@ -233,6 +304,13 @@ func (c *sharedAppServerController) Dispatch(
 }
 
 func (c *sharedAppServerController) BlockGoal(ctx context.Context, threadID string, settings *ResumeSettings, codexHome string) (DispatchResult, error) {
+	enabled, err := c.sharedServerEnabled()
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	if !enabled {
+		return retryLaterResult("shared_app_server_disabled", false), nil
+	}
 	if !c.server.SupportsHome(codexHome) {
 		return retryLaterResult("codex_home_not_shared", false), nil
 	}
@@ -285,6 +363,13 @@ func (c *sharedAppServerController) BlockGoal(ctx context.Context, threadID stri
 }
 
 func (c *sharedAppServerController) preflight(ctx context.Context, parentNotified bool) (DispatchResult, bool, error) {
+	enabled, err := c.sharedServerEnabled()
+	if err != nil {
+		return DispatchResult{}, false, err
+	}
+	if !enabled {
+		return retryLaterResult("shared_app_server_disabled", parentNotified), false, nil
+	}
 	state, err := c.checker.State(ctx)
 	if err != nil {
 		return DispatchResult{}, false, err
@@ -302,6 +387,21 @@ func (c *sharedAppServerController) preflight(ctx context.Context, parentNotifie
 	default:
 		return DispatchResult{}, false, errSharedServerUnavailable
 	}
+}
+
+func (c *sharedAppServerController) sharedServerEnabled() (bool, error) {
+	// Test controllers use an in-memory server and leave configPath empty. The
+	// production controller always has a config path, and a missing/invalid
+	// setting fails closed so the plugin can never take ownership of Codex's
+	// global endpoint accidentally.
+	if c.configPath == "" {
+		return true, nil
+	}
+	config, err := loadOrCreateConfig(c.configPath)
+	if err != nil {
+		return false, err
+	}
+	return config.SharedAppServerEnabled, nil
 }
 
 func readAppThread(ctx context.Context, client *appServerRPCClient, threadID string) (appThreadReadResult, error) {

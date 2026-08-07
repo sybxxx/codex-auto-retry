@@ -162,7 +162,8 @@ function Stop-CodexAutoRetrySharedServerIfUnused {
     try { $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json }
     catch { return $false }
     $pidValue = [int]$state.pid
-    if ($pidValue -le 0) { return $false }
+    if ($pidValue -le 0 -or [string]$state.owner -ne 'codex-auto-retry' -or [string]::IsNullOrWhiteSpace([string]$state.version) -or
+        [string]$state.endpoint -notmatch '^ws://127\.0\.0\.1:\d+$' -or [string]::IsNullOrWhiteSpace([string]$state.executable)) { return $false }
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" -ErrorAction SilentlyContinue
     if ($null -eq $process -or -not $process.CommandLine -or
         $process.CommandLine.IndexOf('app-server', [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -or
