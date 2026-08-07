@@ -279,6 +279,10 @@ func isolatedConfig(codexHome string) Config {
 	cfg.InitialDelaySeconds = 1
 	cfg.MaxDelaySeconds = 10
 	cfg.StartAckTimeoutSeconds = 10
+	// Daemon retry tests use an in-memory runner as the recovery transport.
+	// Keep the production fail-open default covered by explicit controller tests,
+	// while these lifecycle tests exercise the dispatch state machine itself.
+	cfg.SharedAppServerEnabled = true
 	return cfg
 }
 
@@ -337,6 +341,32 @@ func TestDisabledSharedBackendStopsAwaitingRetryInsteadOfRequeueing(t *testing.T
 	thread := daemonThreadSnapshot(d, threadID)
 	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil || thread.Stopped.Reason != "shared_app_server_disabled" {
 		t.Fatalf("disabled backend was requeued instead of stopped: %+v", thread)
+	}
+}
+
+func TestDisabledSharedBackendDoesNotStartDueRetry(t *testing.T) {
+	runner := successfulRunner()
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.controllerState = "shared_app_server_disabled"
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0428"
+	now := time.Now().UTC()
+	d.state.Threads[threadID] = ThreadState{Pending: &PendingRetry{
+		EventKey: "disabled-pending-event", FailedTurnID: "failed-turn", Class: classTransient,
+		DueAt: now, Attempt: 1, MaxAttempts: 1000, ConsecutiveRetry: 1, MaxConsecutive: 100,
+	}}
+
+	jobs := d.dispatchDueLocked(now)
+	if len(jobs) != 0 {
+		t.Fatalf("disabled shared backend dispatched %d jobs", len(jobs))
+	}
+	if got := runner.snapshot(); len(got) != 0 {
+		t.Fatalf("disabled shared backend invoked the runner: %+v", got)
+	}
+	thread := daemonThreadSnapshot(d, threadID)
+	if thread.Pending != nil || thread.Awaiting != nil || thread.Stopped == nil ||
+		thread.Stopped.Reason != "shared_app_server_disabled" || thread.Stopped.Attempts != 0 ||
+		thread.Stopped.ConsecutiveRetries != 0 {
+		t.Fatalf("due retry was not stopped without consuming a retry budget: %+v", thread)
 	}
 }
 

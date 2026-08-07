@@ -252,9 +252,10 @@ The shared Codex app-server is opt-in. A fresh install defaults
 its official backend. The watchdog reports that recovery is disabled and
 stops queued retries with a visible reason instead of spinning forever.
 
-Enable the shared mode only after the health check passes. The management panel
-uses `set_shared_app_server_enabled`; the Windows installer accepts
-`-EnableSharedAppServer`. Both paths require a loopback endpoint, a successful
+Enable the shared mode only after the health check passes. The embedded
+management panel and the tray settings window can enable it explicitly; the
+management tool is `set_shared_app_server_enabled`, and the Windows installer
+accepts `-EnableSharedAppServer`. All paths require a loopback endpoint, a successful
 WebSocket handshake, a versioned executable, and a process whose path and
 command line match the plugin-owned state. `CODEX_API_KEY` is never read for
 mutation and is never removed.

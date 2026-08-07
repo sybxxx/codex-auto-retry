@@ -14,7 +14,8 @@ import (
 
 type localSettingsPayload struct {
 	RetrySettings
-	Paused bool `json:"paused"`
+	Paused                 bool  `json:"paused"`
+	SharedAppServerEnabled *bool `json:"shared_app_server_enabled,omitempty"`
 }
 
 func main() {
@@ -151,7 +152,13 @@ func saveLocalSettings(dataDir, settingsPath string) error {
 		return err
 	}
 	service := newManagementService(dataDir)
-	return service.setLocalSettings(payload.RetrySettings, payload.Paused, time.Now().UTC())
+	now := time.Now().UTC()
+	if payload.SharedAppServerEnabled != nil {
+		if _, err := service.setSharedAppServerEnabled(*payload.SharedAppServerEnabled, now); err != nil {
+			return err
+		}
+	}
+	return service.setLocalSettings(payload.RetrySettings, payload.Paused, now)
 }
 
 func runLocalControl(dataDir, action, threadID string) error {

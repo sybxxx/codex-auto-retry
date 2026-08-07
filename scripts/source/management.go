@@ -56,7 +56,7 @@ type ManagementSnapshot struct {
 	LastScanAt             string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
 	PendingRetries         int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
 	ActiveRetries          int            `json:"active_retries" jsonschema:"number of retries starting or running"`
-	StoppedRetries         int            `json:"stopped_retries" jsonschema:"number of retry chains stopped at their attempt limit"`
+	StoppedRetries         int            `json:"stopped_retries" jsonschema:"number of currently visible retry chains that have stopped"`
 	WatchedRoots           int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
 	LastError              string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
 	ControllerState        string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`

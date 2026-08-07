@@ -288,11 +288,16 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
   const consecutive = retry.max_consecutive_retries
     ? `连续无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries}`
     : `连续无进展 ${retry.consecutive_retry}`;
+  const stateLabel = retry.state === "pending"
+    ? "等待中"
+    : retry.state === "stopped"
+      ? stoppedStateLabel(retry)
+      : actionLabel(retry.action);
   meta.append(
     textSpan(classLabel(retry.class)),
     textSpan(recovery),
     textSpan(consecutive),
-    textSpan(retry.state === "pending" ? "等待中" : retry.state === "stopped" ? "达到上限" : actionLabel(retry.action)),
+    textSpan(stateLabel),
   );
   copy.append(title, meta);
   main.append(queueIcon, copy);
@@ -439,6 +444,23 @@ function stopReasonLabel(retry: ManagedRetry): string {
     return `无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries ?? retry.consecutive_retry} 达上限`;
   }
   return `本次恢复 ${retry.recovery_attempt}/${retry.max_recovery_attempts ?? retry.recovery_attempt} 达上限`;
+}
+
+function stoppedStateLabel(retry: ManagedRetry): string {
+  switch (retry.stop_reason) {
+    case "shared_app_server_disabled":
+      return "共享后台已关闭";
+    case "codex_not_running":
+      return "Codex 已退出";
+    case "codex_restart_required":
+      return "等待重启 Codex";
+    case "codex_home_not_shared":
+      return "任务目录未接入";
+    case "shared_app_server_port_conflict":
+      return "恢复端口冲突";
+    default:
+      return "达到上限";
+  }
 }
 
 function controllerStateLabel(value: string): string {

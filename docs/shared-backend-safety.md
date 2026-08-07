@@ -5,7 +5,8 @@ The plugin has two deliberately separate modes:
 - Fail-open (default): `shared_app_server_enabled=false`. The installer leaves
   `CODEX_APP_SERVER_WS_URL` alone, Codex uses its bundled official backend, and
   the watchdog stops retries with `shared_app_server_disabled` instead of
-  spinning.
+  spinning. Such a stop records zero provider attempts; it is not an attempt
+  limit and is shown as "shared backend disabled" in the tray and panel.
 - Shared mode (explicit): the management panel or installer switch starts the
   plugin-owned loopback server, verifies the endpoint, WebSocket handshake,
   executable/version marker, PID, command line, and Codex home, then publishes

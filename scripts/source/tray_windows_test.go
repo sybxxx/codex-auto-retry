@@ -110,3 +110,15 @@ func TestGoalEmptyResponseBlockFailedCount(t *testing.T) {
 		t.Fatalf("goal-block failure tray notification count = %d, want 1", got)
 	}
 }
+
+func TestRetryLimitStoppedCountExcludesControllerStops(t *testing.T) {
+	retries := []ManagedRetry{
+		{State: "stopped", StopReason: "recovery_attempt_limit"},
+		{State: "stopped", StopReason: "shared_app_server_disabled"},
+		{State: "stopped", StopReason: "codex_not_running"},
+		{State: "pending", StopReason: "consecutive_retry_limit"},
+	}
+	if got := retryLimitStoppedCount(retries); got != 1 {
+		t.Fatalf("retry-limit notification count = %d, want 1", got)
+	}
+}

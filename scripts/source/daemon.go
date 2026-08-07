@@ -526,6 +526,30 @@ func (d *daemon) stopAwaitingForControllerLocked(threadID string, thread ThreadS
 	d.logger.Printf("retry stopped thread=%s reason=%s controller_failures=%d", shortThreadID(threadID), reason, awaiting.DispatchFailures+1)
 }
 
+func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadState, now time.Time, reason string) {
+	pending := thread.Pending
+	if pending == nil {
+		return
+	}
+	thread.Pending = nil
+	thread.Awaiting = nil
+	thread.GoalStop = nil
+	thread.RecoveryAttempts = completedRetryCount(pending.Attempt, pending.MaxAttempts)
+	thread.ConsecutiveRetries = completedRetryCount(pending.ConsecutiveRetry, pending.MaxConsecutive)
+	thread.CurrentTurnProgress = false
+	thread.Stopped = &StoppedRetry{
+		EventKey: pending.EventKey, FailedTurnID: pending.FailedTurnID, FailedAt: pending.FailedAt,
+		OriginTurnStartedAt: pending.OriginTurnStartedAt,
+		Class:               pending.Class, StoppedAt: now, CodexHome: pending.CodexHome, RolloutPath: pending.RolloutPath,
+		Attempts: thread.RecoveryAttempts, MaxAttempts: pending.MaxAttempts,
+		ConsecutiveRetries: thread.ConsecutiveRetries, MaxConsecutive: pending.MaxConsecutive,
+		Reason: reason,
+	}
+	d.state.Threads[threadID] = thread
+	d.lastError = reason
+	d.logger.Printf("retry stopped before dispatch thread=%s reason=%s", shortThreadID(threadID), reason)
+}
+
 func controllerFailureNeedsAction(reason string) bool {
 	switch reason {
 	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_conflict", "shared_app_server_disabled":
@@ -577,6 +601,18 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		return jobs
 	}
 	if d.paused {
+		return jobs
+	}
+	if d.controllerState == "shared_app_server_disabled" {
+		// The fail-open mode deliberately has no recovery transport. Do not
+		// promote a due item to AwaitingRetry: doing so looks like a retry was
+		// started and then failed, even though Codex never received a request.
+		for threadID, thread := range d.state.Threads {
+			if thread.Pending == nil || thread.Pending.DueAt.After(now) || thread.Awaiting != nil {
+				continue
+			}
+			d.stopPendingForControllerLocked(threadID, thread, now, "shared_app_server_disabled")
+		}
 		return jobs
 	}
 	type candidate struct {

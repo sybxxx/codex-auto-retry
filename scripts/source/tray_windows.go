@@ -139,6 +139,7 @@ type trayApp struct {
 	lastGoalFailed      int
 	lastRestartRequired int
 	lastCodexStopped    int
+	lastSharedDisabled  int
 	initialized         bool
 	settingsMu          sync.Mutex
 	settingsOpen        bool
@@ -308,6 +309,9 @@ func (a *trayApp) refresh() {
 	} else if snapshot.ControllerState == "codex_not_running" && snapshot.StoppedRetries > 0 {
 		tip = "Codex Auto Retry - Codex 已退出，重试已停止"
 		iconState = "stopped"
+	} else if snapshot.ControllerState == "shared_app_server_disabled" {
+		tip = "Codex Auto Retry - 共享后台已关闭，重试未执行"
+		iconState = "paused"
 	} else if snapshot.Paused {
 		tip = "Codex Auto Retry - 已暂停"
 		iconState = "paused"
@@ -326,22 +330,27 @@ func (a *trayApp) refresh() {
 	goalFailed := goalEmptyResponseBlockFailedCount(snapshot.Retries)
 	restartRequired := stoppedReasonCount(snapshot.Retries, "codex_restart_required")
 	codexStopped := stoppedReasonCount(snapshot.Retries, "codex_not_running")
+	sharedDisabled := stoppedReasonCount(snapshot.Retries, "shared_app_server_disabled")
+	limitStopped := retryLimitStoppedCount(snapshot.Retries)
 	if a.initialized && snapshot.ShowNotifications && restartRequired > a.lastRestartRequired {
 		a.notify("需要重启 Codex", "重启一次 Codex 后，等待中的自动重试会自行恢复。")
 	} else if a.initialized && snapshot.ShowNotifications && codexStopped > a.lastCodexStopped {
 		a.notify("Codex 已退出", "相关任务已停止自动重试。启动 Codex 后可从设置中重新开始。")
+	} else if a.initialized && snapshot.ShowNotifications && sharedDisabled > a.lastSharedDisabled {
+		a.notify("共享后台已关闭", "自动恢复未执行。请打开共享后台模式，然后重新开始该任务。")
 	} else if a.initialized && snapshot.ShowNotifications && goalFailed > a.lastGoalFailed {
 		a.notify("目标停止失败", "目标恢复已停止，但自动设为受阻失败。请从面板重新开始或检查 Codex 状态。")
 	} else if a.initialized && snapshot.ShowNotifications && goalStopped > a.lastGoalStopped {
 		a.notify("目标已自动停止", "目标连续空回复达到上限，目标恢复已停止。")
-	} else if a.initialized && snapshot.ShowNotifications && snapshot.StoppedRetries > a.lastStopped {
-		a.notify("自动重试已停止", fmt.Sprintf("有 %d 个任务已达到重试上限。", snapshot.StoppedRetries))
+	} else if a.initialized && snapshot.ShowNotifications && limitStopped > a.lastStopped {
+		a.notify("自动重试已停止", fmt.Sprintf("有 %d 个任务已达到重试上限。", limitStopped))
 	}
-	a.lastStopped = snapshot.StoppedRetries
+	a.lastStopped = limitStopped
 	a.lastGoalStopped = goalStopped
 	a.lastGoalFailed = goalFailed
 	a.lastRestartRequired = restartRequired
 	a.lastCodexStopped = codexStopped
+	a.lastSharedDisabled = sharedDisabled
 	a.initialized = true
 }
 
@@ -349,6 +358,20 @@ func stoppedReasonCount(retries []ManagedRetry, reason string) int {
 	count := 0
 	for _, retry := range retries {
 		if retry.State == "stopped" && retry.StopReason == reason {
+			count++
+		}
+	}
+	return count
+}
+
+func retryLimitStoppedCount(retries []ManagedRetry) int {
+	count := 0
+	for _, retry := range retries {
+		if retry.State != "stopped" {
+			continue
+		}
+		switch retry.StopReason {
+		case "recovery_attempt_limit", "consecutive_retry_limit", "retry_limit":
 			count++
 		}
 	}

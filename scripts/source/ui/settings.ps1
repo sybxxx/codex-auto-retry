@@ -96,7 +96,7 @@ $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
-$form.ClientSize = [System.Drawing.Size]::new(620, 760)
+$form.ClientSize = [System.Drawing.Size]::new(620, 800)
 $form.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
 $form.Icon = [System.Drawing.SystemIcons]::Application
 if ($SmokeTest) {
@@ -163,7 +163,7 @@ $queueGroup.Controls.AddRange(@($retryNowButton, $cancelRetryButton, $restartRet
 $settingsGroup = [System.Windows.Forms.GroupBox]::new()
 $settingsGroup.Text = '自动重试设置'
 $settingsGroup.Location = [System.Drawing.Point]::new(20, 378)
-$settingsGroup.Size = [System.Drawing.Size]::new(580, 315)
+$settingsGroup.Size = [System.Drawing.Size]::new(580, 355)
 $form.Controls.Add($settingsGroup)
 
 $enabledCheck = [System.Windows.Forms.CheckBox]::new()
@@ -171,16 +171,21 @@ $enabledCheck.Text = '启用自动重试'
 $enabledCheck.Location = [System.Drawing.Point]::new(18, 25)
 $enabledCheck.Size = [System.Drawing.Size]::new(160, 24)
 $enabledCheck.Checked = -not [bool]$control.paused
+$sharedCheck = [System.Windows.Forms.CheckBox]::new()
+$sharedCheck.Text = '启用共享 Codex 后台（健康检查）'
+$sharedCheck.Location = [System.Drawing.Point]::new(18, 52)
+$sharedCheck.Size = [System.Drawing.Size]::new(260, 24)
+$sharedCheck.Checked = [bool]$config.shared_app_server_enabled
 $notificationsCheck = [System.Windows.Forms.CheckBox]::new()
 $notificationsCheck.Text = '达到重试上限时显示插件通知'
-$notificationsCheck.Location = [System.Drawing.Point]::new(250, 25)
-$notificationsCheck.Size = [System.Drawing.Size]::new(285, 24)
+$notificationsCheck.Location = [System.Drawing.Point]::new(300, 52)
+$notificationsCheck.Size = [System.Drawing.Size]::new(255, 24)
 $notificationsCheck.Checked = [bool]$config.show_notifications
-$settingsGroup.Controls.AddRange(@($enabledCheck, $notificationsCheck))
+$settingsGroup.Controls.AddRange(@($enabledCheck, $sharedCheck, $notificationsCheck))
 
-$settingsGroup.Controls.Add((New-Label '后备重试文字' 18 60 180 22))
+$settingsGroup.Controls.Add((New-Label '后备重试文字' 18 85 180 22))
 $promptBox = [System.Windows.Forms.TextBox]::new()
-$promptBox.Location = [System.Drawing.Point]::new(18, 83)
+$promptBox.Location = [System.Drawing.Point]::new(18, 108)
 $promptBox.Size = [System.Drawing.Size]::new(540, 54)
 $promptBox.Multiline = $true
 $promptBox.MaxLength = 500
@@ -188,15 +193,15 @@ $promptBox.ScrollBars = 'Vertical'
 $promptBox.Text = [string]$config.retry_prompt
 $settingsGroup.Controls.Add($promptBox)
 
-$recoveryLabel = New-Label '本次故障恢复上限' 18 151 145 22
-$recoveryBox = New-NumberBox 168 148 1 1000 ([int]$config.max_recovery_attempts) 120
-$consecutiveLabel = New-Label '连续无进展重试上限' 310 151 128 22
-$consecutiveBox = New-NumberBox 438 148 1 100 ([int]$config.max_consecutive_retries) 120
+$recoveryLabel = New-Label '本次故障恢复上限' 18 176 145 22
+$recoveryBox = New-NumberBox 168 173 1 1000 ([int]$config.max_recovery_attempts) 120
+$consecutiveLabel = New-Label '连续无进展重试上限' 310 176 128 22
+$consecutiveBox = New-NumberBox 438 173 1 100 ([int]$config.max_consecutive_retries) 120
 $settingsGroup.Controls.AddRange(@($recoveryLabel, $recoveryBox, $consecutiveLabel, $consecutiveBox))
 
-$strategyLabel = New-Label '等待策略' 18 193 145 22
+$strategyLabel = New-Label '等待策略' 18 218 145 22
 $strategyBox = [System.Windows.Forms.ComboBox]::new()
-$strategyBox.Location = [System.Drawing.Point]::new(168, 190)
+$strategyBox.Location = [System.Drawing.Point]::new(168, 215)
 $strategyBox.Size = [System.Drawing.Size]::new(120, 24)
 $strategyBox.DropDownStyle = 'DropDownList'
 [void]$strategyBox.Items.Add('翻倍递增')
@@ -207,15 +212,15 @@ $strategyBox.SelectedIndex = switch ([string]$config.delay_strategy) {
     'fixed' { 2 }
     default { 0 }
 }
-$initialDelayLabel = New-Label '首次等待（秒）' 310 193 118 22
-$initialDelayBox = New-NumberBox 438 190 1 3600 ([int]$config.initial_delay_seconds) 120
+$initialDelayLabel = New-Label '首次等待（秒）' 310 218 118 22
+$initialDelayBox = New-NumberBox 438 215 1 3600 ([int]$config.initial_delay_seconds) 120
 $settingsGroup.Controls.AddRange(@($strategyLabel, $strategyBox, $initialDelayLabel, $initialDelayBox))
 
-$maxDelayLabel = New-Label '最大等待（秒）' 18 235 145 22
-$maxDelayBox = New-NumberBox 168 232 1 86400 ([int]$config.max_delay_seconds) 120
-$incrementLabel = New-Label '每次增加（秒）' 310 235 128 22
-$incrementBox = New-NumberBox 438 232 1 3600 ([int]$config.delay_increment_seconds) 120
-$previewLabel = New-Label '' 18 272 540 38
+$maxDelayLabel = New-Label '最大等待（秒）' 18 260 145 22
+$maxDelayBox = New-NumberBox 168 257 1 86400 ([int]$config.max_delay_seconds) 120
+$incrementLabel = New-Label '每次增加（秒）' 310 260 128 22
+$incrementBox = New-NumberBox 438 257 1 3600 ([int]$config.delay_increment_seconds) 120
+$previewLabel = New-Label '' 18 297 540 38
 $previewLabel.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.AddRange(@($maxDelayLabel, $maxDelayBox, $incrementLabel, $incrementBox, $previewLabel))
 
@@ -279,19 +284,19 @@ function Update-DelayPreview {
 
 Update-DelayPreview
 
-$noticeLabel = New-Label '' 22 707 390 28
+$noticeLabel = New-Label '' 22 747 390 28
 $noticeLabel.ForeColor = [System.Drawing.Color]::SeaGreen
 $form.Controls.Add($noticeLabel)
 $saveButton = [System.Windows.Forms.Button]::new()
 $saveButton.Text = '保存设置'
-$saveButton.Location = [System.Drawing.Point]::new(420, 707)
+$saveButton.Location = [System.Drawing.Point]::new(420, 747)
 $saveButton.Size = [System.Drawing.Size]::new(85, 30)
 $saveButton.BackColor = [System.Drawing.Color]::FromArgb(35, 39, 37)
 $saveButton.ForeColor = [System.Drawing.Color]::White
 $saveButton.FlatStyle = 'Flat'
 $closeButton = [System.Windows.Forms.Button]::new()
 $closeButton.Text = '关闭'
-$closeButton.Location = [System.Drawing.Point]::new(515, 707)
+$closeButton.Location = [System.Drawing.Point]::new(515, 747)
 $closeButton.Size = [System.Drawing.Size]::new(85, 30)
 $form.Controls.AddRange(@($saveButton, $closeButton))
 $form.CancelButton = $closeButton
@@ -310,6 +315,7 @@ function Get-StateText {
 function Get-StoppedStateText {
     param([string]$Reason)
     if ($Reason -eq 'codex_not_running') { return 'Codex 已退出' }
+    if ($Reason -eq 'shared_app_server_disabled') { return '共享后台已关闭' }
     if ($Reason -eq 'codex_restart_required') { return '等待重启 Codex' }
     if ($Reason -eq 'codex_home_not_shared') { return '任务目录未接入' }
     if ($Reason -eq 'shared_app_server_port_conflict') { return '恢复端口冲突' }
@@ -381,6 +387,9 @@ function Update-RuntimeView {
     } elseif ([string]$status.controller_state -eq 'codex_not_running') {
         $serviceValue.Text = 'Codex 已退出，重试已停止'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
+    } elseif ([string]$status.controller_state -eq 'shared_app_server_disabled') {
+        $serviceValue.Text = '共享后台已关闭，重试未执行'
+        $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
     } elseif ($paused) {
         $serviceValue.Text = '已暂停'
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
@@ -522,6 +531,7 @@ $saveButton.add_Click({
         delay_strategy = $delayStrategy
         show_notifications = [bool]$notificationsCheck.Checked
         paused = -not [bool]$enabledCheck.Checked
+        shared_app_server_enabled = [bool]$sharedCheck.Checked
     }
     $requestPath = Join-Path $DataDir ('settings-request-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
