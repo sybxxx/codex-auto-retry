@@ -45,7 +45,11 @@ const (
 	maxRecoveryAttemptsLimit   = 1000
 )
 
-const currentConfigVersion = 7
+const (
+	currentConfigVersion             = 8
+	legacyDefaultSharedAppServerPort = 49321
+	defaultSharedAppServerPort       = 49621
+)
 
 const (
 	delayStrategyExponential = "exponential"
@@ -69,7 +73,7 @@ func defaultConfig() Config {
 		UnknownMaxAttempts:     3,
 		IncludeDefaultHome:     true,
 		IncludeCockpitHomes:    true,
-		SharedAppServerPort:    49321,
+		SharedAppServerPort:    defaultSharedAppServerPort,
 		SharedAppServerEnabled: false,
 		ControllerFailureLimit: 3,
 		RetryPrompt:            defaultRetryPrompt,
@@ -97,6 +101,10 @@ func loadOrCreateConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config fields: %w", err)
 	}
 	changed := false
+	sourceConfigVersion := 0
+	if rawVersion, found := fields["config_version"]; found {
+		_ = json.Unmarshal(rawVersion, &sourceConfigVersion)
+	}
 	// Version 1 forced one global UI action because retries navigated the same
 	// Codex window. Version 2 uses independent background requests. Version 3
 	// added one ambiguous retry cap. Version 4 separates the consecutive retry
@@ -104,7 +112,8 @@ func loadOrCreateConfig(path string) (Config, error) {
 	// Version 5 adds a configurable increment for linear waits. Version 6 moves
 	// recovery to the shared local app-server channel used by current Codex App.
 	// Version 7 makes that channel an explicit opt-in so a broken plugin cannot
-	// prevent Codex from starting with its own official backend.
+	// prevent Codex from starting with its own official backend. Version 8 moves
+	// the default endpoint out of a Windows-excluded port range.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -154,6 +163,10 @@ func loadOrCreateConfig(path string) (Config, error) {
 			cfg.SharedAppServerEnabled = defaultConfig().SharedAppServerEnabled
 			changed = true
 		}
+	}
+	if sourceConfigVersion < currentConfigVersion && !cfg.SharedAppServerEnabled && cfg.SharedAppServerPort == legacyDefaultSharedAppServerPort {
+		cfg.SharedAppServerPort = defaultSharedAppServerPort
+		changed = true
 	}
 	if cfg.RetryPrompt == legacyRetryPrompt || cfg.RetryPrompt == "Continue." {
 		cfg.RetryPrompt = defaultRetryPrompt

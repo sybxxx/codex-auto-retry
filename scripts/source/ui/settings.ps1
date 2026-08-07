@@ -13,6 +13,8 @@ Add-Type -AssemblyName System.Drawing
 # WebSocket handshake. Keep the settings window responsive while it runs, and
 # never allow a broken child process to hold the window open indefinitely.
 $localCommandTimeoutMilliseconds = 35000
+$localCommandExitPortReserved = 2
+$localCommandExitPortConflict = 3
 $script:localCommandProcess = $null
 $script:localCommandTimedOut = $false
 $script:localCommandInProgress = $false
@@ -392,6 +394,7 @@ function Get-StoppedStateText {
     if ($Reason -eq 'codex_restart_required') { return '等待重启 Codex' }
     if ($Reason -eq 'codex_home_not_shared') { return '任务目录未接入' }
     if ($Reason -eq 'shared_app_server_port_conflict') { return '恢复端口冲突' }
+    if ($Reason -eq 'shared_app_server_port_reserved') { return '端口被 Windows 保留' }
     if ($Reason -like 'controller_*' -or $Reason -like 'codex_background_*' -or $Reason -eq 'app_server_request_failed') { return '恢复通道失败' }
     if ($Reason -eq 'goal_empty_response_limit_block_failed') { return '目标停止失败' }
     if ($Reason -eq 'goal_empty_response_limit') { return '目标空回复已停止' }
@@ -464,6 +467,12 @@ function Update-RuntimeView {
     } elseif ([string]$status.controller_state -eq 'shared_app_server_disabled') {
         $serviceValue.Text = '共享后台已关闭，重试未执行'
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
+    } elseif ([string]$status.controller_state -eq 'shared_app_server_port_reserved') {
+        $serviceValue.Text = '共享端口被 Windows 保留，重试未执行'
+        $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
+    } elseif ([string]$status.controller_state -eq 'shared_app_server_port_conflict') {
+        $serviceValue.Text = '共享端口被其他程序占用，重试未执行'
+        $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ($paused) {
         $serviceValue.Text = '已暂停'
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
@@ -610,6 +619,7 @@ $saveButton.add_Click({
     }
     $currentConfig = Read-JsonFile $configPath
     $storedSharedEnabled = if ($currentConfig) { [bool]$currentConfig.shared_app_server_enabled } else { [bool]$config.shared_app_server_enabled }
+    $storedSharedPort = if ($currentConfig) { [int]$currentConfig.shared_app_server_port } else { [int]$config.shared_app_server_port }
     $sharedModeChanged = [bool]$sharedCheck.Checked -ne $storedSharedEnabled
     $sharedModeEnabling = [bool]$sharedCheck.Checked -and -not $storedSharedEnabled
     $requestPath = Join-Path $DataDir ('settings-request-' + [guid]::NewGuid().ToString('N') + '.json')
@@ -643,7 +653,11 @@ $saveButton.add_Click({
                 $sharedCheck.Checked = $storedSharedEnabled
             }
         }
-        if ($script:localCommandTimedOut) {
+        if ($sharedModeEnabling -and $exitCode -eq $localCommandExitPortReserved) {
+            $noticeLabel.Text = '保存失败：端口 ' + $storedSharedPort + ' 被 Windows 保留，共享后台未启用。'
+        } elseif ($sharedModeEnabling -and $exitCode -eq $localCommandExitPortConflict) {
+            $noticeLabel.Text = '保存失败：端口 ' + $storedSharedPort + ' 被其他程序占用，共享后台未启用。'
+        } elseif ($script:localCommandTimedOut) {
             $noticeLabel.Text = '保存超时：共享后台健康检查未完成，Codex 仍使用原后台。'
         } elseif ($sharedModeEnabling) {
             $noticeLabel.Text = '保存失败：共享后台健康检查未通过，Codex 仍使用原后台。'

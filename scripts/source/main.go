@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -17,6 +18,12 @@ type localSettingsPayload struct {
 	Paused                 bool  `json:"paused"`
 	SharedAppServerEnabled *bool `json:"shared_app_server_enabled,omitempty"`
 }
+
+const (
+	localSettingsExitFailure      = 1
+	localSettingsExitPortReserved = 2
+	localSettingsExitPortConflict = 3
+)
 
 func main() {
 	arguments := os.Args[1:]
@@ -50,7 +57,7 @@ func main() {
 	}
 	if mode == "save-settings" {
 		if err := saveLocalSettings(dataDir, *settingsFileFlag); err != nil {
-			os.Exit(1)
+			os.Exit(localSettingsExitCode(err))
 		}
 		return
 	}
@@ -134,6 +141,17 @@ func main() {
 	}
 	_ = daemon.writeStatus(false)
 	logger.Printf("watchdog stopped")
+}
+
+func localSettingsExitCode(err error) int {
+	switch {
+	case errors.Is(err, errSharedServerPortReserved):
+		return localSettingsExitPortReserved
+	case errors.Is(err, errSharedServerPortConflict):
+		return localSettingsExitPortConflict
+	default:
+		return localSettingsExitFailure
+	}
 }
 
 func saveLocalSettings(dataDir, settingsPath string) error {

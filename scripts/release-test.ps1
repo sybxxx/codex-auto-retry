@@ -137,12 +137,15 @@ try {
     if ($settingsErrors.Count -gt 0) {
         throw "PowerShell parse error in tray settings script: $($settingsErrors[0].Message)"
     }
-    if ($settingsSource -match '(?m)\.WaitForExit\(\s*\)') {
+    if ($settingsSource.Contains('.WaitForExit()')) {
         throw 'Tray settings still contains an unbounded local-command wait.'
     }
-    if ($settingsSource -notmatch '\.WaitForExit\(100\)' -or
-        $settingsSource -notmatch '\[System\.Windows\.Forms\.Application\]::DoEvents\(\)' -or
-        $settingsSource -notmatch '\$localCommandTimeoutMilliseconds') {
+    $reservedPortMessage = ([string][char]0x88AB) + ' Windows ' + ([char]0x4FDD) + ([char]0x7559)
+    if (-not $settingsSource.Contains('.WaitForExit(100)') -or
+        -not $settingsSource.Contains('[System.Windows.Forms.Application]::DoEvents()') -or
+        -not $settingsSource.Contains('$localCommandTimeoutMilliseconds') -or
+        -not $settingsSource.Contains('$localCommandExitPortReserved') -or
+        -not $settingsSource.Contains($reservedPortMessage)) {
         throw 'Tray settings does not keep local commands responsive and bounded.'
     }
 

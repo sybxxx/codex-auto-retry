@@ -184,6 +184,9 @@ it with the hidden-console server.
 
 - The server listens only on `127.0.0.1`; `wss`, hostnames, credentials, paths,
   and a different port are rejected.
+- The default port is `49621`. A TCP4 bind preflight runs before the Codex
+  process starts, classifying Windows-excluded ports separately from occupied
+  ports so management surfaces can show an actionable reason.
 - The watchdog records the server PID, executable, endpoint, Codex home, and
   start time. A responsive port is rejected unless its live process still
   matches that owned record.

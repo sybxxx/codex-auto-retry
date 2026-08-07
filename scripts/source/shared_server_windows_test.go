@@ -5,25 +5,29 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 )
 
 func TestValidSharedServerEndpointAcceptsOnlyExpectedLoopbackPort(t *testing.T) {
+	port := defaultConfig().SharedAppServerPort
 	for _, test := range []struct {
 		endpoint string
 		port     int
 		valid    bool
 	}{
-		{endpoint: "ws://127.0.0.1:49321", port: 49321, valid: true},
-		{endpoint: "ws://localhost:49321", port: 49321, valid: false},
-		{endpoint: "wss://127.0.0.1:49321", port: 49321, valid: false},
-		{endpoint: "ws://127.0.0.1:49322", port: 49321, valid: false},
-		{endpoint: "ws://user@127.0.0.1:49321", port: 49321, valid: false},
-		{endpoint: "ws://127.0.0.1:49321/path", port: 49321, valid: false},
+		{endpoint: fmt.Sprintf("ws://127.0.0.1:%d", port), port: port, valid: true},
+		{endpoint: fmt.Sprintf("ws://localhost:%d", port), port: port, valid: false},
+		{endpoint: fmt.Sprintf("wss://127.0.0.1:%d", port), port: port, valid: false},
+		{endpoint: fmt.Sprintf("ws://127.0.0.1:%d", port+1), port: port, valid: false},
+		{endpoint: fmt.Sprintf("ws://user@127.0.0.1:%d", port), port: port, valid: false},
+		{endpoint: fmt.Sprintf("ws://127.0.0.1:%d/path", port), port: port, valid: false},
 	} {
 		if got := validSharedServerEndpoint(test.endpoint, test.port); got != test.valid {
 			t.Fatalf("validSharedServerEndpoint(%q, %d) = %v, want %v", test.endpoint, test.port, got, test.valid)
@@ -46,6 +50,27 @@ func TestSharedServerRefusesUnownedResponsivePort(t *testing.T) {
 	manager := newSharedServerManager(config, t.TempDir(), nil)
 	if err := manager.Ensure(context.Background()); !errors.Is(err, errSharedServerPortConflict) {
 		t.Fatalf("responsive unowned port was accepted: %v", err)
+	}
+}
+
+func TestSharedServerPortPreflightClassifiesWindowsErrors(t *testing.T) {
+	if !isWindowsPortReservedError(fmt.Errorf("bind: %w", syscall.Errno(10013))) {
+		t.Fatal("WSAEACCES was not classified as a Windows-reserved port")
+	}
+	if !isWindowsPortOccupiedError(fmt.Errorf("bind: %w", syscall.Errno(10048))) {
+		t.Fatal("WSAEADDRINUSE was not classified as an occupied port")
+	}
+}
+
+func TestSharedServerPortPreflightDetectsOccupiedPort(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := checkSharedServerPort(port); !errors.Is(err, errSharedServerPortConflict) {
+		t.Fatalf("occupied port was not rejected: %v", err)
 	}
 }
 

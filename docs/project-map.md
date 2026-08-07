@@ -128,7 +128,9 @@ Configuration version 5 adds the linear increment. Version 6 replaces the
 removed renderer debugging channel with `shared_app_server_port` and a bounded
 `controller_failure_limit` (three by default). Version 7 adds
 `shared_app_server_enabled`, which defaults to false so Codex remains fail-open
-on its official backend.
+on its official backend. Version 8 moves the shared-server default port out of
+the Windows-excluded range and adds a bind preflight with distinct reserved and
+occupied-port diagnostics.
 
 `control.json` stores the persistent pause switch separately from
 `config.json`. One-use files under `commands` request `retry_now`,

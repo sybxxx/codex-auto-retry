@@ -42,7 +42,7 @@ function Write-CodexAutoRetryJsonAtomic {
 
 function Get-CodexAutoRetrySharedAppServerPort {
     param([Parameter(Mandatory = $true)][string]$ConfigPath)
-    $defaultPort = 49321
+    $defaultPort = 49621
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { return $defaultPort }
     try {
         $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $ConfigPath | ConvertFrom-Json

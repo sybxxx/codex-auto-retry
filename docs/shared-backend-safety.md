@@ -12,6 +12,10 @@ The plugin has two deliberately separate modes:
   executable/version marker, PID, command line, and Codex home, then publishes
   the endpoint. A failed check does not change the environment.
 
+The default loopback port is `49621`. The watchdog binds it before launching
+Codex so Windows-excluded ranges and occupied ports can be reported separately
+and the shared mode can fail open without a generic health-check message.
+
 Installation is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
 environment ownership, and the previous binaries are captured; a failed

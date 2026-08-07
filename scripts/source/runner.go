@@ -204,6 +204,8 @@ func controllerFailureReason(result DispatchResult, err error) string {
 	switch {
 	case errors.Is(err, errControllerTimeout):
 		return "controller_timeout"
+	case errors.Is(err, errSharedServerPortReserved):
+		return "shared_app_server_port_reserved"
 	case errors.Is(err, errSharedServerPortConflict):
 		return "shared_app_server_port_conflict"
 	case errors.Is(err, errSharedServerUnavailable):

@@ -312,6 +312,12 @@ func (a *trayApp) refresh() {
 	} else if snapshot.ControllerState == "shared_app_server_disabled" {
 		tip = "Codex Auto Retry - 共享后台已关闭，重试未执行"
 		iconState = "paused"
+	} else if snapshot.ControllerState == "shared_app_server_port_reserved" {
+		tip = "Codex Auto Retry - 共享端口被 Windows 保留，重试未执行"
+		iconState = "stopped"
+	} else if snapshot.ControllerState == "shared_app_server_port_conflict" {
+		tip = "Codex Auto Retry - 共享端口被其他程序占用，重试未执行"
+		iconState = "stopped"
 	} else if snapshot.Paused {
 		tip = "Codex Auto Retry - 已暂停"
 		iconState = "paused"

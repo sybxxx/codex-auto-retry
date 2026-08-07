@@ -204,7 +204,7 @@ func TestVersionFiveMigrationPreservesInstalledRetryPolicy(t *testing.T) {
 		loaded.MaxDelaySeconds != 1800 || loaded.DelayIncrementSeconds != 10 ||
 		loaded.DelayStrategy != delayStrategyFixed || loaded.MaxConsecutiveRetries != 100 ||
 		loaded.MaxRecoveryAttempts != 1000 || loaded.RetryPrompt != "继续" ||
-		loaded.SharedAppServerPort != 49321 || loaded.ControllerFailureLimit != 3 {
+		loaded.SharedAppServerPort != defaultConfig().SharedAppServerPort || loaded.ControllerFailureLimit != 3 {
 		t.Fatalf("version five migration changed the installed retry policy: %+v", loaded)
 	}
 	if loaded.SharedAppServerEnabled {
@@ -260,5 +260,68 @@ func TestConfigMigrationAddsDisabledSharedAppServerField(t *testing.T) {
 	}
 	if !strings.Contains(string(written), "shared_app_server_enabled") {
 		t.Fatalf("migrated config omitted shared mode field: %s", written)
+	}
+}
+
+func TestConfigMigrationMovesLegacySharedServerDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	config := defaultConfig()
+	config.ConfigVersion = 7
+	config.SharedAppServerPort = legacyDefaultSharedAppServerPort
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadOrCreateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ConfigVersion != currentConfigVersion || loaded.SharedAppServerPort != defaultSharedAppServerPort {
+		t.Fatalf("legacy shared-server default was not moved: %+v", loaded)
+	}
+}
+
+func TestCurrentConfigPreservesExplicitLegacySharedServerPort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	config := defaultConfig()
+	config.SharedAppServerPort = legacyDefaultSharedAppServerPort
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadOrCreateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SharedAppServerPort != legacyDefaultSharedAppServerPort {
+		t.Fatalf("current explicit shared-server port was unexpectedly changed: %+v", loaded)
+	}
+}
+
+func TestEnabledLegacySharedServerPortIsNotChangedDuringMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	config := defaultConfig()
+	config.ConfigVersion = 7
+	config.SharedAppServerPort = legacyDefaultSharedAppServerPort
+	config.SharedAppServerEnabled = true
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadOrCreateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SharedAppServerPort != legacyDefaultSharedAppServerPort || !loaded.SharedAppServerEnabled {
+		t.Fatalf("enabled legacy shared-server configuration was changed unsafely: %+v", loaded)
 	}
 }

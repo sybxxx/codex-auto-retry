@@ -260,6 +260,11 @@ WebSocket handshake, a versioned executable, and a process whose path and
 command line match the plugin-owned state. `CODEX_API_KEY` is never read for
 mutation and is never removed.
 
+The default loopback port is `49621`. Before Codex is started, the watchdog
+actually binds the port once to detect Windows-excluded ranges and occupied
+ports. The settings window reports those two cases separately and keeps the
+shared mode disabled when the check fails.
+
 The tray form stays responsive while this check runs and stops waiting after
 35 seconds. A failed or timed-out check leaves Codex on its previous backend
 and does not save the shared-mode switch.

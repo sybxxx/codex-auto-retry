@@ -113,6 +113,12 @@ func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
 	if got := controllerFailureReason(DispatchResult{}, errSharedServerUnavailable); got != "codex_background_channel_unavailable" {
 		t.Fatalf("unexpected shared-server reason: %s", got)
 	}
+	if got := controllerFailureReason(DispatchResult{}, errSharedServerPortReserved); got != "shared_app_server_port_reserved" || !controllerFailureNeedsAction(got) {
+		t.Fatalf("reserved shared-server port was not exposed as an actionable reason: %s", got)
+	}
+	if got := localSettingsExitCode(errSharedServerPortReserved); got != localSettingsExitPortReserved {
+		t.Fatalf("reserved shared-server port did not get a distinct settings exit code: %d", got)
+	}
 	result := DispatchResult{Outcome: outcomeRetryLater, Reason: "thread_active"}
 	if got := controllerFailureReason(result, nil); got != result.Reason {
 		t.Fatalf("safe controller reason was not preserved: %s", got)

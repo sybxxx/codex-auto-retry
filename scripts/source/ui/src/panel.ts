@@ -205,6 +205,14 @@ function renderService(next: ManagementSnapshot): void {
     label = "共享后台已关闭";
     detail = "Codex 继续使用官方后台；打开共享后台后才会执行静默恢复";
     dot.classList.add("status-dot-warning");
+  } else if (next.running && next.controller_state === "shared_app_server_port_reserved") {
+    label = "端口被 Windows 保留";
+    detail = "共享后台未启动，自动重试已停止；更换端口后再启用共享后台";
+    dot.classList.add("status-dot-danger");
+  } else if (next.running && next.controller_state === "shared_app_server_port_conflict") {
+    label = "共享端口被占用";
+    detail = "共享后台未启动，自动重试已停止；释放端口后再启用共享后台";
+    dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state && !["ready", "starting"].includes(next.controller_state)) {
     label = "恢复通道异常";
     detail = `自动重试已停止继续空转：${controllerStateLabel(next.controller_state)}`;
@@ -431,6 +439,9 @@ function stopReasonLabel(retry: ManagedRetry): string {
   if (retry.stop_reason === "shared_app_server_port_conflict") {
     return "后台恢复端口被其他程序占用";
   }
+  if (retry.stop_reason === "shared_app_server_port_reserved") {
+    return "后台恢复端口被 Windows 保留";
+  }
   if (retry.stop_reason?.startsWith("controller_") || retry.stop_reason?.startsWith("codex_background_") || retry.stop_reason === "app_server_request_failed") {
     return "后台恢复通道连续失败，已停止空转";
   }
@@ -458,6 +469,8 @@ function stoppedStateLabel(retry: ManagedRetry): string {
       return "任务目录未接入";
     case "shared_app_server_port_conflict":
       return "恢复端口冲突";
+    case "shared_app_server_port_reserved":
+      return "端口被 Windows 保留";
     default:
       return "达到上限";
   }
@@ -470,6 +483,7 @@ function controllerStateLabel(value: string): string {
     shared_app_server_disabled: "共享后台模式已关闭，Codex 使用官方后台",
     codex_home_not_shared: "任务目录未接入共享通道",
     shared_app_server_port_conflict: "共享端口被占用",
+    shared_app_server_port_reserved: "共享端口被 Windows 保留",
     codex_background_channel_unavailable: "共享通道不可用",
     codex_background_dispatch_failed: "恢复请求失败",
     controller_timeout: "恢复请求超时",

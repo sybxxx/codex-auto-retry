@@ -28,6 +28,7 @@ const (
 var (
 	errSharedServerUnavailable       = errors.New("shared Codex app-server is unavailable")
 	errSharedServerPortConflict      = errors.New("shared Codex app-server port is occupied")
+	errSharedServerPortReserved      = errors.New("shared Codex app-server port is reserved by Windows")
 	errSharedServerMigrationDeferred = errors.New("shared Codex app-server migration is waiting for Codex to close")
 )
 
@@ -97,6 +98,9 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 		_ = connection.Close()
 		return errSharedServerPortConflict
 	}
+	if err := checkSharedServerPort(m.config.SharedAppServerPort); err != nil {
+		return err
+	}
 	executable, err := findCodexExecutable()
 	if err != nil {
 		return fmt.Errorf("%w: %v", errSharedServerUnavailable, err)
@@ -133,6 +137,35 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 		}
 	}
 	return cleanup(errSharedServerUnavailable)
+}
+
+func checkSharedServerPort(port int) error {
+	address := fmt.Sprintf("127.0.0.1:%d", port)
+	listener, err := net.Listen("tcp4", address)
+	if err == nil {
+		return listener.Close()
+	}
+	if isWindowsPortReservedError(err) {
+		return fmt.Errorf("%w: port=%d", errSharedServerPortReserved, port)
+	}
+	if isWindowsPortOccupiedError(err) {
+		return fmt.Errorf("%w: port=%d", errSharedServerPortConflict, port)
+	}
+	return fmt.Errorf("%w: %v", errSharedServerUnavailable, err)
+}
+
+func isWindowsPortReservedError(err error) bool {
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == syscall.Errno(10013) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "access permissions") || strings.Contains(message, "access is denied")
+}
+
+func isWindowsPortOccupiedError(err error) bool {
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == syscall.Errno(10048)
 }
 
 func (m *sharedServerManager) scheduleLaunchMigration() {
