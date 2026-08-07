@@ -137,6 +137,14 @@ try {
     if ($settingsErrors.Count -gt 0) {
         throw "PowerShell parse error in tray settings script: $($settingsErrors[0].Message)"
     }
+    if ($settingsSource -match '(?m)\.WaitForExit\(\s*\)') {
+        throw 'Tray settings still contains an unbounded local-command wait.'
+    }
+    if ($settingsSource -notmatch '\.WaitForExit\(100\)' -or
+        $settingsSource -notmatch '\[System\.Windows\.Forms\.Application\]::DoEvents\(\)' -or
+        $settingsSource -notmatch '\$localCommandTimeoutMilliseconds') {
+        throw 'Tray settings does not keep local commands responsive and bounded.'
+    }
 
     $savedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -178,6 +186,7 @@ try {
         InstallerDryRun = 'passed'
         DirectMcpInstall = 'passed'
         UninstallerDryRun = 'passed'
+        SettingsCommandWait = 'bounded-and-responsive'
         Status = 'release verified'
     }
 }

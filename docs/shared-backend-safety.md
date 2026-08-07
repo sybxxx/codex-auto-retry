@@ -18,6 +18,10 @@ environment ownership, and the previous binaries are captured; a failed
 heartbeat or shared-mode health check restores them. Runtime state and chat
 data are not part of the rollback.
 
+The tray settings form keeps the health check bounded and responsive. A failed
+or timed-out start removes stale plugin-owned server state when its process has
+already exited, and leaves Codex on its previous backend.
+
 `scripts/safe-disable.ps1` is the break-glass path. It does not use the
 watchdog or Codex, and it only stops processes whose absolute executable path,
 owner marker, endpoint, and command line match the plugin's state. It removes

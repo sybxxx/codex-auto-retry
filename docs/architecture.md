@@ -161,6 +161,10 @@ one-use retry commands back through the watchdog executable; it never writes
 `state.json`. The script is embedded in the build input and materialized with
 an explicit UTF-8 BOM so Windows PowerShell renders Chinese labels correctly.
 Only one settings process is launched from a watchdog instance at a time.
+Local commands from the form are polled in short bounded slices while the
+WinForms message loop continues to run. A command that exceeds the 35-second
+UI deadline is terminated as a process tree and reported as a failed save;
+shared-backend enablement therefore cannot leave the window waiting forever.
 
 ## Background Controller Safety
 

@@ -32,15 +32,15 @@ var (
 )
 
 type sharedServerState struct {
-	PID        int       `json:"pid"`
-	Endpoint   string    `json:"endpoint"`
-	CodexHome  string    `json:"codex_home"`
-	Executable string    `json:"executable"`
-	ExecutableHash string  `json:"executable_hash"`
-	Owner      string    `json:"owner"`
-	Version    string    `json:"version"`
-	StartedAt  time.Time `json:"started_at"`
-	LaunchMode string    `json:"launch_mode,omitempty"`
+	PID            int       `json:"pid"`
+	Endpoint       string    `json:"endpoint"`
+	CodexHome      string    `json:"codex_home"`
+	Executable     string    `json:"executable"`
+	ExecutableHash string    `json:"executable_hash"`
+	Owner          string    `json:"owner"`
+	Version        string    `json:"version"`
+	StartedAt      time.Time `json:"started_at"`
+	LaunchMode     string    `json:"launch_mode,omitempty"`
 }
 
 type sharedServerManager struct {
@@ -104,6 +104,13 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 	if err := m.start(executable); err != nil {
 		return fmt.Errorf("%w: %v", errSharedServerUnavailable, err)
 	}
+	started := true
+	cleanup := func(err error) error {
+		if started {
+			cleanupSharedServer(m)
+		}
+		return err
+	}
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
 		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -117,15 +124,15 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 				m.ownsProcess(ctx, state) {
 				return nil
 			}
-			return errSharedServerUnavailable
+			return cleanup(errSharedServerUnavailable)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return cleanup(ctx.Err())
 		case <-time.After(150 * time.Millisecond):
 		}
 	}
-	return errSharedServerUnavailable
+	return cleanup(errSharedServerUnavailable)
 }
 
 func (m *sharedServerManager) scheduleLaunchMigration() {
@@ -307,7 +314,7 @@ func (m *sharedServerManager) start(executable string) error {
 		PID: pid, Endpoint: m.endpoint, CodexHome: m.codexHome,
 		Executable: executable, Owner: sharedServerOwner, Version: appVersion,
 		ExecutableHash: hash,
-		StartedAt: time.Now().UTC(), LaunchMode: sharedServerLaunchMode,
+		StartedAt:      time.Now().UTC(), LaunchMode: sharedServerLaunchMode,
 	}
 	if err := writeJSONAtomic(filepath.Join(m.dataDir, "shared-server.json"), state); err != nil {
 		_ = terminateProcessTree(context.Background(), pid)

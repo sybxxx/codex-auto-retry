@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 )
@@ -79,5 +81,33 @@ func TestSharedServerStateMarksHiddenInheritedConsole(t *testing.T) {
 	}
 	if state.Owner != sharedServerOwner || state.Version != appVersion {
 		t.Fatalf("shared-server ownership marker is incomplete: %+v", state)
+	}
+}
+
+func TestStopOwnedRemovesStaleStateAfterOwnedProcessExits(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sharedServerState{
+		PID:            4_000_000,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	statePath := filepath.Join(dataDir, "shared-server.json")
+	if err := writeJSONAtomic(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StopOwned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale owned state was not removed: %v", err)
 	}
 }

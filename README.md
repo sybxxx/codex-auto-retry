@@ -260,6 +260,10 @@ WebSocket handshake, a versioned executable, and a process whose path and
 command line match the plugin-owned state. `CODEX_API_KEY` is never read for
 mutation and is never removed.
 
+The tray form stays responsive while this check runs and stops waiting after
+35 seconds. A failed or timed-out check leaves Codex on its previous backend
+and does not save the shared-mode switch.
+
 If startup or an upgrade is broken, run `scripts/safe-disable.ps1`. This
 break-glass script is independent of the watchdog: it removes only the plugin's
 startup entry, stops only plugin-owned processes, restores only the endpoint

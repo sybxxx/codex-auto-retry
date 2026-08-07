@@ -9,6 +9,14 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# A shared-backend health check can involve starting Codex and waiting for a
+# WebSocket handshake. Keep the settings window responsive while it runs, and
+# never allow a broken child process to hold the window open indefinitely.
+$localCommandTimeoutMilliseconds = 35000
+$script:localCommandProcess = $null
+$script:localCommandTimedOut = $false
+$script:localCommandInProgress = $false
+
 $configPath = Join-Path $DataDir 'config.json'
 $controlPath = Join-Path $DataDir 'control.json'
 $statusPath = Join-Path $DataDir 'status.json'
@@ -44,8 +52,28 @@ function Read-JsonFile {
     }
 }
 
+function Stop-LocalCommandProcess {
+    param($Process)
+    if ($null -eq $Process) { return }
+    try {
+        if ($Process.HasExited) { return }
+    } catch { return }
+    try {
+        $killer = Start-Process -FilePath 'taskkill.exe' -ArgumentList @('/PID', [string]$Process.Id, '/T', '/F') -WindowStyle Hidden -Wait -PassThru
+        if ($killer) { $killer.Dispose() }
+    } catch { }
+    try {
+        if (-not $Process.HasExited) { $Process.Kill() }
+    } catch { }
+}
+
 function Start-LocalCommand {
-    param([string]$Mode, [hashtable]$Environment)
+    param(
+        [string]$Mode,
+        [hashtable]$Environment,
+        [int]$TimeoutMilliseconds = $localCommandTimeoutMilliseconds
+    )
+    $script:localCommandTimedOut = $false
     $info = [System.Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $Executable
     $info.Arguments = $Mode
@@ -55,11 +83,28 @@ function Start-LocalCommand {
     foreach ($entry in $Environment.GetEnumerator()) {
         $info.EnvironmentVariables[[string]$entry.Key] = [string]$entry.Value
     }
-    $process = [System.Diagnostics.Process]::Start($info)
-    $process.WaitForExit()
-    $exitCode = $process.ExitCode
-    $process.Dispose()
-    return $exitCode
+    $process = $null
+    try {
+        $process = [System.Diagnostics.Process]::Start($info)
+        $script:localCommandProcess = $process
+        $deadline = [DateTimeOffset]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+        while (-not $process.HasExited) {
+            if ([DateTimeOffset]::UtcNow -ge $deadline) {
+                $script:localCommandTimedOut = $true
+                Stop-LocalCommandProcess $process
+                return -2
+            }
+            [void]$process.WaitForExit(100)
+            # This function is called from a WinForms event handler. Pumping a
+            # bounded slice lets repaint, timers, and window movement continue
+            # while the external health check is in progress.
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+        return $process.ExitCode
+    } finally {
+        $script:localCommandProcess = $null
+        if ($process) { $process.Dispose() }
+    }
 }
 
 function New-Label {
@@ -301,6 +346,34 @@ $closeButton.Size = [System.Drawing.Size]::new(85, 30)
 $form.Controls.AddRange(@($saveButton, $closeButton))
 $form.CancelButton = $closeButton
 
+$settingsInputControls = @(
+    $enabledCheck, $sharedCheck, $notificationsCheck, $promptBox,
+    $recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox,
+    $maxDelayBox, $incrementBox
+)
+
+function Set-SettingsBusy {
+    param([bool]$Busy)
+    $taskList.Enabled = -not $Busy
+    $retryNowButton.Enabled = -not $Busy
+    $cancelRetryButton.Enabled = -not $Busy
+    $restartRetryButton.Enabled = -not $Busy
+    foreach ($control in $settingsInputControls) {
+        $control.Enabled = -not $Busy
+    }
+    $saveButton.Enabled = -not $Busy
+    $closeButton.Enabled = -not $Busy
+    if ($Busy) {
+        $saveButton.Text = '检查中…'
+        $noticeLabel.Text = '正在执行设置检查，请稍候…'
+        $noticeLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+    } else {
+        $saveButton.Text = '保存设置'
+        Update-DelayPreview
+        Update-ActionButtons
+    }
+}
+
 function Get-StateText {
     param([string]$State)
     switch ($State) {
@@ -359,6 +432,7 @@ function Update-ActionButtons {
     $retryNowButton.Enabled = $false
     $cancelRetryButton.Enabled = $false
     $restartRetryButton.Enabled = $false
+    if ($script:localCommandInProgress) { return }
     if ($taskList.SelectedItems.Count -eq 0) { return }
     $stateName = [string]$taskList.SelectedItems[0].Tag.State
     $retryNowButton.Enabled = $stateName -eq 'pending'
@@ -511,6 +585,7 @@ $incrementBox.add_ValueChanged({ Update-DelayPreview })
 $consecutiveBox.add_ValueChanged({ Update-DelayPreview })
 $closeButton.add_Click({ $form.Close() })
 $saveButton.add_Click({
+    if ($script:localCommandInProgress) { return }
     $prompt = $promptBox.Text.Trim()
     if (-not $prompt) {
         [System.Windows.Forms.MessageBox]::Show('后备重试文字不能为空。', 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
@@ -533,21 +608,61 @@ $saveButton.add_Click({
         paused = -not [bool]$enabledCheck.Checked
         shared_app_server_enabled = [bool]$sharedCheck.Checked
     }
+    $currentConfig = Read-JsonFile $configPath
+    $storedSharedEnabled = if ($currentConfig) { [bool]$currentConfig.shared_app_server_enabled } else { [bool]$config.shared_app_server_enabled }
+    $sharedModeChanged = [bool]$sharedCheck.Checked -ne $storedSharedEnabled
+    $sharedModeEnabling = [bool]$sharedCheck.Checked -and -not $storedSharedEnabled
     $requestPath = Join-Path $DataDir ('settings-request-' + [guid]::NewGuid().ToString('N') + '.json')
+    $script:localCommandInProgress = $true
+    Set-SettingsBusy $true
+    if ($sharedModeEnabling) {
+        $noticeLabel.Text = '正在执行共享后台健康检查，Codex 仍保持原后台…'
+    } elseif ($sharedModeChanged) {
+        $noticeLabel.Text = '正在关闭共享后台并恢复官方后台…'
+    } else {
+        $noticeLabel.Text = '正在保存设置…'
+    }
     try {
         [System.IO.File]::WriteAllText($requestPath, ($payload | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
         $exitCode = Start-LocalCommand 'save-settings' @{
             CODEX_AUTO_RETRY_SETTINGS_FILE = $requestPath
+        }
+        if ($exitCode -eq -2) {
+            throw '设置检查超时，Codex 后台未切换，设置未保存。'
         }
         if ($exitCode -ne 0) { throw '设置校验失败' }
         $noticeLabel.Text = '设置已保存，将在下一次扫描时生效。'
         $noticeLabel.ForeColor = [System.Drawing.Color]::SeaGreen
         Update-RuntimeView
     } catch {
-        $noticeLabel.Text = '保存失败，请检查设置范围。'
+        if ($sharedModeChanged) {
+            $latestConfig = Read-JsonFile $configPath
+            if ($latestConfig) {
+                $sharedCheck.Checked = [bool]$latestConfig.shared_app_server_enabled
+            } else {
+                $sharedCheck.Checked = $storedSharedEnabled
+            }
+        }
+        if ($script:localCommandTimedOut) {
+            $noticeLabel.Text = '保存超时：共享后台健康检查未完成，Codex 仍使用原后台。'
+        } elseif ($sharedModeEnabling) {
+            $noticeLabel.Text = '保存失败：共享后台健康检查未通过，Codex 仍使用原后台。'
+        } elseif ($sharedModeChanged) {
+            $noticeLabel.Text = '保存失败：共享后台未能关闭，设置未完成。'
+        } else {
+            $noticeLabel.Text = '保存失败，请检查设置范围。'
+        }
         $noticeLabel.ForeColor = [System.Drawing.Color]::Firebrick
     } finally {
         Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue
+        $script:localCommandInProgress = $false
+        Set-SettingsBusy $false
+    }
+})
+
+$form.add_FormClosing({
+    if ($script:localCommandProcess) {
+        Stop-LocalCommandProcess $script:localCommandProcess
     }
 })
 

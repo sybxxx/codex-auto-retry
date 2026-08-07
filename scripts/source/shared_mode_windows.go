@@ -44,17 +44,28 @@ func enableSharedAppServer(ctx context.Context, dataDir string, config Config) e
 		return fmt.Errorf("shared app-server health check failed: %w", err)
 	}
 	if err := manager.ValidateOwned(ctx); err != nil {
+		cleanupSharedServer(manager)
 		return fmt.Errorf("shared app-server ownership check failed: %w", err)
 	}
 	endpoint := manager.Endpoint()
 	if !validSharedServerEndpoint(endpoint, config.SharedAppServerPort) {
+		cleanupSharedServer(manager)
 		return errors.New("shared app-server endpoint is not the expected loopback address")
 	}
 	if _, err := setOwnedSharedEnvironment(dataDir, endpoint); err != nil {
-		_ = manager.StopOwned(context.Background())
+		cleanupSharedServer(manager)
 		return err
 	}
 	return nil
+}
+
+func cleanupSharedServer(manager *sharedServerManager) {
+	if manager == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = manager.StopOwned(cleanupCtx)
 }
 
 func disableSharedAppServer(ctx context.Context, dataDir string, config Config) error {
@@ -102,10 +113,16 @@ func (m *sharedServerManager) StopOwned(ctx context.Context) error {
 	if state.Owner != sharedServerOwner || state.Version != appVersion ||
 		!validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) ||
 		!m.SupportsHome(state.CodexHome) || state.ExecutableHash == "" ||
-		state.ExecutableHash != executableHash(state.Executable) || !m.ownsProcess(ctx, state) {
+		state.ExecutableHash != executableHash(state.Executable) {
 		return nil
 	}
 	if processIsRunning(state.PID) {
+		// A live PID must still prove ownership before it can be terminated. A
+		// dead PID, however, cannot be confused with another process and its
+		// stale state file is safe to remove.
+		if !m.ownsProcess(ctx, state) {
+			return nil
+		}
 		if err := terminateProcessTree(ctx, state.PID); err != nil {
 			return err
 		}
