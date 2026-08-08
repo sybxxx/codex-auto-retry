@@ -44,6 +44,19 @@ try {
         throw 'The previous environment value was not restored.'
     }
 
+    $legacyEndpoint = 'ws://127.0.0.1:49621'
+    [Environment]::SetEnvironmentVariable($name, $legacyEndpoint, 'User')
+    $legacyRestored = Restore-CodexAutoRetrySharedEnvironment -DataDir (Join-Path $testRoot 'legacy') -EnvironmentName $name -LegacyOwnedEndpoint $legacyEndpoint -SkipBroadcast
+    if (-not $legacyRestored.Restored -or $null -ne [Environment]::GetEnvironmentVariable($name, 'User')) {
+        throw 'A proven legacy plugin endpoint was not cleared.'
+    }
+    $unownedEndpoint = 'ws://127.0.0.1:59998'
+    [Environment]::SetEnvironmentVariable($name, $unownedEndpoint, 'User')
+    $legacyPreserved = Restore-CodexAutoRetrySharedEnvironment -DataDir (Join-Path $testRoot 'legacy-keep') -EnvironmentName $name -LegacyOwnedEndpoint $legacyEndpoint -SkipBroadcast
+    if ($legacyPreserved.Restored -or [Environment]::GetEnvironmentVariable($name, 'User') -ne $unownedEndpoint) {
+        throw 'An unowned legacy endpoint was overwritten.'
+    }
+
     [Environment]::SetEnvironmentVariable($name, 'ws://127.0.0.1:59999', 'User')
     $conflictCaught = $false
     try {
@@ -72,6 +85,8 @@ try {
         IdempotentUpdate = $true
         OwnedEndpointUpdated = $true
         PreviousValueRestored = $true
+        LegacyOwnedEndpointCleared = $true
+        UnownedEndpointPreserved = $true
         ConflictingValuePreserved = $true
         FailedInstallRolledBack = $true
         ApiKeyUntouched = ([Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User') -eq $apiKeyBefore)

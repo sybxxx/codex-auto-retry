@@ -16,6 +16,15 @@ The default loopback port is `49621`. The watchdog binds it before launching
 Codex so Windows-excluded ranges and occupied ports can be reported separately
 and the shared mode can fail open without a generic health-check message.
 
+Upgrades are fail-open unless `-EnableSharedAppServer` is explicitly supplied:
+the installer disables the stored shared-mode flag, restores the owned endpoint,
+and removes a legacy endpoint only when an old plugin state or startup entry
+proves ownership. A different user endpoint is left untouched.
+
+If the optional mode is already enabled but cannot prepare its backend at
+startup, the watchdog performs the same transition automatically and records the
+failure reason while Codex continues with its official backend.
+
 Installation is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
 environment ownership, and the previous binaries are captured; a failed

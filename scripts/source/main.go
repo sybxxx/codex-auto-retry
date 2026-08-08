@@ -87,17 +87,48 @@ func main() {
 	defer logger.Close()
 	logger.Printf("watchdog starting version=%s", appVersion)
 
-	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
+	configPath := filepath.Join(dataDir, "config.json")
+	config, err := loadOrCreateConfig(configPath)
 	if err != nil {
 		logger.Printf("startup failed category=config")
 		return
 	}
+	if !config.SharedAppServerEnabled {
+		// Fail-open startup also cleans an ownership record left by an older
+		// release, but never guesses at an unrecorded user endpoint here.
+		if _, cleanupErr := restoreOwnedSharedEnvironment(dataDir); cleanupErr != nil {
+			logger.Printf("shared app-server cleanup failed category=environment")
+		}
+		manager := newSharedServerManager(config, dataDir, logger)
+		if cleanupErr := manager.StopOwned(context.Background()); cleanupErr != nil {
+			logger.Printf("shared app-server cleanup failed category=process")
+		}
+	}
 	runner := newAppResumeRunner(config, dataDir, logger)
 	var prepareErr error
+	startupFailOpenReason := ""
 	if config.SharedAppServerEnabled || len(discoverSessionRoots(config)) > 0 {
 		prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		prepareErr = runner.Prepare(prepareCtx)
 		prepareCancel()
+	}
+	prepareReason := controllerFailureReason(DispatchResult{}, prepareErr)
+	if config.SharedAppServerEnabled && prepareErr != nil && controllerFailureNeedsFailOpen(prepareReason) {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if cleanupErr := disableSharedAppServer(cleanupCtx, dataDir, config); cleanupErr != nil {
+			logger.Printf("shared app-server fail-open cleanup failed category=%s", prepareReason)
+		}
+		cleanupCancel()
+		startupFailOpenReason = prepareReason
+		config.SharedAppServerEnabled = false
+		if writeErr := config.validate(); writeErr == nil {
+			if writeErr = writeJSONAtomic(configPath, config); writeErr != nil {
+				logger.Printf("shared app-server fail-open setting was not persisted category=config")
+			}
+		} else {
+			logger.Printf("shared app-server fail-open setting was invalid category=config")
+		}
+		logger.Printf("shared app-server disabled after startup failure category=%s", prepareReason)
 	}
 	daemon, err := newDaemon(config, dataDir, logger, runner)
 	if err != nil {
@@ -105,10 +136,16 @@ func main() {
 		return
 	}
 	if !config.SharedAppServerEnabled {
-		daemon.controllerState = "shared_app_server_disabled"
-		logger.Printf("shared app-server disabled; Codex remains on its official backend")
+		if startupFailOpenReason != "" {
+			daemon.controllerState = startupFailOpenReason
+			daemon.lastError = startupFailOpenReason
+			logger.Printf("shared app-server disabled; Codex remains on its official backend category=%s", startupFailOpenReason)
+		} else {
+			daemon.controllerState = "shared_app_server_disabled"
+			logger.Printf("shared app-server disabled; Codex remains on its official backend")
+		}
 	} else if prepareErr != nil {
-		daemon.lastError = controllerFailureReason(DispatchResult{}, prepareErr)
+		daemon.lastError = prepareReason
 		daemon.controllerState = daemon.lastError
 		logger.Printf("controller preparation failed category=%s", daemon.lastError)
 	} else {

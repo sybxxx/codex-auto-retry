@@ -559,6 +559,17 @@ func controllerFailureNeedsAction(reason string) bool {
 	}
 }
 
+func controllerFailureNeedsFailOpen(reason string) bool {
+	switch reason {
+	case "shared_app_server_port_reserved", "shared_app_server_port_conflict",
+		"codex_background_channel_unavailable", "codex_background_dispatch_failed",
+		"controller_timeout", "controller_invalid_result", "controller_unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	available := d.config.MaxParallelRetries - len(d.active)
 	if available <= 0 {
@@ -603,15 +614,19 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	if d.paused {
 		return jobs
 	}
-	if d.controllerState == "shared_app_server_disabled" {
+	if !d.config.SharedAppServerEnabled || d.controllerState == "shared_app_server_disabled" {
 		// The fail-open mode deliberately has no recovery transport. Do not
 		// promote a due item to AwaitingRetry: doing so looks like a retry was
 		// started and then failed, even though Codex never received a request.
+		stopReason := "shared_app_server_disabled"
+		if controllerFailureNeedsFailOpen(d.controllerState) {
+			stopReason = d.controllerState
+		}
 		for threadID, thread := range d.state.Threads {
 			if thread.Pending == nil || thread.Pending.DueAt.After(now) || thread.Awaiting != nil {
 				continue
 			}
-			d.stopPendingForControllerLocked(threadID, thread, now, "shared_app_server_disabled")
+			d.stopPendingForControllerLocked(threadID, thread, now, stopReason)
 		}
 		return jobs
 	}

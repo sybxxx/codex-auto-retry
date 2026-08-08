@@ -10,7 +10,28 @@ $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$runName = 'CodexAutoRetry'
 . (Join-Path $PSScriptRoot 'environment.ps1')
+
+$runProperty = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
+$runValue = if ($null -eq $runProperty) { '' } else { [string]$runProperty.$runName }
+$stateEndpoint = $null
+$statePath = Join-Path $installDir 'shared-server.json'
+if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+    try {
+        $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json
+        if ([string]$state.owner -eq 'codex-auto-retry' -and [string]$state.endpoint -match '^ws://127\.0\.0\.1:\d+$') {
+            $stateEndpoint = [string]$state.endpoint
+        }
+    } catch { }
+}
+$legacyOwnedEndpoint = @()
+if ($stateEndpoint) { $legacyOwnedEndpoint += $stateEndpoint }
+if (-not $legacyOwnedEndpoint -and $runValue.IndexOf((Join-Path $installDir 'codex-auto-retry.exe'), [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    $legacyPort = Get-CodexAutoRetrySharedAppServerPort -ConfigPath (Join-Path $installDir 'config.json')
+    $legacyOwnedEndpoint += 'ws://127.0.0.1:' + $legacyPort
+    $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
+}
 
 if (Test-Path -LiteralPath $installDir) {
     New-Item -ItemType File -Force -Path $stopSignal | Out-Null
@@ -38,8 +59,8 @@ if ($settingsProcesses) {
     $settingsProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
-Remove-ItemProperty -Path $runKey -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
-$environmentResult = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir
+Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
+$environmentResult = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir -LegacyOwnedEndpoint $legacyOwnedEndpoint
 $sharedServerStopped = Stop-CodexAutoRetrySharedServerIfUnused -DataDir $installDir
 if (Test-Path -LiteralPath $installDir) {
     if ($KeepData) {

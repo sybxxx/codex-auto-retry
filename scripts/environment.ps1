@@ -122,11 +122,25 @@ function Restore-CodexAutoRetrySharedEnvironment {
     param(
         [Parameter(Mandatory = $true)][string]$DataDir,
         [string]$EnvironmentName = 'CODEX_APP_SERVER_WS_URL',
+        [AllowNull()][string[]]$LegacyOwnedEndpoint,
         [switch]$SkipBroadcast
     )
     $name = $EnvironmentName
     $backupPath = Join-Path $DataDir 'environment-backup.json'
     if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+        # Releases before ownership records existed could leave the endpoint
+        # behind. Only clear that legacy value when the caller has independently
+        # proved that this exact endpoint belonged to the plugin.
+        $current = [Environment]::GetEnvironmentVariable($name, 'User')
+        foreach ($endpoint in @($LegacyOwnedEndpoint)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$endpoint) -and
+                (Test-CodexAutoRetryEnvironmentValue $current ([string]$endpoint))) {
+                [Environment]::SetEnvironmentVariable($name, $null, 'User')
+                Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+                if (-not $SkipBroadcast) { Send-CodexAutoRetryEnvironmentChange }
+                return [pscustomobject]@{ Restored = $true; ChangedByUser = $false }
+            }
+        }
         return [pscustomobject]@{ Restored = $false; ChangedByUser = $false }
     }
     try { $backup = Get-Content -Raw -Encoding UTF8 -LiteralPath $backupPath | ConvertFrom-Json }

@@ -103,6 +103,7 @@ $oldEnvironmentBackupBytes = $null
 $oldEnvironmentBackupExisted = $false
 $oldSharedStateBytes = $null
 $oldSharedStateExisted = $false
+$legacyOwnedEndpoint = $null
 $environmentChanged = $false
 $startedProcess = $null
 $installationSucceeded = $false
@@ -117,6 +118,30 @@ try {
     $oldSharedStateExisted = Test-Path -LiteralPath $sharedStatePath -PathType Leaf
     if ($oldSharedStateExisted) { $oldSharedStateBytes = [System.IO.File]::ReadAllBytes($sharedStatePath) }
     if (Test-Path -LiteralPath $configPath -PathType Leaf) { $oldConfigBytes = [System.IO.File]::ReadAllBytes($configPath) }
+    if ($oldSharedStateExisted) {
+        try {
+            $oldSharedState = Get-Content -Raw -Encoding UTF8 -LiteralPath $sharedStatePath | ConvertFrom-Json
+            if ([string]$oldSharedState.owner -eq 'codex-auto-retry' -and
+                [string]$oldSharedState.endpoint -match '^ws://127\.0\.0\.1:\d+$') {
+                $legacyOwnedEndpoint = [string]$oldSharedState.endpoint
+            }
+        } catch { }
+    }
+    if (-not $legacyOwnedEndpoint -and $oldRunValue -and
+        $oldRunValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        try {
+            $oldConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+            if ([bool]$oldConfig.shared_app_server_enabled) {
+                $oldPort = Get-CodexAutoRetrySharedAppServerPort -ConfigPath $configPath
+                $legacyOwnedEndpoint = 'ws://127.0.0.1:' + $oldPort
+            }
+        } catch { }
+    }
+    if (-not $legacyOwnedEndpoint -and $oldRunValue -and
+        $oldRunValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        $legacyOwnedEndpoint = @('ws://127.0.0.1:49621', 'ws://127.0.0.1:49321')
+    }
     foreach ($pair in @(
         @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe')),
         @($mcpTarget, (Join-Path $backupRoot 'codex-auto-retry-mcp.exe')),
@@ -131,10 +156,11 @@ try {
     }
 
     Stop-InstalledRuntime
-    if (-not $EnableSharedAppServer -and (Test-Path -LiteralPath $environmentBackupPath -PathType Leaf)) {
+    if (-not $EnableSharedAppServer) {
         # A previous release may have installed the endpoint by default. Remove
-        # only that owned value before the new fail-open runtime starts.
-        $null = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir
+        # only the recorded value, or a legacy value proven to belong to this
+        # installation, before the new fail-open runtime starts.
+        $null = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir -LegacyOwnedEndpoint $legacyOwnedEndpoint
     }
 
     $candidateRoot = Join-Path $transactionRoot 'candidate'
@@ -153,7 +179,7 @@ try {
     New-Item -Path $runKey -Force | Out-Null
     Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" run' -f $watchdogTarget)
 
-    if ($EnableSharedAppServer) { Set-ConfigSharedMode $true }
+    Set-ConfigSharedMode ([bool]$EnableSharedAppServer)
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
     $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList 'run' -WindowStyle Hidden -PassThru

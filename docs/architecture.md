@@ -187,6 +187,10 @@ it with the hidden-console server.
 - The default port is `49621`. A TCP4 bind preflight runs before the Codex
   process starts, classifying Windows-excluded ports separately from occupied
   ports so management surfaces can show an actionable reason.
+- An upgrade without explicit shared-mode opt-in disables the stored mode and
+  restores only plugin-owned endpoint values before starting the watchdog.
+- If an enabled backend cannot prepare at startup, the watchdog clears its
+  owned endpoint and persists the fail-open mode with a diagnostic reason.
 - The watchdog records the server PID, executable, endpoint, Codex home, and
   start time. A responsive port is rejected unless its live process still
   matches that owned record.

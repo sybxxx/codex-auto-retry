@@ -41,20 +41,33 @@ $beforeEndpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL
 $stateEndpoint = $null
 $statePath = Join-Path $dataRoot 'shared-server.json'
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-    try { $stateEndpoint = [string](Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json).endpoint } catch { $stateEndpoint = $null }
+    try {
+        $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json
+        if ([string]$state.owner -eq 'codex-auto-retry' -and [string]$state.endpoint -match '^ws://127\.0\.0\.1:\d+$') {
+            $stateEndpoint = [string]$state.endpoint
+        }
+    } catch { $stateEndpoint = $null }
+}
+
+$runProperty = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
+$runValue = if ($null -eq $runProperty) { '' } else { [string]$runProperty.$runName }
+$legacyOwnedEndpoint = @()
+if ($stateEndpoint) { $legacyOwnedEndpoint += $stateEndpoint }
+if (-not $legacyOwnedEndpoint -and $runValue.IndexOf($watchdog, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    $legacyPort = Get-CodexAutoRetrySharedAppServerPort -ConfigPath (Join-Path $dataRoot 'config.json')
+    $legacyOwnedEndpoint += 'ws://127.0.0.1:' + $legacyPort
+    $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
 }
 
 Stop-ExactExecutable $watchdog
 Stop-ExactExecutable $mcp
 $sharedStopped = Stop-OwnedSharedServer $dataRoot
 
-$runProperty = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
-$runValue = if ($null -eq $runProperty) { '' } else { [string]$runProperty.$runName }
 if ([string]::IsNullOrWhiteSpace($runValue) -or $runValue.IndexOf($watchdog, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
     Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
 }
 
-$environmentResult = Restore-CodexAutoRetrySharedEnvironment -DataDir $dataRoot
+$environmentResult = Restore-CodexAutoRetrySharedEnvironment -DataDir $dataRoot -LegacyOwnedEndpoint $legacyOwnedEndpoint
 Send-CodexAutoRetryEnvironmentChange
 
 $afterEndpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')

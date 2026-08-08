@@ -138,4 +138,16 @@ func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
 	if got := controllerFailureReason(DispatchResult{Outcome: outcomeRetryLater, Reason: "shared_app_server_disabled"}, nil); got != "shared_app_server_disabled" || !controllerFailureNeedsAction(got) {
 		t.Fatalf("disabled shared mode was not treated as a terminal fail-open condition: %s", got)
 	}
+	for _, reason := range []string{
+		"shared_app_server_port_reserved", "shared_app_server_port_conflict",
+		"codex_background_channel_unavailable", "codex_background_dispatch_failed",
+		"controller_timeout", "controller_invalid_result", "controller_unavailable",
+	} {
+		if !controllerFailureNeedsFailOpen(reason) {
+			t.Fatalf("fatal controller reason %s was not marked fail-open", reason)
+		}
+	}
+	if controllerFailureNeedsFailOpen("codex_restart_required") || controllerFailureNeedsFailOpen("codex_not_running") {
+		t.Fatal("recoverable Codex lifecycle states were incorrectly marked fail-open")
+	}
 }

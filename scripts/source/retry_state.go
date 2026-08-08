@@ -43,7 +43,9 @@ func (d *daemon) reloadConfigLocked() {
 	}
 	d.config = config
 	if !config.SharedAppServerEnabled {
-		d.controllerState = "shared_app_server_disabled"
+		if !controllerFailureNeedsFailOpen(d.controllerState) {
+			d.controllerState = "shared_app_server_disabled"
+		}
 	} else if d.controllerState == "shared_app_server_disabled" {
 		d.controllerState = "starting"
 	}

@@ -47,6 +47,7 @@ try {
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
@@ -114,6 +115,7 @@ try {
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\uninstall.ps1',
         'payload\codex-auto-retry\scripts\smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\environment-smoke-test.ps1'
@@ -147,6 +149,14 @@ try {
         -not $settingsSource.Contains('$localCommandExitPortReserved') -or
         -not $settingsSource.Contains($reservedPortMessage)) {
         throw 'Tray settings does not keep local commands responsive and bounded.'
+    }
+    $installerSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\install.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if (-not $installerSource.Contains('Set-ConfigSharedMode ([bool]$EnableSharedAppServer)') -or
+        -not $installerSource.Contains('-LegacyOwnedEndpoint')) {
+        throw 'Installer does not enforce fail-open shared-backend upgrades.'
     }
 
     $savedPreference = $ErrorActionPreference
@@ -190,6 +200,7 @@ try {
         DirectMcpInstall = 'passed'
         UninstallerDryRun = 'passed'
         SettingsCommandWait = 'bounded-and-responsive'
+        FailOpenInstallGuard = 'present'
         Status = 'release verified'
     }
 }

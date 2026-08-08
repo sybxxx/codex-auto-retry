@@ -69,10 +69,10 @@ func cleanupSharedServer(manager *sharedServerManager) {
 }
 
 func disableSharedAppServer(ctx context.Context, dataDir string, config Config) error {
-	if _, err := restoreOwnedSharedEnvironment(dataDir); err != nil {
+	manager := newSharedServerManager(config, dataDir, nil)
+	if _, err := restoreOwnedSharedEnvironment(dataDir, manager.Endpoint()); err != nil {
 		return err
 	}
-	manager := newSharedServerManager(config, dataDir, nil)
 	return manager.StopOwned(ctx)
 }
 
@@ -171,10 +171,13 @@ func setOwnedSharedEnvironment(dataDir, desired string) (sharedEnvironmentResult
 	}
 	backup.InstalledValue = desired
 	backup.RecordedAt = time.Now().UTC()
-	if err := writeUserEnvironment(sharedAppServerEnvironmentName, desired); err != nil {
+	// Persist ownership before changing the user environment. If the process is
+	// interrupted after the registry write, the next fail-open cleanup can still
+	// identify and restore the endpoint.
+	if err := writeJSONAtomic(backupPath, backup); err != nil {
 		return sharedEnvironmentResult{}, err
 	}
-	if err := writeJSONAtomic(backupPath, backup); err != nil {
+	if err := writeUserEnvironment(sharedAppServerEnvironmentName, desired); err != nil {
 		_ = restoreUserEnvironment(sharedAppServerEnvironmentName, current, present)
 		if backupExisted {
 			_ = os.WriteFile(backupPath, backupBytes, 0o600)
@@ -187,10 +190,25 @@ func setOwnedSharedEnvironment(dataDir, desired string) (sharedEnvironmentResult
 	return sharedEnvironmentResult{Changed: !present || current != desired}, nil
 }
 
-func restoreOwnedSharedEnvironment(dataDir string) (sharedEnvironmentResult, error) {
+func restoreOwnedSharedEnvironment(dataDir string, legacyEndpoints ...string) (sharedEnvironmentResult, error) {
 	backupPath := filepath.Join(dataDir, "environment-backup.json")
 	data, err := os.ReadFile(backupPath)
 	if errors.Is(err, os.ErrNotExist) {
+		current, present, readErr := readUserEnvironment(sharedAppServerEnvironmentName)
+		if readErr != nil {
+			return sharedEnvironmentResult{}, readErr
+		}
+		if present {
+			for _, endpoint := range legacyEndpoints {
+				if validSharedServerEndpoint(endpoint, endpointPort(endpoint)) && current == endpoint {
+					if err := restoreUserEnvironment(sharedAppServerEnvironmentName, "", false); err != nil {
+						return sharedEnvironmentResult{}, err
+					}
+					broadcastEnvironmentChange()
+					return sharedEnvironmentResult{Restored: true}, nil
+				}
+			}
+		}
 		return sharedEnvironmentResult{}, nil
 	}
 	if err != nil {
