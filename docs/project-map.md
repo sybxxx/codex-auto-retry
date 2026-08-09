@@ -8,15 +8,17 @@
 | `.gitignore`, `.gitattributes` | Keep local runtime state out of public source and make cross-platform line endings deterministic. |
 | `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
-| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale services without inspecting conversation content. |
-| `scripts/install.ps1` | Transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, registers per-user startup, and rolls back on failure. |
+| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services without inspecting conversation content. |
+| `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, registers per-user startup, and rolls back on failure. |
+| `scripts/path-safety.ps1` | Detects Windows package redirection or directory links before runtime installation can be mistaken for a host installation. |
+| `scripts/path-safety-smoke-test.ps1` | Verifies ordinary paths, missing-path probe cleanup, redirected-path rejection, and non-destructive failure. |
 | `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration, and optionally preserves runtime data. |
 | `scripts/safe-disable.ps1` | Independent break-glass cleanup for plugin-owned processes, startup, and endpoint; never removes chat data or user-owned `CODEX_API_KEY`. |
 | `docs/shared-backend-safety.md` | Operational contract for fail-open startup, opt-in shared mode, transactional rollback, emergency disable, and stale-heartbeat diagnostics. |
 | `scripts/environment.ps1` | Shared current-user environment ownership, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
 | `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds both Windows executables with the GUI subsystem. |
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
-| `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs mutation-free installer/uninstaller checks. |
+| `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs path-safety plus mutation-free installer/uninstaller checks. |
 | `scripts/mcp-smoke-test.ps1` | Verifies MCP discovery, app resource metadata, isolated settings updates, and queued controls. |
 | `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible non-overlapping settings form, concurrent refresh stability, settings-process shutdown, heartbeat, and clean status shutdown. |
 | `scripts/smoke-test.ps1` | Runs the isolated shared-server and environment-ownership smoke tests. |
@@ -94,6 +96,9 @@ Installation replaces only the owned plugin source after taking a temporary
 rollback copy. It updates `~/.agents/plugins/marketplace.json` through JSON
 parsing while retaining unrelated marketplace entries, uses Codex's own
 `plugin add` command, and delegates runtime replacement to `scripts/install.ps1`.
+Before changing the plugin or runtime, release deployment rejects a
+`%LOCALAPPDATA%` target redirected into the Codex package `LocalCache`; that
+copy is not a host installation and cannot satisfy startup verification.
 If the installed source is a Git checkout, its `.git` directory or worktree
 pointer is restored after the payload replacement, so an upgrade does not erase
 local history or remote configuration.

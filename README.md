@@ -209,6 +209,16 @@ After installing or updating the plugin, open a new Codex task so the updated
 MCP tools and embedded panel are discovered. The background watchdog itself is
 restarted and verified by the installer immediately.
 
+Do not run the final runtime installation from a Codex tool shell when Windows
+redirects `%LOCALAPPDATA%` into the Codex package `LocalCache`. That redirected
+copy is visible to the tool process but not to Explorer or Windows sign-in, so
+it is not a valid global watchdog installation. Both the release deployer and
+runtime installer detect this condition before changing plugin, startup, or
+environment state and tell the user to run the installer from Explorer or a
+normal desktop PowerShell. `scripts/status.ps1` reports
+`RuntimePathRedirected=true` and `runtime_path_redirected` instead of claiming
+that the redirected copy is installed.
+
 Maintainers build a release with `scripts/build-release.ps1` and verify the
 resulting archive with `scripts/release-test.ps1`. Release output must be kept
 outside the plugin source tree; the builder accepts `-OutputDirectory` for that

@@ -181,7 +181,7 @@ function Install-Runtime {
     if ($EnableSharedAppServer) { $arguments += '-EnableSharedAppServer' }
     $output = (& powershell.exe @arguments 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
-        throw "The watchdog installer failed. Exit code: $LASTEXITCODE"
+        throw "The watchdog installer failed. Exit code: $LASTEXITCODE`n$($output.Trim())"
     }
     return $output
 }
@@ -342,6 +342,15 @@ if ($DryRun) {
         CodexCli = $cli
     }
     return
+}
+
+if (-not $SkipRuntimeInstall) {
+    $pathSafety = Join-Path $payloadRoot 'scripts\path-safety.ps1'
+    if (-not (Test-Path -LiteralPath $pathSafety -PathType Leaf)) {
+        throw 'The payload is missing the runtime path-safety helper.'
+    }
+    . $pathSafety
+    [void](Assert-CodexAutoRetryHostPath -Path $runtimePath)
 }
 
 Get-ChildItem -LiteralPath $packageRootPath -File -Recurse -Force -ErrorAction SilentlyContinue |

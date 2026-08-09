@@ -446,6 +446,16 @@ independent `scripts/safe-disable.ps1` restore only the endpoint recorded in
 `environment-backup.json`; neither path removes `CODEX_API_KEY` or chat/state
 data by default.
 
+Before any release or direct runtime mutation, `path-safety.ps1` probes the
+intended `%LOCALAPPDATA%\CodexAutoRetry` directory. A packaged Codex tool
+process can see a path that Windows has redirected into the package
+`LocalCache`, even though Explorer and current-user startup cannot see the host
+directory. A non-empty redirected target is therefore a terminal install
+error, not a successful deployment. The probe uses an empty uniquely named
+sibling only when the runtime path does not exist and always removes it.
+Status keeps the same distinction visible through `RuntimePathRedirected` and
+`runtime_path_redirected`.
+
 The shared-server ownership record includes the plugin owner, version, PID,
 absolute executable, endpoint, and Codex home. Cleanup checks all of those
 fields plus the live process command line before stopping a process. Status

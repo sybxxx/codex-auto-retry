@@ -45,6 +45,8 @@ try {
         'payload\codex-auto-retry\.mcp.json',
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
+        'payload\codex-auto-retry\scripts\path-safety.ps1',
+        'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
@@ -111,12 +113,15 @@ try {
     foreach ($relative in @(
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\install.ps1',
+        'payload\codex-auto-retry\scripts\path-safety.ps1',
+        'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\uninstall.ps1',
         'payload\codex-auto-retry\scripts\smoke-test.ps1',
         'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\status.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\environment-smoke-test.ps1'
     )) {
@@ -155,13 +160,30 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     if (-not $installerSource.Contains('Set-ConfigSharedMode ([bool]$EnableSharedAppServer)') -or
+        -not $installerSource.Contains('Assert-CodexAutoRetryHostPath') -or
+        -not $installerSource.Contains('-WorkingDirectory $installDir') -or
         -not $installerSource.Contains('-LegacyOwnedEndpoint')) {
         throw 'Installer does not enforce fail-open shared-backend upgrades.'
+    }
+    $deploySource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'deploy.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $statusSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\status.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if (-not $deploySource.Contains('Assert-CodexAutoRetryHostPath') -or
+        -not $statusSource.Contains('runtime_path_redirected')) {
+        throw 'Release does not reject or report a redirected runtime path.'
     }
 
     $savedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+        $pathSafetyOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1') 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "Runtime path-safety test failed:`n$pathSafetyOutput" }
+
         $installOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'deploy.ps1') -DryRun -SkipCodexCheck 2>&1 | Out-String)
         $installExitCode = $LASTEXITCODE
         if ($installExitCode -ne 0) { throw "Installer dry run failed:`n$installOutput" }
@@ -201,6 +223,7 @@ try {
         UninstallerDryRun = 'passed'
         SettingsCommandWait = 'bounded-and-responsive'
         FailOpenInstallGuard = 'present'
+        RuntimePathGuard = 'verified'
         Status = 'release verified'
     }
 }

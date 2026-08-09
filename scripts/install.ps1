@@ -17,6 +17,7 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'CodexAutoRetry'
 $environmentName = 'CODEX_APP_SERVER_WS_URL'
 . (Join-Path $PSScriptRoot 'environment.ps1')
+. (Join-Path $PSScriptRoot 'path-safety.ps1')
 
 function Get-RunValue {
     $property = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
@@ -87,6 +88,7 @@ function Wait-Heartbeat {
 
 if (-not (Test-Path -LiteralPath $watchdogSource -PathType Leaf)) { throw "Built watchdog not found: $watchdogSource" }
 if (-not (Test-Path -LiteralPath $mcpSource -PathType Leaf)) { throw "Built MCP server not found: $mcpSource" }
+[void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
 $transactionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('codex-auto-retry-runtime-' + [guid]::NewGuid().ToString('N'))
 $backupRoot = Join-Path $transactionRoot 'previous'
@@ -182,7 +184,7 @@ try {
     Set-ConfigSharedMode ([bool]$EnableSharedAppServer)
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
-    $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList 'run' -WindowStyle Hidden -PassThru
+    $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList 'run' -WorkingDirectory $installDir -WindowStyle Hidden -PassThru
     $status = Wait-Heartbeat -ProcessId $startedProcess.Id -RequireSharedReady:$EnableSharedAppServer
 
     if ($EnableSharedAppServer) {

@@ -109,7 +109,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 Report whether the process is running, its version and PID, pause state, MCP
 server installation, the last scan time, pending and active retry counts, and
 the privacy-safe log path. Do not read Codex conversation content while
-checking status.
+checking status. Treat `RuntimePathRedirected=true` or
+`runtime_path_redirected` as not installed: a package `LocalCache` copy is not
+visible to Explorer or Windows sign-in even when the Codex tool process can
+read it.
 
 ## Install Or Repair
 
@@ -120,11 +123,19 @@ and installer:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\build.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\mcp-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\tray-smoke-test.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\path-safety-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\install.ps1"
 ```
+
+Builds and isolated tests may run from a Codex task. The final `install.ps1`
+must run from Windows Explorer or a normal desktop PowerShell when the status
+reports runtime path redirection. The installer deliberately stops before
+changing the host runtime, startup entry, or environment in that situation.
+Never report the redirected `OpenAI.Codex_*\LocalCache` copy as installed and
+never compensate by publishing a shared endpoint that points at it.
 
 The MCP smoke test uses isolated local data and verifies all management tools,
 the embedded HTML resource, prompt changes, pause state, and atomic control
