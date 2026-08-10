@@ -82,6 +82,42 @@ func TestVisibleProgressResetsOnlyConsecutiveRetryCount(t *testing.T) {
 	}
 }
 
+func TestCCSwitchUpstream400UsesBoundedRecoveryChain(t *testing.T) {
+	config := isolatedConfig(t.TempDir())
+	config.MaxRecoveryAttempts = 2
+	config.MaxConsecutiveRetries = 5
+	d := newTestDaemon(t, config, successfulRunner())
+	threadID := "019fa94e-0103-7183-b405-36bd307b6dca"
+	errorText := `{"error":{"message":"CC Switch local proxy failed while handling Codex endpoint /responses. upstream_status: HTTP 400; cause: Upstream request failed","type":"upstream_error","code":"cc_switch_upstream_error","upstream_status":400}}`
+	now := time.Now().UTC()
+
+	d.handleEventLocked(scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "task_complete", TurnID: "initial", Timestamp: now, ErrorText: errorText,
+	}}, now)
+	first := d.state.Threads[threadID].Pending
+	if first == nil || first.Class != classTransient || first.Attempt != 1 {
+		t.Fatalf("CC Switch upstream 400 was not scheduled as a retry: %+v", first)
+	}
+
+	setRunningRetry(d, threadID, first, "retry-1", false)
+	d.handleEventLocked(scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "task_complete", TurnID: "retry-1", Timestamp: now.Add(time.Minute), ErrorText: errorText,
+	}}, now.Add(time.Minute))
+	second := d.state.Threads[threadID].Pending
+	if second == nil || second.Class != classTransient || second.Attempt != 2 {
+		t.Fatalf("CC Switch upstream 400 did not continue the same retry chain: %+v", second)
+	}
+
+	setRunningRetry(d, threadID, second, "retry-2", false)
+	d.handleEventLocked(scannedEvent{ThreadID: threadID, Event: RelevantEvent{
+		Kind: "task_complete", TurnID: "retry-2", Timestamp: now.Add(2 * time.Minute), ErrorText: errorText,
+	}}, now.Add(2*time.Minute))
+	stopped := d.state.Threads[threadID].Stopped
+	if stopped == nil || stopped.Reason != "recovery_attempt_limit" || stopped.Attempts != 2 || stopped.MaxAttempts != 2 {
+		t.Fatalf("CC Switch upstream 400 did not stop at the configured bound: %+v", stopped)
+	}
+}
+
 func TestProgressOutsideCorrelatedRetryDoesNotResetCounter(t *testing.T) {
 	threadID := "019fa94e-0103-7183-b405-36bd307b6db5"
 	now := time.Now().UTC()

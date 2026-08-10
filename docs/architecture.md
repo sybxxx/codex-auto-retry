@@ -232,8 +232,10 @@ Transient and empty-response failures receive bounded retries. Every automatic
 recovery increments the per-fault counter (15 by default, configurable from 1
 to 1000). A second counter tracks consecutive retries without a visible assistant
 reply or completed tool result (5 by default, configurable from 1 to 100). These failures include network and
-stream interruptions, timeouts, HTTP 408/425/429, HTTP 5xx, provider overload,
-cooldown, successful completions without a final reply, and temporarily
+stream interruptions, timeouts, HTTP 408/425/429, HTTP 5xx, the structured CC
+Switch `cc_switch_upstream_error` wrapper with `upstream_status=400` and
+`Upstream request failed`, provider overload, cooldown, successful completions
+without a final reply, and temporarily
 unavailable authentication services. An empty automatic retry remains a failure
 until the matching completion contains a real final reply. Visible progress resets
 only the no-progress counter; it never erases the per-fault safety budget. Fixed
@@ -244,9 +246,10 @@ follow the no-progress counter, so useful progress restarts the wait sequence.
 Generic 401/403 authentication errors have a conservative budget that can lower
 both configured limits. Unknown provider errors keep a separate recovery safety
 budget, but continue to use the configured consecutive no-progress limit so an
-internal classifier ceiling cannot be displayed as the user's setting. Invalid payloads, context limits,
-missing models, policy errors, approval failures, permissions, and user
-cancellation are never retried. Controller transport failures are tracked
+internal classifier ceiling cannot be displayed as the user's setting. Invalid
+payloads, context limits, missing models, policy errors, approval failures,
+permissions, ordinary HTTP 400/404 errors, and user cancellation are never
+retried. Controller transport failures are tracked
 separately and consume neither provider retry counter. They are bounded by
 `controller_failure_limit`, including read failures while checking an
 acknowledged retry turn. `codex_not_running` is terminal for the affected

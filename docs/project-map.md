@@ -150,8 +150,10 @@ by a later automatic turn.
 
 ## Extension Points
 
-- Add provider wording in `classifier.go`; preserve permanent-error checks
-  before broad transient matches.
+- Add provider wording or a narrowly validated structured wrapper in
+  `classifier.go`; preserve permanent-error checks before broad transient
+  matches. The CC Switch 400 exception must keep its exact code, upstream
+  status, and cause/message checks.
 - Add session locations through `config.json` `session_roots`; do not hard-code
   provider credentials.
 - Adapt protocol calls in `shared_controller.go` and transport validation in

@@ -69,8 +69,10 @@ behavior remains independent of whether either settings surface is open.
   successful turn cannot falsely mark a retry as recovered.
 
 The watchdog retries network failures, timeouts, rate limits, HTTP 5xx
-responses, interrupted streams, successful completions with no final model
-reply, and temporarily unavailable authentication services within the
+responses, the structured CC Switch `cc_switch_upstream_error` wrapper when
+its `upstream_status` is 400 and the cause is `Upstream request failed`,
+interrupted streams, successful completions with no final model reply, and
+temporarily unavailable authentication services within the
 configured dual limits. Ambiguous or
 persistent authentication failures may have a lower safety limit. Unknown
 provider failures keep their separate recovery safety budget but still use the
@@ -82,8 +84,9 @@ Codex is open again. Other local controller failures stop after three consecutiv
 failures by default instead of refreshing a countdown forever. A task that
 still uses Codex's old per-process transport stops with
 `codex_restart_required` and asks for one Codex restart.
-User cancellation, invalid requests, missing models, context length errors,
-policy failures, permission failures, and approval failures are not retried.
+User cancellation, invalid requests, ordinary HTTP 400/404 errors, missing
+models, context length errors, policy failures, permission failures, and
+approval failures are not retried.
 
 Runtime state is written atomically. A temporary Windows sharing violation from
 an indexer, security scanner, or settings reader is retried for several seconds;

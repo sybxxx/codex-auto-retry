@@ -198,9 +198,11 @@ the fallback prompt or app-server error bodies.
 
 - Bounded by both the per-fault recovery budget and the consecutive no-progress
   guard: network
-  failures, timeouts, HTTP 408/425/429 and 5xx responses, interrupted streams,
-  HTTP 200 completions with no final model reply, temporary provider
-  authentication outages, cooldown, and provider overload.
+  failures, timeouts, HTTP 408/425/429 and 5xx responses, the structured CC
+  Switch `cc_switch_upstream_error` wrapper when `upstream_status=400` and the
+  cause is `Upstream request failed`, interrupted streams, HTTP 200 completions
+  with no final model reply, temporary provider authentication outages,
+  cooldown, and provider overload.
 - Repeated empty replies from an active goal share one chain. Exhaustion leaves
   a visible stopped entry and changes the native goal from `active` to
   `blocked`; failure of that local control action uses the configured controller
@@ -208,7 +210,8 @@ the fallback prompt or app-server error bodies.
   stopped with an explicit goal-block failure reason.
 - Lower limited budgets may apply to generic 401/403 authentication failures
   and unknown errors.
-- No retry: user cancellation, invalid request or payload, missing model,
+- No retry: user cancellation, invalid request or payload, ordinary HTTP 400/404
+  errors, missing model,
   context limit, policy, approval, or permission failures.
 
 If a permanent login failure remains after the limited retry budget, explain

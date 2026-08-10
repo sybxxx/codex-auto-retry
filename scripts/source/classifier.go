@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +20,13 @@ func classifyFailure(errorText string, cfg Config) RetryDecision {
 		"interrupted by user", "aborted by user", "turn aborted", "task was cancelled",
 	) {
 		return RetryDecision{Class: classNone, Reason: "user cancellation"}
+	}
+
+	// CC Switch can wrap a recoverable upstream outage in HTTP 400. The
+	// structured error is more specific than the status code, so recognize it
+	// before the generic permanent-400 rule below.
+	if isCCSwitchUpstreamFailure(text) {
+		return RetryDecision{Retry: true, Class: classTransient, Reason: "CC Switch upstream request failed"}
 	}
 
 	if containsAny(text,
@@ -112,4 +120,89 @@ func extractStatus(text string) int {
 	}
 	status, _ := strconv.Atoi(match[1])
 	return status
+}
+
+// isCCSwitchUpstreamFailure accepts only the known CC Switch wrapper for a
+// recoverable upstream request failure. Other 400 responses must continue to
+// follow the permanent-error policy.
+func isCCSwitchUpstreamFailure(text string) bool {
+	var value any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &value); err != nil {
+		return false
+	}
+	return matchesCCSwitchUpstreamFailure(value, 0)
+}
+
+func matchesCCSwitchUpstreamFailure(value any, depth int) bool {
+	if depth > 4 {
+		return false
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		code, codeOK := jsonStringField(typed, "code")
+		status, statusOK := jsonStatusField(typed, "upstream_status")
+		message := strings.ToLower(jsonStringFieldValue(typed, "message"))
+		cause := strings.ToLower(jsonStringFieldValue(typed, "cause"))
+		if codeOK && strings.EqualFold(strings.TrimSpace(code), "cc_switch_upstream_error") &&
+			statusOK && status == 400 &&
+			(strings.Contains(message, "upstream request failed") || strings.Contains(cause, "upstream request failed")) {
+			return true
+		}
+		for _, child := range typed {
+			if matchesCCSwitchUpstreamFailure(child, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if matchesCCSwitchUpstreamFailure(child, depth+1) {
+				return true
+			}
+		}
+	case string:
+		var nested any
+		if json.Unmarshal([]byte(strings.TrimSpace(typed)), &nested) == nil {
+			return matchesCCSwitchUpstreamFailure(nested, depth+1)
+		}
+	}
+	return false
+}
+
+func jsonStringField(value map[string]any, field string) (string, bool) {
+	for key, raw := range value {
+		if !strings.EqualFold(key, field) {
+			continue
+		}
+		text, ok := raw.(string)
+		return text, ok
+	}
+	return "", false
+}
+
+func jsonStringFieldValue(value map[string]any, field string) string {
+	text, _ := jsonStringField(value, field)
+	return text
+}
+
+func jsonStatusField(value map[string]any, field string) (int, bool) {
+	for key, raw := range value {
+		if !strings.EqualFold(key, field) {
+			continue
+		}
+		switch typed := raw.(type) {
+		case float64:
+			return int(typed), typed == float64(int(typed))
+		case json.Number:
+			status, err := strconv.Atoi(string(typed))
+			return status, err == nil
+		case string:
+			statusText := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(typed), "http"))
+			statusText = strings.TrimSpace(statusText)
+			status, err := strconv.Atoi(statusText)
+			return status, err == nil
+		default:
+			return 0, false
+		}
+	}
+	return 0, false
 }

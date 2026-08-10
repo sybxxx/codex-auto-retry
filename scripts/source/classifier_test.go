@@ -21,6 +21,9 @@ func TestClassifyFailure(t *testing.T) {
 		{"temporary auth", "authentication service unavailable, try again later", true, classAuthTransient, 0},
 		{"expired login", "HTTP 401 Unauthorized: token expired", true, classAuthLimited, cfg.AuthMaxAttempts},
 		{"bad request", "HTTP 400 invalid_request_error: invalid payload", false, classNone, 0},
+		{"CC Switch upstream 400 wrapper", `{"error":{"message":"CC Switch local proxy failed while handling Codex endpoint /responses. upstream_status: HTTP 400; cause: Upstream request failed","type":"upstream_error","code":"cc_switch_upstream_error","upstream_status":400}}`, true, classTransient, 0},
+		{"CC Switch wrapper with different code", `{"error":{"message":"Upstream request failed","code":"provider_error","upstream_status":400}}`, false, classNone, 0},
+		{"CC Switch wrapper with permanent status", `{"error":{"message":"Upstream request failed","code":"cc_switch_upstream_error","upstream_status":404}}`, false, classNone, 0},
 		{"missing model", "HTTP 404 model not found", false, classNone, 0},
 		{"context limit", "maximum context length exceeded", false, classNone, 0},
 		{"user cancel", "task was cancelled by user", false, classNone, 0},
@@ -33,6 +36,14 @@ func TestClassifyFailure(t *testing.T) {
 				t.Fatalf("classifyFailure() = %+v", decision)
 			}
 		})
+	}
+}
+
+func TestCCSwitchUpstreamFailureAcceptsNestedErrorEnvelope(t *testing.T) {
+	text := `{"message":"{\"error\":{\"message\":\"Upstream request failed\",\"code\":\"cc_switch_upstream_error\",\"upstream_status\":400}}"}`
+	decision := classifyFailure(text, defaultConfig())
+	if !decision.Retry || decision.Class != classTransient {
+		t.Fatalf("nested CC Switch envelope was not retryable: %+v", decision)
 	}
 }
 

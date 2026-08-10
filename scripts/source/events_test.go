@@ -40,6 +40,22 @@ func TestParseObjectError(t *testing.T) {
 	}
 }
 
+func TestParseAndClassifyCCSwitchUpstreamError(t *testing.T) {
+	structured := `{"error":{"message":"CC Switch local proxy failed while handling Codex endpoint /responses. upstream_status: HTTP 400; cause: Upstream request failed","type":"upstream_error","code":"cc_switch_upstream_error","upstream_status":400}}`
+	line := makeEventLine(t, "2026-08-10T02:37:16.064Z", "task_complete", "turn-cc-switch", map[string]any{
+		"message":          structured,
+		"codex_error_info": "other",
+	})
+	event, ok := parseRelevantEvent(line)
+	if !ok {
+		t.Fatal("expected CC Switch completion event")
+	}
+	decision := classifyFailure(event.ErrorText, defaultConfig())
+	if !decision.Retry || decision.Class != classTransient {
+		t.Fatalf("parsed CC Switch upstream failure was not retryable: event=%+v decision=%+v", event, decision)
+	}
+}
+
 func TestParseEmptySuccessfulCompletionWithoutRetainingMessage(t *testing.T) {
 	for _, lastMessage := range []any{nil, "", "   "} {
 		line := makeCompletionLine(t, lastMessage)
