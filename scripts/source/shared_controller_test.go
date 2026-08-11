@@ -25,6 +25,17 @@ func (s staticSharedServer) Endpoint() string               { return s.endpoint 
 func (s staticSharedServer) Ensure(context.Context) error   { return s.err }
 func (s staticSharedServer) SupportsHome(value string) bool { return strings.EqualFold(value, s.home) }
 
+type environmentAwareSharedServer struct {
+	staticSharedServer
+	environmentCalls int
+	environmentErr   error
+}
+
+func (s *environmentAwareSharedServer) EnsureOwnedEnvironment(context.Context) error {
+	s.environmentCalls++
+	return s.environmentErr
+}
+
 type staticDesktopChecker struct {
 	state desktopTransportState
 	err   error
@@ -508,6 +519,22 @@ func TestSharedControllerRequiresOneCodexRestartForLegacyTransport(t *testing.T)
 	)
 	if err != nil || result.Outcome != outcomeRetryLater || result.Reason != "codex_restart_required" {
 		t.Fatalf("legacy transport did not produce a bounded restart state: result=%+v err=%v", result, err)
+	}
+}
+
+func TestSharedControllerRepairsEnvironmentBeforeCheckingDesktopTransport(t *testing.T) {
+	server := &environmentAwareSharedServer{
+		staticSharedServer: staticSharedServer{home: `C:\Users\test\.codex`},
+	}
+	controller := &sharedAppServerController{
+		server:  server,
+		checker: staticDesktopChecker{state: desktopLegacyStdio},
+	}
+	if err := controller.Prepare(context.Background()); err != errCodexRestartRequired {
+		t.Fatalf("legacy transport returned the wrong result: %v", err)
+	}
+	if server.environmentCalls != 1 {
+		t.Fatalf("shared environment was not reconciled before transport check: %d", server.environmentCalls)
 	}
 }
 

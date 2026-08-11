@@ -208,6 +208,13 @@ or the hidden-console launch upgrade, fully exit and restart Codex once. The
 panel and tray show that requirement instead of
 repeatedly pretending to retry.
 
+When shared mode is already enabled, each controller readiness check also
+reconciles the endpoint before inspecting the Desktop transport. If the owned
+endpoint is missing, the watchdog restores it only after re-validating the
+plugin-owned server and broadcasts the Windows environment change. A different
+user value is never overwritten; shared mode fails open with an explicit
+environment-conflict status instead of repeatedly asking for a restart.
+
 After installing or updating the plugin, open a new Codex task so the updated
 MCP tools and embedded panel are discovered. The background watchdog itself is
 restarted and verified by the installer immediately.

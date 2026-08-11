@@ -198,12 +198,18 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 		return false
 	}
 	d.mu.Lock()
-	needsProbe := false
-	for _, thread := range d.state.Threads {
-		if thread.Stopped != nil && (thread.Stopped.Reason == "codex_restart_required" ||
-			(thread.Stopped.Reason == "codex_not_running" && d.controllerState == "codex_not_running")) {
-			needsProbe = true
-			break
+	// A stale failure state must clear even after every stopped task was
+	// resolved; keying the probe off the queue alone left
+	// "codex_restart_required" displayed forever once no retry was waiting.
+	needsProbe := d.controllerState == "codex_restart_required" ||
+		d.controllerState == "codex_not_running"
+	if !needsProbe {
+		for _, thread := range d.state.Threads {
+			if thread.Stopped != nil && (thread.Stopped.Reason == "codex_restart_required" ||
+				thread.Stopped.Reason == "codex_not_running") {
+				needsProbe = true
+				break
+			}
 		}
 	}
 	if !needsProbe || (!d.lastControllerProbe.IsZero() && now.Sub(d.lastControllerProbe) < 10*time.Second) {
@@ -552,7 +558,7 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 
 func controllerFailureNeedsAction(reason string) bool {
 	switch reason {
-	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_disabled":
+	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_disabled":
 		return true
 	default:
 		return false
@@ -561,7 +567,7 @@ func controllerFailureNeedsAction(reason string) bool {
 
 func controllerFailureNeedsFailOpen(reason string) bool {
 	switch reason {
-	case "shared_app_server_port_reserved", "shared_app_server_port_conflict",
+	case "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict",
 		"codex_background_channel_unavailable", "codex_background_dispatch_failed",
 		"controller_timeout", "controller_invalid_result", "controller_unavailable":
 		return true

@@ -136,6 +136,45 @@ func TestCodexNotRunningStatusClearsWithoutReopeningStoppedRetry(t *testing.T) {
 	}
 }
 
+func TestStaleRestartRequiredStateClearsWithEmptyQueue(t *testing.T) {
+	now := time.Now().UTC()
+	runner := &stateAwareRunner{fakeResumeRunner: successfulRunner(), state: "ready"}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	// The watchdog was previously told a restart was needed, and every stopped
+	// task has since been resolved or removed. readiness must still be
+	// re-probed so status cannot display "等待重启 Codex" forever.
+	d.controllerState = "codex_restart_required"
+	if !d.controllerRestartReady(context.Background(), now) {
+		t.Fatal("empty queue blocked controller readiness re-probe")
+	}
+	if d.controllerState != "ready" {
+		t.Fatalf("stale controller state was not refreshed: %s", d.controllerState)
+	}
+	d.mu.Lock()
+	d.reopenRestartRequiredLocked(now)
+	d.mu.Unlock()
+	if len(d.state.Threads) != 0 {
+		t.Fatalf("empty queue gained retries from a state refresh: %+v", d.state.Threads)
+	}
+}
+
+func TestControllerRefreshRespectsProbeInterval(t *testing.T) {
+	now := time.Now().UTC()
+	runner := &stateAwareRunner{fakeResumeRunner: successfulRunner(), state: "ready"}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.controllerState = "codex_restart_required"
+	if !d.controllerRestartReady(context.Background(), now) {
+		t.Fatal("first controller probe was skipped")
+	}
+	d.controllerState = "codex_restart_required"
+	if d.controllerRestartReady(context.Background(), now.Add(5*time.Second)) {
+		t.Fatal("controller probe ran again before the 10s interval")
+	}
+	if d.controllerState != "codex_restart_required" {
+		t.Fatalf("throttled probe changed state: %s", d.controllerState)
+	}
+}
+
 func TestDaemonPauseAndQueuedControls(t *testing.T) {
 	d := newTestDaemon(t, isolatedConfig(filepath.Join(t.TempDir(), ".codex")), successfulRunner())
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"

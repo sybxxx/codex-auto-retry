@@ -49,6 +49,19 @@ try {
         ($config | ConvertTo-Json -Depth 8),
         [System.Text.UTF8Encoding]::new($false)
     )
+    $environmentBackup = [ordered]@{
+        schema_version = 1
+        name = $environmentName
+        previous_present = $null -ne $beforeEndpoint
+        previous_value = if ($null -ne $beforeEndpoint) { $beforeEndpoint } else { '' }
+        installed_value = $endpoint
+        recorded_at = [DateTime]::UtcNow.ToString('o')
+    }
+    [System.IO.File]::WriteAllText(
+        (Join-Path $dataDir 'environment-backup.json'),
+        ($environmentBackup | ConvertTo-Json -Depth 8),
+        [System.Text.UTF8Encoding]::new($false)
+    )
     [Environment]::SetEnvironmentVariable($environmentName, $endpoint, 'User')
     Set-Item -Path "Env:$environmentName" -Value $endpoint
 

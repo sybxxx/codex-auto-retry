@@ -480,6 +480,12 @@ back to visible navigation. When shared mode is enabled, Codex requires one
 restart to inherit `CODEX_APP_SERVER_WS_URL`; the default fail-open mode does
 not require that restart.
 
+On every shared-mode readiness/preflight, the watchdog reconciles a missing
+owned endpoint before classifying the Desktop transport. It restores the
+endpoint only after validating the owned server and leaves a different user
+value untouched, transitioning to an explicit environment-conflict fail-open
+state instead of repeating the restart prompt.
+
 Missing, oversized, or invalid latest settings records also prevent dispatch
 and keep that task queued. This protects task settings instead of retrying with
 the wrong defaults.

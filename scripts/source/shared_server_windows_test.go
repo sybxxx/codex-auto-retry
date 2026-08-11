@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestValidSharedServerEndpointAcceptsOnlyExpectedLoopbackPort(t *testing.T) {
@@ -90,6 +92,68 @@ func TestReplaceEnvironmentValueReplacesCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestOwnedSharedEnvironmentRestoresMissingEndpoint(t *testing.T) {
+	name := fmt.Sprintf("CODEX_AUTO_RETRY_TEST_%d", time.Now().UnixNano())
+	dataDir := t.TempDir()
+	previous, present, err := readUserEnvironment(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = restoreUserEnvironment(name, previous, present)
+	})
+	if err := restoreUserEnvironment(name, "", false); err != nil {
+		t.Fatal(err)
+	}
+
+	endpoint := fmt.Sprintf("ws://127.0.0.1:%d", defaultConfig().SharedAppServerPort)
+	result, err := setOwnedSharedEnvironmentNamed(dataDir, name, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed {
+		t.Fatal("missing shared endpoint was not reported as changed")
+	}
+	value, present, err := readUserEnvironment(name)
+	if err != nil || !present || value != endpoint {
+		t.Fatalf("missing shared endpoint was not restored: value=%q present=%v err=%v", value, present, err)
+	}
+	var backup sharedEnvironmentBackup
+	data, err := os.ReadFile(filepath.Join(dataDir, "environment-backup.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &backup); err != nil {
+		t.Fatal(err)
+	}
+	if backup.Name != name || backup.InstalledValue != endpoint || backup.PreviousPresent {
+		t.Fatalf("ownership backup did not describe the repaired endpoint: %+v", backup)
+	}
+}
+
+func TestOwnedSharedEnvironmentRefusesDifferentUserValue(t *testing.T) {
+	name := fmt.Sprintf("CODEX_AUTO_RETRY_TEST_%d", time.Now().UnixNano())
+	dataDir := t.TempDir()
+	previous, present, err := readUserEnvironment(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = restoreUserEnvironment(name, previous, present)
+	})
+	if err := writeUserEnvironment(name, "ws://127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	desired := fmt.Sprintf("ws://127.0.0.1:%d", defaultConfig().SharedAppServerPort)
+	if _, err := setOwnedSharedEnvironmentNamed(dataDir, name, desired); !errors.Is(err, errSharedAppServerEnvironmentConflict) {
+		t.Fatalf("different user endpoint was not rejected safely: %v", err)
+	}
+	value, stillPresent, readErr := readUserEnvironment(name)
+	if readErr != nil || !stillPresent || value != "ws://127.0.0.1:1" {
+		t.Fatalf("conflicting user endpoint was changed: value=%q present=%v err=%v", value, stillPresent, readErr)
+	}
+}
+
 func TestSharedServerUsesConfiguredCodexHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", home)
@@ -134,5 +198,12 @@ func TestStopOwnedRemovesStaleStateAfterOwnedProcessExits(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale owned state was not removed: %v", err)
+	}
+}
+
+func TestSharedServerDoesNotGuessUnrecordedLegacyEndpointOwnership(t *testing.T) {
+	manager := newSharedServerManager(defaultConfig(), t.TempDir(), nil)
+	if endpoints := manager.ownedLegacyEndpoints(context.Background()); len(endpoints) != 0 {
+		t.Fatalf("unrecorded endpoint was treated as plugin-owned: %v", endpoints)
 	}
 }

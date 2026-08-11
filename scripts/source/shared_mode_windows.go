@@ -59,6 +59,42 @@ func enableSharedAppServer(ctx context.Context, dataDir string, config Config) e
 	return nil
 }
 
+// EnsureOwnedEnvironment repairs an endpoint that this plugin previously
+// published but that disappeared from HKCU\Environment (for example after a
+// cleanup script or an interrupted upgrade). The caller has already run
+// Ensure, but an endpoint change is high impact, so ownership is revalidated
+// before writing anything. A different user value is never overwritten.
+func (m *sharedServerManager) EnsureOwnedEnvironment(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		return err
+	}
+	if present && current == m.Endpoint() {
+		return nil
+	}
+	if err := m.ValidateOwned(ctx); err != nil {
+		return err
+	}
+	result, err := setOwnedSharedEnvironment(m.dataDir, m.Endpoint())
+	if err != nil {
+		if m.logger != nil {
+			category := "shared_app_server_environment"
+			if errors.Is(err, errSharedAppServerEnvironmentConflict) {
+				category = "shared_app_server_environment_conflict"
+			}
+			m.logger.Printf("shared app-server environment reconciliation failed category=%s port=%d", category, m.config.SharedAppServerPort)
+		}
+		return err
+	}
+	if result.Changed && m.logger != nil {
+		m.logger.Printf("shared app-server endpoint restored port=%d", m.config.SharedAppServerPort)
+	}
+	return nil
+}
+
 func cleanupSharedServer(manager *sharedServerManager) {
 	if manager == nil {
 		return
@@ -70,10 +106,27 @@ func cleanupSharedServer(manager *sharedServerManager) {
 
 func disableSharedAppServer(ctx context.Context, dataDir string, config Config) error {
 	manager := newSharedServerManager(config, dataDir, nil)
-	if _, err := restoreOwnedSharedEnvironment(dataDir, manager.Endpoint()); err != nil {
+	if _, err := restoreOwnedSharedEnvironment(dataDir, manager.ownedLegacyEndpoints(ctx)...); err != nil {
 		return err
 	}
 	return manager.StopOwned(ctx)
+}
+
+// ownedLegacyEndpoints returns an endpoint that may be cleaned up when the
+// ownership backup is absent. A configured port alone is not proof of
+// ownership: only a matching, versioned shared-server state record qualifies.
+func (m *sharedServerManager) ownedLegacyEndpoints(ctx context.Context) []string {
+	state, err := m.readState()
+	if err != nil || state.Owner != sharedServerOwner || state.Version != appVersion ||
+		!validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) ||
+		!m.SupportsHome(state.CodexHome) || state.ExecutableHash == "" ||
+		state.ExecutableHash != executableHash(state.Executable) {
+		return nil
+	}
+	if processIsRunning(state.PID) && !m.ownsProcess(ctx, state) {
+		return nil
+	}
+	return []string{state.Endpoint}
 }
 
 func (m *sharedServerManager) ValidateOwned(ctx context.Context) error {
@@ -132,11 +185,15 @@ func (m *sharedServerManager) StopOwned(ctx context.Context) error {
 }
 
 func setOwnedSharedEnvironment(dataDir, desired string) (sharedEnvironmentResult, error) {
+	return setOwnedSharedEnvironmentNamed(dataDir, sharedAppServerEnvironmentName, desired)
+}
+
+func setOwnedSharedEnvironmentNamed(dataDir, name, desired string) (sharedEnvironmentResult, error) {
 	if !validSharedServerEndpoint(desired, endpointPort(desired)) {
-		return sharedEnvironmentResult{}, errors.New("refusing an invalid shared app-server endpoint")
+		return sharedEnvironmentResult{}, fmt.Errorf("%w: invalid endpoint", errSharedAppServerEnvironmentConflict)
 	}
 	backupPath := filepath.Join(dataDir, "environment-backup.json")
-	current, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	current, present, err := readUserEnvironment(name)
 	if err != nil {
 		return sharedEnvironmentResult{}, err
 	}
@@ -146,25 +203,25 @@ func setOwnedSharedEnvironment(dataDir, desired string) (sharedEnvironmentResult
 	if data, readErr := os.ReadFile(backupPath); readErr == nil {
 		backupExisted = true
 		backupBytes = data
-		if err := json.Unmarshal(data, &backup); err != nil || backup.SchemaVersion != 1 || backup.Name != sharedAppServerEnvironmentName {
-			return sharedEnvironmentResult{}, errors.New("shared environment ownership record is invalid")
+		if err := json.Unmarshal(data, &backup); err != nil || backup.SchemaVersion != 1 || backup.Name != name {
+			return sharedEnvironmentResult{}, fmt.Errorf("%w: ownership record is invalid", errSharedAppServerEnvironmentConflict)
 		}
 		expected := backup.PreviousValue
 		if !backup.PreviousPresent {
 			expected = ""
 		}
 		if present && current != backup.InstalledValue && current != expected && current != desired {
-			return sharedEnvironmentResult{}, errors.New("CODEX_APP_SERVER_WS_URL already has a different user value")
+			return sharedEnvironmentResult{}, fmt.Errorf("%w: CODEX_APP_SERVER_WS_URL already has a different user value", errSharedAppServerEnvironmentConflict)
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return sharedEnvironmentResult{}, readErr
 	} else {
 		if present && current != desired {
-			return sharedEnvironmentResult{}, errors.New("CODEX_APP_SERVER_WS_URL already has a different user value")
+			return sharedEnvironmentResult{}, fmt.Errorf("%w: CODEX_APP_SERVER_WS_URL already has a different user value", errSharedAppServerEnvironmentConflict)
 		}
 		backup = sharedEnvironmentBackup{
 			SchemaVersion:   1,
-			Name:            sharedAppServerEnvironmentName,
+			Name:            name,
 			PreviousPresent: present,
 			PreviousValue:   current,
 		}
@@ -177,8 +234,8 @@ func setOwnedSharedEnvironment(dataDir, desired string) (sharedEnvironmentResult
 	if err := writeJSONAtomic(backupPath, backup); err != nil {
 		return sharedEnvironmentResult{}, err
 	}
-	if err := writeUserEnvironment(sharedAppServerEnvironmentName, desired); err != nil {
-		_ = restoreUserEnvironment(sharedAppServerEnvironmentName, current, present)
+	if err := writeUserEnvironment(name, desired); err != nil {
+		_ = restoreUserEnvironment(name, current, present)
 		if backupExisted {
 			_ = os.WriteFile(backupPath, backupBytes, 0o600)
 		} else {

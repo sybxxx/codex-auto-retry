@@ -208,6 +208,8 @@ func controllerFailureReason(result DispatchResult, err error) string {
 		return "shared_app_server_port_reserved"
 	case errors.Is(err, errSharedServerPortConflict):
 		return "shared_app_server_port_conflict"
+	case errors.Is(err, errSharedAppServerEnvironmentConflict):
+		return "shared_app_server_environment_conflict"
 	case errors.Is(err, errSharedServerUnavailable):
 		return "codex_background_channel_unavailable"
 	case errors.Is(err, errAppServerRequest):

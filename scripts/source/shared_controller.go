@@ -16,6 +16,14 @@ type sharedServer interface {
 	SupportsHome(string) bool
 }
 
+// sharedEnvironmentOwner is implemented by the Windows shared-server manager.
+// Keeping this optional preserves the controller's small test/fallback server
+// contract while allowing the real manager to repair an endpoint that was
+// removed after the shared mode had already been enabled.
+type sharedEnvironmentOwner interface {
+	EnsureOwnedEnvironment(context.Context) error
+}
+
 type sharedAppServerController struct {
 	server            sharedServer
 	checker           desktopTransportChecker
@@ -25,6 +33,7 @@ type sharedAppServerController struct {
 
 var errCodexRestartRequired = errors.New("Codex must restart to use the shared app-server")
 var errSharedAppServerDisabled = errors.New("shared Codex app-server mode is disabled")
+var errSharedAppServerEnvironmentConflict = errors.New("shared Codex app-server environment conflicts with another user value")
 
 type appThreadReadResult struct {
 	Thread *struct {
@@ -71,7 +80,7 @@ func (c *sharedAppServerController) Prepare(ctx context.Context) error {
 	if !enabled {
 		return errSharedAppServerDisabled
 	}
-	if err := c.server.Ensure(ctx); err != nil {
+	if err := c.ensureSharedServer(ctx); err != nil {
 		return err
 	}
 	state, err := c.checker.State(ctx)
@@ -92,6 +101,9 @@ func (c *sharedAppServerController) Readiness(ctx context.Context) (string, erro
 	if !enabled {
 		return "shared_app_server_disabled", nil
 	}
+	if err := c.ensureSharedServer(ctx); err != nil {
+		return "", err
+	}
 	state, err := c.checker.State(ctx)
 	if err != nil {
 		return "", err
@@ -102,9 +114,6 @@ func (c *sharedAppServerController) Readiness(ctx context.Context) (string, erro
 	case desktopLegacyStdio:
 		return "codex_restart_required", nil
 	case desktopSharedServer:
-		if err := c.server.Ensure(ctx); err != nil {
-			return "", err
-		}
 		return "ready", nil
 	default:
 		return "", errSharedServerUnavailable
@@ -370,6 +379,9 @@ func (c *sharedAppServerController) preflight(ctx context.Context, parentNotifie
 	if !enabled {
 		return retryLaterResult("shared_app_server_disabled", parentNotified), false, nil
 	}
+	if err := c.ensureSharedServer(ctx); err != nil {
+		return DispatchResult{}, false, err
+	}
 	state, err := c.checker.State(ctx)
 	if err != nil {
 		return DispatchResult{}, false, err
@@ -380,13 +392,21 @@ func (c *sharedAppServerController) preflight(ctx context.Context, parentNotifie
 	case desktopLegacyStdio:
 		return retryLaterResult("codex_restart_required", parentNotified), false, nil
 	case desktopSharedServer:
-		if err := c.server.Ensure(ctx); err != nil {
-			return DispatchResult{}, false, err
-		}
 		return DispatchResult{}, true, nil
 	default:
 		return DispatchResult{}, false, errSharedServerUnavailable
 	}
+}
+
+func (c *sharedAppServerController) ensureSharedServer(ctx context.Context) error {
+	if err := c.server.Ensure(ctx); err != nil {
+		return err
+	}
+	owner, ok := c.server.(sharedEnvironmentOwner)
+	if !ok {
+		return nil
+	}
+	return owner.EnsureOwnedEnvironment(ctx)
 }
 
 func (c *sharedAppServerController) sharedServerEnabled() (bool, error) {

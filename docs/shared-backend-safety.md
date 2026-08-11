@@ -25,6 +25,12 @@ If the optional mode is already enabled but cannot prepare its backend at
 startup, the watchdog performs the same transition automatically and records the
 failure reason while Codex continues with its official backend.
 
+If the stored shared-mode flag is still enabled but `CODEX_APP_SERVER_WS_URL`
+has disappeared, readiness first verifies the plugin-owned server state and
+restores the recorded endpoint, then broadcasts the environment change. A
+different current user value is treated as an ownership conflict and is never
+overwritten; the watchdog fails open and reports that conflict explicitly.
+
 Installation is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
 environment ownership, and the previous binaries are captured; a failed

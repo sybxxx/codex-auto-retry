@@ -45,7 +45,10 @@ $owned = @($all | Where-Object {
     $mainIds -contains [int]$_.ParentProcessId -and
     $_.CommandLine -match '(?:^|\s)app-server(?:\s|$)'
 })
-if ($owned.Count -gt 0) {
+$legacy = @($owned | Where-Object {
+    $_.CommandLine -notmatch '(?:^|\s)--listen(?:=|\s)'
+})
+if ($legacy.Count -gt 0) {
     [Console]::Out.Write('legacy_stdio')
 } else {
     [Console]::Out.Write('shared_server')
