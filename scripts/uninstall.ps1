@@ -9,6 +9,7 @@ $watchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
+$supervisorStop = Join-Path $installDir 'supervisor.stop'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'CodexAutoRetry'
 . (Join-Path $PSScriptRoot 'environment.ps1')
@@ -34,6 +35,7 @@ if (-not $legacyOwnedEndpoint -and $runValue.IndexOf((Join-Path $installDir 'cod
 }
 
 if (Test-Path -LiteralPath $installDir) {
+    New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
     New-Item -ItemType File -Force -Path $stopSignal | Out-Null
 }
 $deadline = (Get-Date).AddSeconds(12)
@@ -68,6 +70,7 @@ if (Test-Path -LiteralPath $installDir) {
             $watchdogTarget,
             $mcpTarget,
             $stopSignal,
+            $supervisorStop,
             (Join-Path $installDir 'daemon.lock'),
             (Join-Path $installDir 'status.json'),
             (Join-Path $installDir 'settings.ps1')

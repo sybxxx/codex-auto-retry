@@ -201,7 +201,11 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 	// A stale failure state must clear even after every stopped task was
 	// resolved; keying the probe off the queue alone left
 	// "codex_restart_required" displayed forever once no retry was waiting.
-	needsProbe := d.controllerState == "codex_restart_required" ||
+	// Shared mode is a resident service boundary, not only a retry dependency.
+	// Keep probing it even when the retry queue is empty so an app-server that
+	// exits after login is recreated before Codex receives a dead endpoint.
+	needsProbe := d.config.SharedAppServerEnabled ||
+		d.controllerState == "codex_restart_required" ||
 		d.controllerState == "codex_not_running"
 	if !needsProbe {
 		for _, thread := range d.state.Threads {

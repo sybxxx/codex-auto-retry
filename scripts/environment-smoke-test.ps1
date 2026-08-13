@@ -23,6 +23,7 @@ try {
         [Environment]::GetEnvironmentVariable($name, 'User') -ne $first.Value) {
         throw 'The shared app-server environment value was not installed.'
     }
+    Send-CodexAutoRetryEnvironmentChange
     $backup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $dataDir 'environment-backup.json') | ConvertFrom-Json
     if ([bool]$backup.previous_present -or [string]$backup.previous_value -ne '') {
         throw 'The prior user environment value was not backed up.'

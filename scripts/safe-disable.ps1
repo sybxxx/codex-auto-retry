@@ -36,6 +36,7 @@ $watchdog = Join-Path $dataRoot 'codex-auto-retry.exe'
 $mcp = Join-Path $dataRoot 'codex-auto-retry-mcp.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'CodexAutoRetry'
+$supervisorStop = Join-Path $dataRoot 'supervisor.stop'
 $beforeKey = [Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User')
 $beforeEndpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')
 $stateEndpoint = $null
@@ -59,6 +60,7 @@ if (-not $legacyOwnedEndpoint -and $runValue.IndexOf($watchdog, [System.StringCo
     $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
 }
 
+New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
 Stop-ExactExecutable $watchdog
 Stop-ExactExecutable $mcp
 $sharedStopped = Stop-OwnedSharedServer $dataRoot

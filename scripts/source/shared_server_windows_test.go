@@ -173,6 +173,44 @@ func TestSharedServerStateMarksHiddenInheritedConsole(t *testing.T) {
 	}
 }
 
+func TestSharedServerAdoptsStateFromOlderPluginRelease(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sharedServerState{
+		PID:            4_000_000,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        "0.7.3",
+	}
+	if !manager.sharedServerStateOwnedByPlugin(state) {
+		t.Fatal("a prior plugin release was rejected despite matching ownership evidence")
+	}
+	if err := manager.adoptSharedServerState(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != appVersion {
+		t.Fatalf("shared server state was not adopted: %q", state.Version)
+	}
+	var written sharedServerState
+	data, err := os.ReadFile(filepath.Join(dataDir, "shared-server.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &written); err != nil {
+		t.Fatal(err)
+	}
+	if written.Version != appVersion {
+		t.Fatalf("adopted state was not persisted: %q", written.Version)
+	}
+}
+
 func TestStopOwnedRemovesStaleStateAfterOwnedProcessExits(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := newSharedServerManager(defaultConfig(), dataDir, nil)

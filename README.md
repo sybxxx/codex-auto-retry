@@ -187,9 +187,9 @@ runtime heartbeat. It requires neither administrator rights nor Go or Node.js.
 `卸载.cmd` removes the active integration while preserving retry configuration
 and state by default.
 
-The watchdog and MCP management server are installed under
-`%LOCALAPPDATA%\CodexAutoRetry`. Only the watchdog and its tray icon start at
-the current user's Windows sign-in. The MCP server starts on demand through Codex and exits with
+The supervisor, watchdog worker, and MCP management server are installed under
+`%LOCALAPPDATA%\CodexAutoRetry`. The supervisor starts the worker and keeps it
+available after an unexpected worker exit. The MCP server starts on demand through Codex and exits with
 its Codex connection. The release installer gives Codex the executable's direct
 absolute path, and both plugin binaries use the Windows GUI subsystem. The
 watchdog also starts the shared Codex app-server inside one hidden inherited
@@ -246,7 +246,8 @@ limit and remains visibly restartable; it never falls back to opening or
 focusing a task.
 
 The tray controller requires Windows 10 or 11. Closing it through the tray menu
-also stops automatic retry until the next Windows sign-in or reinstall/start.
+stops automatic retry intentionally until the next Windows sign-in or
+reinstall/start; the supervisor honors that one-shot stop marker.
 
 If the failed rollout does not contain valid settings records, recovery also
 remains queued instead of resuming the task with replacement defaults.

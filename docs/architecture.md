@@ -14,9 +14,12 @@ loopback app-server that Codex Desktop and the watchdog both use. This keeps one
 in-memory owner for task, workspace, model, permissions, login, conversation,
 and goal state.
 
-The user-facing management panel and the watchdog are deliberately separate
-processes. Codex starts the MCP server only when it needs plugin tools or the
-embedded panel; Windows starts the watchdog at sign-in. Closing Codex, closing
+The user-facing management panel, sign-in supervisor, and watchdog worker are
+deliberately separate processes. Codex starts the MCP server only when it needs
+plugin tools or the embedded panel; Windows starts the supervisor at sign-in.
+The supervisor launches the worker and restarts it after unexpected exits with
+bounded backoff, while a one-shot stop marker preserves intentional shutdowns.
+Closing Codex, closing
 the panel, or ending the MCP stdio connection does not disable the watchdog.
 The Windows tray icon is owned by the watchdog itself, so it adds no second
 resident service and cannot disagree about process lifetime.
@@ -208,6 +211,10 @@ it with the hidden-console server.
 - A closed App waits without consuming either provider or controller counters.
   A restart requirement and permanent local configuration conflict stop
   immediately; other controller failures stop at a configurable small limit.
+- When shared mode is enabled, the daemon re-probes the owned app-server on a
+  bounded interval even with an empty retry queue. An exited or unresponsive
+  owned server is restarted through the same ownership checks; an occupied or
+  unowned port remains fail-open.
 - Missing or invalid persisted task settings fail closed and reschedule only
   that task; App defaults are never substituted during recovery.
 - Subagent recovery validates a deterministic event ID, loads an unloaded
@@ -423,7 +430,9 @@ becoming additional writers for `state.json`.
 
 The release package contains application binaries, plugin metadata, source,
 tests, documentation, and deployment scripts, but never copies a user's
-`%LOCALAPPDATA%\CodexAutoRetry` directory. Configuration, pause state, queue
+`%LOCALAPPDATA%\CodexAutoRetry` directory. The supervisor and worker share the
+same runtime directory; the worker publishes the heartbeat and owns all retry
+state. Configuration, pause state, queue
 state, cursors, and logs therefore remain local across upgrades and cannot leak
 into a published archive. The release builder also refuses to package anything
 under `scripts/bin` except the two expected executables, and the archive test

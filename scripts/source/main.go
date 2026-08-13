@@ -28,7 +28,7 @@ const (
 func main() {
 	arguments := os.Args[1:]
 	mode := "run"
-	if len(arguments) > 0 && (arguments[0] == "run" || arguments[0] == "mcp" || arguments[0] == "save-settings" || arguments[0] == "control") {
+	if len(arguments) > 0 && (arguments[0] == "run" || arguments[0] == "supervise" || arguments[0] == "mcp" || arguments[0] == "save-settings" || arguments[0] == "control") {
 		mode = arguments[0]
 		arguments = arguments[1:]
 	}
@@ -38,6 +38,7 @@ func main() {
 	actionFlag := flags.String("action", "", "retry control action")
 	threadIDFlag := flags.String("thread-id", "", "Codex task identifier")
 	noTrayFlag := flags.Bool("no-tray", false, "disable the Windows notification-area icon")
+	supervisedFlag := flags.Bool("supervised", false, "run as a worker owned by the supervisor")
 	_ = flags.Parse(arguments)
 
 	dataDir := *dataDirFlag
@@ -70,6 +71,12 @@ func main() {
 	if mode == "mcp" {
 		if err := runManagementMCP(dataDir); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "Codex Auto Retry MCP server stopped:", err)
+		}
+		return
+	}
+	if mode == "supervise" {
+		if err := runSupervisor(dataDir, *noTrayFlag); err != nil {
+			os.Exit(1)
 		}
 		return
 	}
@@ -177,6 +184,11 @@ func main() {
 		logger.Printf("watchdog stopped category=runtime_error")
 	}
 	_ = daemon.writeStatus(false)
+	if *supervisedFlag && (err == nil || errors.Is(err, errStopRequested)) {
+		// A clean worker shutdown is intentional. Tell the supervisor not to
+		// bring it back; crashes and startup errors remain restartable.
+		_ = os.WriteFile(filepath.Join(dataDir, "supervisor.stop"), []byte("stop\n"), 0o600)
+	}
 	logger.Printf("watchdog stopped")
 }
 

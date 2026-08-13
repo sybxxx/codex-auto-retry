@@ -9,7 +9,7 @@
 | `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
 | `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services without inspecting conversation content. |
-| `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, registers per-user startup, and rolls back on failure. |
+| `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, registers a supervised per-user startup entry, and rolls back on failure. |
 | `scripts/path-safety.ps1` | Detects Windows package redirection or directory links before runtime installation can be mistaken for a host installation. |
 | `scripts/path-safety-smoke-test.ps1` | Verifies ordinary paths, missing-path probe cleanup, redirected-path rejection, and non-destructive failure. |
 | `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration, and optionally preserves runtime data. |
@@ -22,6 +22,7 @@
 | `scripts/mcp-smoke-test.ps1` | Verifies MCP discovery, app resource metadata, isolated settings updates, and queued controls. |
 | `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible non-overlapping settings form, concurrent refresh stability, settings-process shutdown, heartbeat, and clean status shutdown. |
 | `scripts/smoke-test.ps1` | Runs the isolated shared-server and environment-ownership smoke tests. |
+| `scripts/supervisor-smoke-test.ps1` | Starts the sign-in supervisor, kills only the worker to prove bounded restart, then verifies an intentional stop is honored. |
 | `scripts/shared-app-server-smoke-test.ps1` | Uses a real isolated Codex WebSocket app-server, two clients, and a local fake provider to prove Desktop-visible same-task recovery without a visible user message. |
 | `scripts/environment-smoke-test.ps1` | Proves safe environment ownership, idempotent endpoint updates, restoration, and conflict refusal through a random test-only user variable. |
 | `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, continuation beside an unchanged paused goal, settings-preserving resume of an unloaded parent before fixed event injection, and active-to-blocked goal closure against an isolated app-server and temporary `CODEX_HOME`. |
@@ -37,7 +38,8 @@ Source code lives under `scripts/source`.
 
 | Module | Ownership |
 | --- | --- |
-| `main.go` | Process startup, shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
+| `main.go` | Process startup, supervised worker shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
+| `supervisor.go` | Stable sign-in supervisor, bounded worker restart backoff, intentional-stop marker handling, and privacy-safe worker lifecycle logging. |
 | `daemon.go` | Scan loop, bounded parallel dispatch, generic controller lifecycle, acknowledgement timeouts, and status publication. |
 | `retry_state.go` | Generic retry transitions, dual attempt limits, visible-progress resets, startup reconciliation, later external-turn attribution, and management command application. |
 | `goal_recovery.go` | Goal lifecycle holds, native-turn adoption, stale-update protection, bounded post-limit goal blocking, and goal-specific controller reconciliation. |
@@ -80,7 +82,7 @@ Node.js runtime.
 | --- | --- |
 | `%USERPROFILE%\plugins\codex-auto-retry` | Personal plugin source. |
 | `%USERPROFILE%\.codex\plugins\cache\personal\codex-auto-retry` | Codex's installed plugin cache. |
-| `%LOCALAPPDATA%\CodexAutoRetry` | Watchdog and MCP executables, configuration, controls, commands, state, heartbeat, shared-server ownership, environment backup, lock, stop signal, and logs. |
+| `%LOCALAPPDATA%\CodexAutoRetry` | Supervisor/worker and MCP executables, configuration, controls, commands, state, heartbeat, shared-server ownership, environment backup, locks, stop signals, and logs. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Current-user startup entry named `CodexAutoRetry`. |
 | `HKCU\Environment\CODEX_APP_SERVER_WS_URL` | Optional loopback WebSocket endpoint; written only after explicit shared-mode health checks, with ownership backup and safe restoration. |
 

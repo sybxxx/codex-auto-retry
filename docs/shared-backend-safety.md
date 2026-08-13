@@ -31,11 +31,30 @@ restores the recorded endpoint, then broadcasts the environment change. A
 different current user value is treated as an ownership conflict and is never
 overwritten; the watchdog fails open and reports that conflict explicitly.
 
+An upgrade may find a still-running app-server recorded by an older plugin
+release. If its owner marker, executable path and hash, loopback endpoint, Codex
+home, and live command line all still match, the new watchdog adopts that state
+and updates only its plugin version marker. It does not treat its own server as
+an external port conflict.
+
+While shared mode is enabled, readiness is also checked periodically when no
+retry is queued. A plugin-owned server that exits is restarted after the same
+ownership and WebSocket health checks; an unowned listener is never terminated.
+
+The sign-in entry launches a small supervisor. It starts the actual watchdog
+worker, restarts it after an unexpected exit with a one-second-to-one-minute
+backoff, and records only lifecycle categories. A clean tray exit, uninstall,
+or upgrade writes a one-shot stop marker so an intentional shutdown is not
+resurrected. The worker remains the sole owner of the tray, retry state, and
+shared app-server; the supervisor never creates a second backend.
+
 Installation is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
 environment ownership, and the previous binaries are captured; a failed
 heartbeat or shared-mode health check restores them. Runtime state and chat
-data are not part of the rollback.
+data are not part of the rollback. The Windows environment-change broadcast is
+advisory and runs through a minimal system process, so an oversized parent
+environment cannot make the transaction fail after the durable registry write.
 
 The tray settings form keeps the health check bounded and responsive. A failed
 or timed-out start removes stale plugin-owned server state when its process has

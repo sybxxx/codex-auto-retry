@@ -175,6 +175,23 @@ func TestControllerRefreshRespectsProbeInterval(t *testing.T) {
 	}
 }
 
+func TestSharedBackendReadinessIsSupervisedWhileReady(t *testing.T) {
+	now := time.Now().UTC()
+	runner := &stateAwareRunner{fakeResumeRunner: successfulRunner(), state: "ready"}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.controllerState = "ready"
+	if !d.controllerRestartReady(context.Background(), now) {
+		t.Fatal("enabled shared backend was not health-checked while ready")
+	}
+	d.controllerState = "ready"
+	if d.controllerRestartReady(context.Background(), now.Add(5*time.Second)) {
+		t.Fatal("shared backend health check ignored the probe interval")
+	}
+	if !d.controllerRestartReady(context.Background(), now.Add(11*time.Second)) {
+		t.Fatal("shared backend was not rechecked after the probe interval")
+	}
+}
+
 func TestDaemonPauseAndQueuedControls(t *testing.T) {
 	d := newTestDaemon(t, isolatedConfig(filepath.Join(t.TempDir(), ".codex")), successfulRunner())
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"

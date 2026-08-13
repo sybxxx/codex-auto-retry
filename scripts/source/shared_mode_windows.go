@@ -117,10 +117,7 @@ func disableSharedAppServer(ctx context.Context, dataDir string, config Config) 
 // ownership: only a matching, versioned shared-server state record qualifies.
 func (m *sharedServerManager) ownedLegacyEndpoints(ctx context.Context) []string {
 	state, err := m.readState()
-	if err != nil || state.Owner != sharedServerOwner || state.Version != appVersion ||
-		!validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) ||
-		!m.SupportsHome(state.CodexHome) || state.ExecutableHash == "" ||
-		state.ExecutableHash != executableHash(state.Executable) {
+	if err != nil || !m.sharedServerStateOwnedByPlugin(state) {
 		return nil
 	}
 	if processIsRunning(state.PID) && !m.ownsProcess(ctx, state) {
@@ -134,8 +131,11 @@ func (m *sharedServerManager) ValidateOwned(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if state.Owner != sharedServerOwner || state.Version != appVersion {
-		return errors.New("shared app-server state is not owned by this plugin version")
+	if !m.sharedServerStateOwnedByPlugin(state) {
+		return errors.New("shared app-server state is not owned by this plugin")
+	}
+	if err := m.adoptSharedServerState(&state); err != nil {
+		return fmt.Errorf("adopt shared app-server state: %w", err)
 	}
 	if !validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) || !m.SupportsHome(state.CodexHome) {
 		return errors.New("shared app-server state failed endpoint or home validation")
@@ -163,10 +163,7 @@ func (m *sharedServerManager) StopOwned(ctx context.Context) error {
 	if err != nil {
 		return nil
 	}
-	if state.Owner != sharedServerOwner || state.Version != appVersion ||
-		!validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) ||
-		!m.SupportsHome(state.CodexHome) || state.ExecutableHash == "" ||
-		state.ExecutableHash != executableHash(state.Executable) {
+	if !m.sharedServerStateOwnedByPlugin(state) {
 		return nil
 	}
 	if processIsRunning(state.PID) {

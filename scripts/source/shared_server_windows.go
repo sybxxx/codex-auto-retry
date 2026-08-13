@@ -54,6 +54,26 @@ type sharedServerManager struct {
 	migrationOnce sync.Once
 }
 
+// A running server survives a watchdog upgrade. Its plugin ownership is
+// established by the durable owner marker, loopback endpoint, Codex home,
+// executable hash, and live command line, rather than by the plugin version.
+// This lets the new watchdog adopt its own old server instead of reporting a
+// false port conflict during login.
+func (m *sharedServerManager) sharedServerStateOwnedByPlugin(state sharedServerState) bool {
+	return state.Owner == sharedServerOwner && strings.TrimSpace(state.Version) != "" &&
+		validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) &&
+		m.SupportsHome(state.CodexHome) && state.Executable != "" &&
+		state.ExecutableHash != "" && state.ExecutableHash == executableHash(state.Executable)
+}
+
+func (m *sharedServerManager) adoptSharedServerState(state *sharedServerState) error {
+	if state == nil || state.Version == appVersion {
+		return nil
+	}
+	state.Version = appVersion
+	return writeJSONAtomic(filepath.Join(m.dataDir, "shared-server.json"), state)
+}
+
 func newSharedServerManager(config Config, dataDir string, logger *safeLogger) *sharedServerManager {
 	home, _ := os.UserHomeDir()
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
@@ -82,9 +102,10 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 	defer m.mu.Unlock()
 	if m.probe(ctx) == nil {
 		state, err := m.readState()
-		if err == nil && state.Owner == sharedServerOwner && state.Version == appVersion && validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) &&
-			state.ExecutableHash == executableHash(state.Executable) &&
-			m.SupportsHome(state.CodexHome) && m.ownsProcess(ctx, state) {
+		if err == nil && m.sharedServerStateOwnedByPlugin(state) && m.ownsProcess(ctx, state) {
+			if err := m.adoptSharedServerState(&state); err != nil {
+				return fmt.Errorf("adopt shared app-server state: %w", err)
+			}
 			if state.LaunchMode != sharedServerLaunchMode {
 				m.scheduleLaunchMigration()
 			}
@@ -96,7 +117,34 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 	connection, err := net.DialTimeout("tcp", address, 300*time.Millisecond)
 	if err == nil {
 		_ = connection.Close()
-		return errSharedServerPortConflict
+		state, stateErr := m.readState()
+		if stateErr == nil && m.sharedServerStateOwnedByPlugin(state) && m.ownsProcess(ctx, state) {
+			if err := m.adoptSharedServerState(&state); err != nil {
+				return fmt.Errorf("adopt shared app-server state: %w", err)
+			}
+			// The listener may exist a little before the WebSocket handshake is
+			// ready. Give our own process a bounded chance to become healthy;
+			// if it does not, restart only that verified owned process.
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+				probeErr := m.probe(probeCtx)
+				cancel()
+				if probeErr == nil {
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			if stopErr := m.StopOwned(ctx); stopErr != nil {
+				return stopErr
+			}
+		} else {
+			return errSharedServerPortConflict
+		}
 	}
 	if err := checkSharedServerPort(m.config.SharedAppServerPort); err != nil {
 		return err
@@ -122,10 +170,10 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 		cancel()
 		if err == nil {
 			state, stateErr := m.readState()
-			if stateErr == nil && state.Owner == sharedServerOwner && state.Version == appVersion &&
-				validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) && m.SupportsHome(state.CodexHome) &&
-				state.ExecutableHash == executableHash(state.Executable) &&
-				m.ownsProcess(ctx, state) {
+			if stateErr == nil && m.sharedServerStateOwnedByPlugin(state) && m.ownsProcess(ctx, state) {
+				if err := m.adoptSharedServerState(&state); err != nil {
+					return cleanup(fmt.Errorf("adopt shared app-server state: %w", err))
+				}
 				return nil
 			}
 			return cleanup(errSharedServerUnavailable)

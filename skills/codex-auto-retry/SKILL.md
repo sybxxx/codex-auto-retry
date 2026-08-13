@@ -5,12 +5,13 @@ description: Inspect, configure, install, repair, or remove Codex Auto Retry. Us
 
 # Codex Auto Retry
 
-This plugin includes a local Windows watchdog. Once installed, the watchdog is
-global and starts at Windows sign-in. The user does not need to invoke this
+This plugin includes a local Windows watchdog and a small sign-in supervisor.
+Once installed, the supervisor starts the watchdog globally at Windows sign-in
+and restarts it after unexpected exits with bounded backoff. The user does not need to invoke this
 plugin in each Codex task. Its MCP management panel is optional and does not
 need to remain open for retries to work.
 
-The same watchdog owns a Windows notification-area icon. Double-click opens
+The watchdog worker owns a Windows notification-area icon. Double-click opens
 the graphical settings window; right-click shows status, pause/resume, settings,
 and exit. This is not a second watchdog or a separate retry engine.
 
@@ -124,6 +125,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\mcp-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\tray-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\path-safety-smoke-test.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\supervisor-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1"

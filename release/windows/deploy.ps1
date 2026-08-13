@@ -192,11 +192,13 @@ function Stop-RuntimeForUpgrade {
     $watchdog = Join-Path $RuntimePath 'codex-auto-retry.exe'
     $mcp = Join-Path $RuntimePath 'codex-auto-retry-mcp.exe'
     $stopSignal = Join-Path $RuntimePath 'stop.signal'
+    $supervisorStop = Join-Path $RuntimePath 'supervisor.stop'
     $watchdogProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) })
     $wasRunning = $watchdogProcesses.Count -gt 0
     if ($wasRunning) {
         New-Item -ItemType Directory -Force -Path $RuntimePath | Out-Null
+        New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
         New-Item -ItemType File -Force -Path $stopSignal | Out-Null
         $deadline = (Get-Date).AddSeconds(12)
         do {
@@ -213,6 +215,7 @@ function Stop-RuntimeForUpgrade {
         Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcp, [System.StringComparison]::OrdinalIgnoreCase) }) |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
     return $wasRunning
 }
 

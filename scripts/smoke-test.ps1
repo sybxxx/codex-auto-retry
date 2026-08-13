@@ -15,11 +15,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Environment ownership smoke test failed.' }
 $safeDisableResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'safe-disable-smoke-test.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Safe-disable smoke test failed.' }
 
+$supervisorResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'supervisor-smoke-test.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Supervisor smoke test failed.' }
+
 [pscustomobject]@{
     Status = 'passed'
     StartupFailOpen = ($startupResult -join [Environment]::NewLine)
     SharedAppServer = ($sharedResult -join [Environment]::NewLine)
     EnvironmentOwnership = ($environmentResult -join [Environment]::NewLine)
     SafeDisable = ($safeDisableResult -join [Environment]::NewLine)
+    Supervisor = ($supervisorResult -join [Environment]::NewLine)
     RealProviderUsed = $false
 }

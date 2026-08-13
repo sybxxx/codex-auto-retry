@@ -5,23 +5,35 @@ function Test-CodexAutoRetryEnvironmentValue {
 }
 
 function Send-CodexAutoRetryEnvironmentChange {
-    if (-not ('CodexAutoRetryEnvironmentBroadcast' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class CodexAutoRetryEnvironmentBroadcast {
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr SendMessageTimeout(
-        IntPtr hWnd, uint message, IntPtr wParam, string lParam,
-        uint flags, uint timeout, out IntPtr result);
-    public static void Broadcast(string value) {
-        IntPtr result;
-        SendMessageTimeout(new IntPtr(0xffff), 0x001a, IntPtr.Zero, value, 0x0002, 5000, out result);
+    # Do not compile a new P/Invoke type here. Codex can expose a very large
+    # inherited environment block, and Add-Type starts a compiler process whose
+    # CreateProcess call then fails before the installer can finish. Use the
+    # Windows-provided helper from a minimal environment instead. Broadcasting
+    # is advisory: the registry write is the durable operation, and a failure to
+    # notify already-running applications must never make installation roll back.
+    $rundll32 = Join-Path $env:WINDIR 'System32\rundll32.exe'
+    if (-not (Test-Path -LiteralPath $rundll32 -PathType Leaf)) { return }
+    try {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $rundll32
+        $startInfo.Arguments = 'user32.dll,UpdatePerUserSystemParameters'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        # A minimal environment avoids inheriting Codex's oversized process
+        # environment while retaining the system root used by rundll32.
+        $startInfo.EnvironmentVariables.Clear()
+        $startInfo.EnvironmentVariables['SystemRoot'] = [string]$env:SystemRoot
+        $startInfo.EnvironmentVariables['WINDIR'] = [string]$env:WINDIR
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        if ($process) {
+            [void]$process.WaitForExit(5000)
+            $process.Dispose()
+        }
     }
-}
-'@
+    catch {
+        # Environment propagation is best effort and must not break the
+        # transaction or expose the underlying environment to the UI.
     }
-    [CodexAutoRetryEnvironmentBroadcast]::Broadcast('Environment')
 }
 
 function Write-CodexAutoRetryJsonAtomic {

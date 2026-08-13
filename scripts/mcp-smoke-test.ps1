@@ -101,7 +101,7 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     $status = @{
-        version = '0.7.4'
+        version = '0.7.6'
         running = $true
         pid = $PID
         started_at = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')

@@ -11,6 +11,7 @@ $watchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
+$supervisorStop = Join-Path $installDir 'supervisor.stop'
 $statusPath = Join-Path $installDir 'status.json'
 $configPath = Join-Path $installDir 'config.json'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -36,6 +37,7 @@ function Stop-InstalledRuntime {
     $existing = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) })
     if ($existing.Count -gt 0) {
+        New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
         New-Item -ItemType File -Force -Path $stopSignal | Out-Null
         $deadline = (Get-Date).AddSeconds(12)
         do {
@@ -50,6 +52,7 @@ function Stop-InstalledRuntime {
         Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($settingsTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 }) |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
 }
 
 function Set-ConfigSharedMode {
@@ -67,7 +70,7 @@ function Set-ConfigSharedMode {
 }
 
 function Wait-Heartbeat {
-    param([int]$ProcessId, [bool]$RequireSharedReady)
+    param([int]$ProcessId, [bool]$RequireSharedReady, [switch]$ProcessIsSupervisor)
     $deadline = (Get-Date).AddSeconds(20)
     $status = $null
     do {
@@ -76,8 +79,15 @@ function Wait-Heartbeat {
             try { $status = Get-Content -Raw -Encoding UTF8 -LiteralPath $statusPath | ConvertFrom-Json } catch { $status = $null }
         }
         if ($RequireSharedReady -and $status -and [string]$status.controller_state -eq 'shared_app_server_disabled') { $status = $null }
-    } while ((-not $status -or -not $status.running -or [int]$status.pid -ne $ProcessId -or ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required'))) -and (Get-Date) -lt $deadline)
-    if (-not $status -or -not $status.running -or [int]$status.pid -ne $ProcessId) {
+        $heartbeatMatches = if ($ProcessIsSupervisor) {
+            $supervisor = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+            $worker = if ($status) { Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$status.pid) -ErrorAction SilentlyContinue } else { $null }
+            $supervisor -and -not $supervisor.HasExited -and $worker -and $worker.ExecutablePath -and [string]::Equals($worker.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
+        } else {
+            $status -and [int]$status.pid -eq $ProcessId
+        }
+    } while ((-not $status -or -not $status.running -or -not $heartbeatMatches -or ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required'))) -and (Get-Date) -lt $deadline)
+    if (-not $status -or -not $status.running -or -not $heartbeatMatches) {
         throw "Watchdog did not publish a running heartbeat. Check $installDir\logs\daemon.log"
     }
     if ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required')) {
@@ -179,13 +189,14 @@ try {
     Copy-Item -LiteralPath $candidateMcp -Destination $mcpTarget -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\ui\settings.ps1') -Destination $settingsTarget -Force
     New-Item -Path $runKey -Force | Out-Null
-    Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" run' -f $watchdogTarget)
+    Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" supervise' -f $watchdogTarget)
 
     Set-ConfigSharedMode ([bool]$EnableSharedAppServer)
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
-    $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList 'run' -WorkingDirectory $installDir -WindowStyle Hidden -PassThru
-    $status = Wait-Heartbeat -ProcessId $startedProcess.Id -RequireSharedReady:$EnableSharedAppServer
+    $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList @('supervise') -WorkingDirectory $installDir -WindowStyle Hidden -PassThru
+    $status = Wait-Heartbeat -ProcessId $startedProcess.Id -RequireSharedReady:$EnableSharedAppServer -ProcessIsSupervisor
 
     if ($EnableSharedAppServer) {
         $environment = Set-CodexAutoRetrySharedEnvironment -DataDir $installDir -ConfigPath $configPath
