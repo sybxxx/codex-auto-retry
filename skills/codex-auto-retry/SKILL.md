@@ -129,6 +129,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\path-safety-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\supervisor-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\status-smoke-test.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\startup-manager-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1"
@@ -164,6 +165,20 @@ after Codex fully exits, and the installer verifies the watchdog heartbeat.
 Restart Codex once only after enabling the optional shared mode or changing its
 launch mode; then open a new task so Codex discovers the updated MCP tools and
 panel.
+
+## Startup Manager And Remove
+
+The release includes `启动管理器.cmd`. Use it when Windows Explorer does not
+show the full `HKCU\...\Run` command: it reports the exact startup entry,
+supervisor/worker process chain, heartbeat, shared mode, endpoint, and stale
+state, and provides start, stop, enable, disable, safe-disable, and uninstall
+actions. `安全停用.cmd` performs only the break-glass shared-backend cleanup.
+Both tools operate only on paths and state records owned by this plugin.
+
+Complete removal still uses the release's `卸载.cmd` or
+`uninstall-release.ps1`; the graphical manager's default uninstall preserves
+runtime settings/state/logs, while its destructive option asks for confirmation.
+The command-line destructive path requires `-RemoveData -NoPrompt` explicitly.
 
 ## Remove
 
@@ -240,3 +255,9 @@ the environment change, and never removes chat data or a user-owned
 `CODEX_API_KEY`. The worker and supervisor perform the same owned-endpoint
 cleanup when a worker exits or cannot start. Stale PID or heartbeat data must
 be shown as `后台服务未运行`, never as healthy `running`.
+
+If `config.json` is damaged, process-boundary cleanup does not replace it. The
+watchdog uses the ownership-verified `shared-server.json` record to recover the
+actual endpoint and Codex home, restores the environment backup, stops only the
+matching owned server, and exits so the configuration can be repaired
+explicitly.

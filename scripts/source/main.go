@@ -98,6 +98,11 @@ func main() {
 	config, err := loadOrCreateConfig(configPath)
 	if err != nil {
 		logger.Printf("startup failed category=config")
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if cleanupErr := cleanupSharedBackend(cleanupCtx, dataDir); cleanupErr != nil {
+			logger.Printf("shared app-server startup cleanup failed category=config_fallback")
+		}
+		cleanupCancel()
 		return
 	}
 	manager := newSharedServerManager(config, dataDir, logger)

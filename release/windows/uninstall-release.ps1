@@ -54,6 +54,27 @@ if ($marketplaceName -notmatch '^[A-Za-z0-9._-]+$') {
 }
 $pluginId = 'codex-auto-retry@' + $marketplaceName
 
+function Test-OwnedStartupValue {
+    param([AllowNull()][string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $trimmed = $Value.Trim()
+    if ($trimmed.StartsWith('"')) {
+        $closingQuote = $trimmed.IndexOf('"', 1)
+        if ($closingQuote -le 1) { return $false }
+        $executable = $trimmed.Substring(1, $closingQuote - 1)
+    }
+    else {
+        $executable = ($trimmed -split '[\s\t]', 2)[0]
+    }
+    return [string]::Equals($executable, (Join-Path $runtimePath 'codex-auto-retry.exe'), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+$startupProperty = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
+$startupValue = if ($null -eq $startupProperty) { '' } else { [string]$startupProperty.CodexAutoRetry }
+if (-not [string]::IsNullOrWhiteSpace([string]$startupValue) -and -not (Test-OwnedStartupValue ([string]$startupValue))) {
+    throw 'The current-user startup entry belongs to another command and was not removed.'
+}
+
 $cli = $null
 if (-not $SkipCodexCheck) {
     Write-Step 'Locating Codex App command line support...'
@@ -93,7 +114,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "The watchdog uninstaller failed with exit code $LASTEXITCODE." }
     }
     else {
-        Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace([string]$startupValue) -or (Test-OwnedStartupValue ([string]$startupValue))) {
+            Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
+        }
         if ($RemoveData -and (Test-Path -LiteralPath $runtimePath -PathType Container)) {
             $runtimeItem = Get-Item -LiteralPath $runtimePath -Force
             if (($runtimeItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {

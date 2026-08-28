@@ -19,6 +19,7 @@ $runName = 'CodexAutoRetry'
 $environmentName = 'CODEX_APP_SERVER_WS_URL'
 . (Join-Path $PSScriptRoot 'environment.ps1')
 . (Join-Path $PSScriptRoot 'path-safety.ps1')
+[void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
 function Get-RunValue {
     $property = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
@@ -26,7 +27,26 @@ function Get-RunValue {
     return [string]$property.$runName
 }
 
+function Test-OwnedStartupValue {
+    param([AllowNull()][string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $trimmed = $Value.Trim()
+    if ($trimmed.StartsWith('"')) {
+        $closingQuote = $trimmed.IndexOf('"', 1)
+        if ($closingQuote -le 1) { return $false }
+        $executable = $trimmed.Substring(1, $closingQuote - 1)
+    }
+    else {
+        $executable = ($trimmed -split '[\s\t]', 2)[0]
+    }
+    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Set-SupervisedStartupEntry {
+    $existing = Get-RunValue
+    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing)) {
+        throw 'The current-user startup entry belongs to another command and was not overwritten.'
+    }
     New-Item -Path $runKey -Force | Out-Null
     Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" supervise' -f $watchdogTarget)
     $value = Get-RunValue
@@ -69,9 +89,16 @@ function Set-ConfigSharedMode {
     param([bool]$Enabled)
     $config = $null
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-        $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+        try {
+            $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+        }
+        catch {
+            throw "The existing Codex Auto Retry configuration is invalid and was not overwritten: $configPath"
+        }
     }
-    if ($null -eq $config) { $config = [pscustomobject]@{} }
+    if ($null -eq $config) {
+        $config = [pscustomobject]@{}
+    }
     if ($null -eq $config.PSObject.Properties['shared_app_server_enabled']) {
         $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $Enabled
     }

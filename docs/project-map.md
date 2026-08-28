@@ -9,6 +9,7 @@
 | `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
 | `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services, startup mode, endpoint presence, and shared-server state without inspecting conversation content. |
+| `scripts/startup-manager.ps1` | Provides a standalone status/start/stop/enable/disable/safe-disable/uninstall manager with ownership checks and a graphical Windows Forms view. |
 | `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, migrates the per-user startup entry to supervised mode, and rolls back on failure. |
 | `scripts/path-safety.ps1` | Detects Windows package redirection or directory links before runtime installation can be mistaken for a host installation. |
 | `scripts/path-safety-smoke-test.ps1` | Verifies ordinary paths, missing-path probe cleanup, redirected-path rejection, and non-destructive failure. |
@@ -31,7 +32,7 @@
 | `release/windows/deploy.ps1` | One-click deployment engine: validates the package, writes the direct background MCP launcher, safely updates the personal marketplace, registers the plugin, installs the runtime, and verifies the result. |
 | `release/windows/uninstall-release.ps1` | Removes Codex registration, startup, and installed source while preserving runtime data unless full removal is explicitly requested. |
 | `release/windows/common.ps1` | Shared path-safety, JSON, executable validation, and Codex CLI discovery helpers for release deployment. |
-| `release/windows/安装.cmd`, `release/windows/卸载.cmd` | Double-click entry points for nontechnical Windows users. |
+| `release/windows/安装.cmd`, `release/windows/卸载.cmd`, `release/windows/启动管理器.cmd`, `release/windows/启动管理器.vbs`, `release/windows/安全停用.cmd` | Double-click entry points for installation, clean removal, startup management, and break-glass shared-backend disable; the VBS helper starts the graphical manager without a console. |
 
 ## Watchdog Source
 

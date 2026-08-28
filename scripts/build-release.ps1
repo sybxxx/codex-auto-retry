@@ -13,6 +13,9 @@ $releaseTemplate = Join-Path $pluginRoot 'release\windows'
 $installLauncher = ([string][char]0x5b89) + ([char]0x88c5) + '.cmd'
 $uninstallLauncher = ([string][char]0x5378) + ([char]0x8f7d) + '.cmd'
 $installReadme = 'README-' + ([char]0x5b89) + ([char]0x88c5) + ([char]0x8bf4) + ([char]0x660e) + '.txt'
+$startupManagerLauncher = ([string][char]0x542f) + ([char]0x52a8) + ([char]0x7ba1) + ([char]0x7406) + ([char]0x5668) + '.cmd'
+$safeDisableLauncher = ([string][char]0x5b89) + ([char]0x5168) + ([char]0x505c) + ([char]0x7528) + '.cmd'
+$startupManagerVbs = 'startup-manager.vbs'
 
 $pluginManifestPath = Join-Path $pluginRoot '.codex-plugin\plugin.json'
 $pluginManifest = Read-JsonDocument -Path $pluginManifestPath
@@ -30,7 +33,7 @@ if ($versionSource -notmatch 'const\s+appVersion\s*=\s*"([^"]+)"' -or $matches[1
     throw 'The watchdog appVersion and plugin base version do not match.'
 }
 
-foreach ($required in @('common.ps1', 'deploy.ps1', 'uninstall-release.ps1', $installLauncher, $uninstallLauncher, $installReadme)) {
+foreach ($required in @('common.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1', $startupManagerVbs, $installLauncher, $uninstallLauncher, $startupManagerLauncher, $safeDisableLauncher, $installReadme)) {
     if (-not (Test-Path -LiteralPath (Join-Path $releaseTemplate $required) -PathType Leaf)) {
         throw "Release template file is missing: $required"
     }
@@ -58,7 +61,7 @@ try {
     New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
     Write-Host '[Release] Staging one-click installer...'
-    foreach ($file in @('common.ps1', 'deploy.ps1', 'uninstall-release.ps1', $installLauncher, $uninstallLauncher, $installReadme)) {
+    foreach ($file in @('common.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1', $startupManagerVbs, $installLauncher, $uninstallLauncher, $startupManagerLauncher, $safeDisableLauncher, $installReadme)) {
         Copy-Item -LiteralPath (Join-Path $releaseTemplate $file) -Destination (Join-Path $packageRoot $file) -Force
     }
 

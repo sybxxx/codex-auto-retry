@@ -11,6 +11,9 @@ $testRoot = Join-Path $env:TEMP ('codex-auto-retry-release-test-' + [guid]::NewG
 $installLauncher = ([string][char]0x5b89) + ([char]0x88c5) + '.cmd'
 $uninstallLauncher = ([string][char]0x5378) + ([char]0x8f7d) + '.cmd'
 $installReadme = 'README-' + ([char]0x5b89) + ([char]0x88c5) + ([char]0x8bf4) + ([char]0x660e) + '.txt'
+$startupManagerLauncher = ([string][char]0x542f) + ([char]0x52a8) + ([char]0x7ba1) + ([char]0x7406) + ([char]0x5668) + '.cmd'
+$safeDisableLauncher = ([string][char]0x5b89) + ([char]0x5168) + ([char]0x505c) + ([char]0x7528) + '.cmd'
+$startupManagerVbs = 'startup-manager.vbs'
 
 function Get-PeSubsystem {
     param([string]$Path)
@@ -37,6 +40,10 @@ try {
         $uninstallLauncher,
         'deploy.ps1',
         'uninstall-release.ps1',
+        'startup-manager.ps1',
+        $startupManagerVbs,
+        $startupManagerLauncher,
+        $safeDisableLauncher,
         'common.ps1',
         $installReadme,
         'release-manifest.json',
@@ -49,6 +56,7 @@ try {
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\startup-manager-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\supervisor-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
@@ -104,7 +112,7 @@ try {
         throw 'MCP executable must use the Windows GUI subsystem.'
     }
 
-    foreach ($script in @('common.ps1', 'deploy.ps1', 'uninstall-release.ps1')) {
+    foreach ($script in @('common.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1')) {
         $tokens = $null
         $errors = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $script), [ref]$tokens, [ref]$errors)
@@ -119,6 +127,7 @@ try {
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\startup-manager-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\supervisor-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\uninstall.ps1',
@@ -168,8 +177,18 @@ try {
         -not $installerSource.Contains('-WorkingDirectory $installDir') -or
         -not $installerSource.Contains('-LegacyOwnedEndpoint') -or
         -not $installerSource.Contains('Set-SupervisedStartupEntry') -or
+        -not $installerSource.Contains('Test-OwnedStartupValue') -or
         -not $installerSource.Contains("ArgumentList @('supervise')")) {
         throw 'Installer does not enforce fail-open upgrades and supervised startup migration.'
+    }
+    $environmentSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\environment.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if (-not $installerSource.Contains('existing Codex Auto Retry configuration is invalid and was not overwritten') -or
+        -not $environmentSource.Contains('Break-glass cleanup must continue even when the settings file is') -or
+        -not $environmentSource.Contains('Do not replace it with guessed defaults')) {
+        throw 'Installer or safe-disable does not preserve a damaged configuration.'
     }
     $deploySource = [System.IO.File]::ReadAllText(
         (Join-Path $root 'deploy.ps1'),
@@ -183,12 +202,61 @@ try {
         -not $statusSource.Contains('runtime_path_redirected')) {
         throw 'Release does not reject or report a redirected runtime path.'
     }
+    $runtimeUninstallSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\uninstall.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if (-not $runtimeUninstallSource.Contains('Assert-CodexAutoRetryHostPath') -or
+        -not $runtimeUninstallSource.Contains('Test-OwnedStartupValue')) {
+        throw 'Runtime uninstall does not enforce path and startup ownership guards.'
+    }
+    $releaseUninstallSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'uninstall-release.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if (-not $releaseUninstallSource.Contains('$startupProperty = Get-ItemProperty')) {
+        throw 'Release uninstaller does not handle a missing startup value safely.'
+    }
+    $safeDisableSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\safe-disable.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if (-not $safeDisableSource.Contains('Test-OwnedStartupValue')) {
+        throw 'Safe-disable does not enforce startup ownership guards.'
+    }
+    $managerLauncherSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root $startupManagerLauncher),
+        [System.Text.Encoding]::ASCII
+    )
+    if (-not $managerLauncherSource.Contains('wscript.exe //B //Nologo') -or
+        -not $managerLauncherSource.Contains('exit /b 0')) {
+        throw 'The graphical startup manager launcher still holds a visible console.'
+    }
+    $managerVbsSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root $startupManagerVbs),
+        [System.Text.Encoding]::ASCII
+    )
+    if (-not $managerVbsSource.Contains('shell.Run command, 0, False') -or
+        -not $managerVbsSource.Contains('powershell.exe')) {
+        throw 'The graphical startup manager does not use a detached no-console launcher.'
+    }
+    $managerWrapperSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'startup-manager.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if ($managerWrapperSource.Contains('Start-Process') -or
+        -not $managerWrapperSource.Contains('& powershell.exe @arguments')) {
+        throw 'The graphical startup manager wrapper does not preserve paths safely.'
+    }
 
     $savedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         $pathSafetyOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1') 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) { throw "Runtime path-safety test failed:`n$pathSafetyOutput" }
+
+        $managerOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'payload\codex-auto-retry\scripts\startup-manager-smoke-test.ps1') 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "Startup manager test failed:`n$managerOutput" }
 
         $installOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'deploy.ps1') -DryRun -SkipCodexCheck 2>&1 | Out-String)
         $installExitCode = $LASTEXITCODE
@@ -228,6 +296,7 @@ try {
         DirectMcpInstall = 'passed'
         UninstallerDryRun = 'passed'
         SettingsCommandWait = 'bounded-and-responsive'
+        StartupManager = 'verified'
         FailOpenInstallGuard = 'present'
         RuntimePathGuard = 'verified'
         Status = 'release verified'

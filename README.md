@@ -192,6 +192,15 @@ runtime heartbeat. It requires neither administrator rights nor Go or Node.js.
 `卸载.cmd` removes the active integration while preserving retry configuration
 and state by default.
 
+`启动管理器.cmd` opens a standalone startup manager through a detached
+Windows Script Host launcher, so double-clicking it does not leave a console
+window in front of the manager. It displays the exact
+startup command, watchdog process and heartbeat, shared-backend state, and
+endpoint status. It can enable/disable startup, start/stop the service, safely
+disable the shared backend, or uninstall the integration. `安全停用.cmd` is a
+one-click break-glass action that disables shared mode and restores the official
+Codex backend. These tools do not require the Codex management panel to be open.
+
 The supervisor, watchdog worker, and MCP management server are installed under
 `%LOCALAPPDATA%\CodexAutoRetry`. The supervisor starts the worker and keeps it
 available after an unexpected worker exit. The MCP server starts on demand through Codex and exits with
@@ -313,3 +322,10 @@ break-glass script is independent of the watchdog: it removes only the plugin's
 startup entry, persists shared mode as disabled, stops only plugin-owned processes, restores only the endpoint
 recorded in `environment-backup.json`, broadcasts the environment change, and
 leaves chats, state, logs, and user-owned credentials intact.
+
+The watchdog also fails open when `config.json` is unreadable at startup or
+shutdown. It does not overwrite that file; it uses the ownership-verified
+`shared-server.json` record to recover the actual loopback endpoint, restores
+the environment backup, stops the matching plugin-owned server, and exits for
+explicit repair. This prevents a damaged configuration from leaving Codex
+connected to a dead plugin port.

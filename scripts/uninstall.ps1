@@ -13,9 +13,32 @@ $supervisorStop = Join-Path $installDir 'supervisor.stop'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'CodexAutoRetry'
 . (Join-Path $PSScriptRoot 'environment.ps1')
+. (Join-Path $PSScriptRoot 'path-safety.ps1')
+
+if (Test-Path -LiteralPath $installDir -PathType Container) {
+    [void](Assert-CodexAutoRetryHostPath -Path $installDir)
+}
+
+function Test-OwnedStartupValue {
+    param([AllowNull()][string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $trimmed = $Value.Trim()
+    if ($trimmed.StartsWith('"')) {
+        $closingQuote = $trimmed.IndexOf('"', 1)
+        if ($closingQuote -le 1) { return $false }
+        $executable = $trimmed.Substring(1, $closingQuote - 1)
+    }
+    else {
+        $executable = ($trimmed -split '[\s\t]', 2)[0]
+    }
+    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
+}
 
 $runProperty = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
 $runValue = if ($null -eq $runProperty) { '' } else { [string]$runProperty.$runName }
+if (-not [string]::IsNullOrWhiteSpace($runValue) -and -not (Test-OwnedStartupValue $runValue)) {
+    throw 'The current-user startup entry belongs to another command and was not removed.'
+}
 $stateEndpoint = $null
 $statePath = Join-Path $installDir 'shared-server.json'
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {

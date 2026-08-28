@@ -316,3 +316,62 @@ func TestFailOpenCleanupRestoresOwnedLegacyEndpointWithoutBackup(t *testing.T) {
 		t.Fatalf("legacy endpoint remained after fail-open cleanup: value=%q present=%v err=%v", value, stillPresent, err)
 	}
 }
+
+func TestCleanupSharedBackendFallsBackWhenConfigIsCorrupt(t *testing.T) {
+	dataDir := t.TempDir()
+	previous, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restoreUserEnvironment(sharedAppServerEnvironmentName, previous, present) })
+	if err := restoreUserEnvironment(sharedAppServerEnvironmentName, "", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use the legacy default to prove cleanup reads the actual endpoint from
+	// shared-server.json instead of assuming the current default port.
+	config := defaultConfig()
+	config.SharedAppServerPort = legacyDefaultSharedAppServerPort
+	manager := newSharedServerManager(config, dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sharedServerState{
+		PID:            4_000_000,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	if err := writeJSONAtomic(filepath.Join(dataDir, "shared-server.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setOwnedSharedEnvironment(dataDir, manager.Endpoint()); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dataDir, "config.json")
+	corrupt := []byte("{ this is not valid json\n")
+	if err := os.WriteFile(configPath, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanupSharedBackend(context.Background(), dataDir); err != nil {
+		t.Fatalf("fallback cleanup failed: %v", err)
+	}
+	if data, err := os.ReadFile(configPath); err != nil || string(data) != string(corrupt) {
+		t.Fatalf("fallback cleanup changed the corrupt config: data=%q err=%v", data, err)
+	}
+	value, stillPresent, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil || stillPresent || value != "" {
+		t.Fatalf("fallback cleanup left the owned endpoint installed: value=%q present=%v err=%v", value, stillPresent, err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "environment-backup.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("environment ownership backup was not consumed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "shared-server.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned shared-server state was not removed: %v", err)
+	}
+}

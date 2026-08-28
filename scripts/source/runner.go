@@ -89,7 +89,13 @@ func (r *appResumeRunner) FailOpenSharedBackend(ctx context.Context) error {
 	}
 	config, err := loadOrCreateConfig(r.configPath)
 	if err != nil {
-		return err
+		// Runtime config corruption must not strand Codex on a dead shared
+		// endpoint. The fallback cleanup uses only ownership-verified state and
+		// leaves the damaged config untouched for explicit repair.
+		if cleanupErr := cleanupSharedBackend(ctx, filepath.Dir(r.configPath)); cleanupErr != nil {
+			return fmt.Errorf("load config: %w; cleanup shared backend: %v", err, cleanupErr)
+		}
+		return nil
 	}
 	config.SharedAppServerEnabled = false
 	if err := config.validate(); err != nil {

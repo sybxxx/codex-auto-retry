@@ -60,6 +60,13 @@ cleanup. Therefore an interrupted plugin backend fails open to Codex's normal
 backend rather than leaving `CODEX_APP_SERVER_WS_URL` pointing at an unbound
 loopback port.
 
+If `config.json` is unreadable during one of these boundaries, cleanup does not
+rewrite or replace it. It derives the actual loopback port and Codex home from
+the ownership-checked `shared-server.json`, restores the recorded environment
+backup, and stops only the matching plugin-owned process. The watchdog then
+stops so the damaged configuration can be repaired explicitly; Codex is not
+left pointed at a dead plugin endpoint.
+
 Installation is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
 environment ownership, and the previous binaries are captured; a failed
@@ -79,6 +86,18 @@ the plugin's startup entry, persists shared mode disabled, restores the endpoint
 recorded in `environment-backup.json`, broadcasts `Environment`, and verifies that the
 stopped endpoint was not left in place. It never deletes `CODEX_API_KEY`, chat
 data, state, or logs.
+
+The release also includes `启动管理器.cmd`, `startup-manager.vbs`, and
+`startup-manager.ps1`. The command file hands off to a detached Windows Script
+Host launcher so Explorer double-clicks do not keep a console window in front
+of the graphical manager. It shows
+the exact current-user startup command, whether it is the supervised entry, the
+verified watchdog PID/heartbeat, shared mode, endpoint presence, and shared
+server state. It can enable or disable only the plugin-owned startup value,
+start or stop only the plugin executable, invoke safe-disable, or perform the
+complete release uninstallation. The default uninstall keeps retry data;
+deleting runtime data requires a separate confirmation in the graphical
+manager or `-RemoveData -NoPrompt` on an explicitly invoked command.
 
 All status consumers verify both PID/path and heartbeat age. A stale status file
 is therefore shown as `backend service not running`, even when it still

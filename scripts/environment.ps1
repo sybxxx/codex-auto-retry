@@ -67,7 +67,12 @@ function Disable-CodexAutoRetrySharedMode {
     $configPath = Join-Path $DataDir 'config.json'
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return $false }
     try { $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json }
-    catch { throw "The shared app-server configuration is invalid: $configPath" }
+    catch {
+        # Break-glass cleanup must continue even when the settings file is
+        # damaged. Do not replace it with guessed defaults; endpoint and
+        # process cleanup are independently ownership-checked by the caller.
+        return $false
+    }
     if ($null -eq $config.PSObject.Properties['shared_app_server_enabled']) {
         $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $false
     }

@@ -41,6 +41,19 @@ try {
     if ([bool]$afterConfig.shared_app_server_enabled -or (Test-Path -LiteralPath $statePath)) {
         throw 'safe-disable did not close shared mode or remove stale owned state.'
     }
+
+    # A damaged config must not prevent the break-glass path from removing
+    # the startup route and restoring the official backend.
+    $corruptRoot = Join-Path $testRoot 'corrupt-config'
+    New-Item -ItemType Directory -Force -Path $corruptRoot | Out-Null
+    $corruptConfigPath = Join-Path $corruptRoot 'config.json'
+    $corruptConfig = '{ this is not valid json'
+    [System.IO.File]::WriteAllText($corruptConfigPath, $corruptConfig, [System.Text.UTF8Encoding]::new($false))
+    & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $safeDisable -DataDir $corruptRoot | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'safe-disable failed when config.json was corrupt.' }
+    if ((Get-Content -Raw -Encoding UTF8 -LiteralPath $corruptConfigPath) -ne $corruptConfig) {
+        throw 'safe-disable replaced a corrupt config instead of preserving it.'
+    }
     [pscustomobject]@{ Status = 'passed'; Parser = 'passed'; UserValuesPreserved = $true; SharedModeDisabled = $true; StaleStateRemoved = $true; TaskDataDeleted = $false }
 }
 finally {

@@ -118,10 +118,55 @@ func disableSharedAppServer(ctx context.Context, dataDir string, config Config) 
 // during the gap instead of pointing Codex at a dead port.
 func cleanupSharedBackend(ctx context.Context, dataDir string) error {
 	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
-	if err != nil {
-		return err
+	if err == nil {
+		return disableSharedAppServer(ctx, dataDir, config)
 	}
-	return disableSharedAppServer(ctx, dataDir, config)
+	// A malformed or unreadable config must never prevent process-boundary
+	// cleanup. Reconstruct only the cleanup inputs from the plugin-owned state
+	// record; do not rewrite the user's damaged config file. This is the last
+	// line of defense against leaving CODEX_APP_SERVER_WS_URL pointed at a dead
+	// loopback port after a crash or interrupted upgrade.
+	if cleanupErr := cleanupSharedBackendWithoutConfig(ctx, dataDir); cleanupErr != nil {
+		return fmt.Errorf("config unavailable: %v; fallback cleanup: %w", err, cleanupErr)
+	}
+	return nil
+}
+
+// cleanupSharedBackendWithoutConfig performs the minimum ownership-checked
+// cleanup that is safe when config.json cannot be parsed. The persisted state
+// carries the actual endpoint and Codex home used by the server, so an older
+// or custom port can be handled without guessing from a default alone.
+func cleanupSharedBackendWithoutConfig(ctx context.Context, dataDir string) error {
+	config := defaultConfig()
+	manager := newSharedServerManager(config, dataDir, nil)
+	state, stateErr := manager.readState()
+	if stateErr == nil {
+		port := endpointPort(state.Endpoint)
+		if port < 1024 || port > 65535 || !validSharedServerEndpoint(state.Endpoint, port) {
+			stateErr = errors.New("shared app-server state has an invalid endpoint")
+		} else {
+			// The state record is the source of truth for the endpoint during
+			// cleanup. Keep the current user's CODEX_HOME out of this decision;
+			// an upgrade or shell change may have altered it since the server was
+			// started.
+			config.SharedAppServerPort = port
+			manager = newSharedServerManager(config, dataDir, nil)
+			manager.codexHome = expandPath(state.CodexHome)
+			if !manager.sharedServerStateOwnedByPlugin(state) {
+				stateErr = errors.New("shared app-server state is not owned by this plugin")
+			}
+		}
+	}
+
+	var legacyEndpoints []string
+	if stateErr == nil {
+		legacyEndpoints = manager.ownedLegacyEndpoints(ctx)
+	}
+	// Restore the environment first. If the process is still alive, StopOwned
+	// then terminates only the same state that passed the ownership checks.
+	_, environmentErr := restoreOwnedSharedEnvironment(dataDir, legacyEndpoints...)
+	processErr := manager.StopOwned(ctx)
+	return errors.Join(environmentErr, processErr)
 }
 
 // detachOwnedSharedEnvironment removes an endpoint left by a previous worker
