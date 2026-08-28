@@ -34,6 +34,7 @@ type sharedAppServerController struct {
 var errCodexRestartRequired = errors.New("Codex must restart to use the shared app-server")
 var errSharedAppServerDisabled = errors.New("shared Codex app-server mode is disabled")
 var errSharedAppServerEnvironmentConflict = errors.New("shared Codex app-server environment conflicts with another user value")
+var errSharedAppServerConfigInvalid = errors.New("shared Codex app-server configuration is invalid")
 
 type appThreadReadResult struct {
 	Thread *struct {
@@ -625,6 +626,9 @@ func classifyAppServerError(err error) string {
 	if errors.Is(err, errResumeSettingsUnavailable) {
 		return "thread_settings_unavailable"
 	}
+	if invalidCodexAppTransportError(err) {
+		return "shared_app_server_config_invalid"
+	}
 	var requestError *appServerRequestError
 	method := ""
 	if errors.As(err, &requestError) {
@@ -664,6 +668,16 @@ func classifyAppServerError(err error) string {
 		return "app_server_subagent_inject_failed"
 	}
 	return "app_server_request_failed"
+}
+
+func invalidCodexAppTransportError(err error) bool {
+	var requestError *appServerRequestError
+	if !errors.As(err, &requestError) {
+		return false
+	}
+	message := strings.ToLower(requestError.Message)
+	return strings.Contains(message, "invalid transport") &&
+		(strings.Contains(message, "mcp_servers.codex_app") || strings.Contains(message, "codex_app"))
 }
 
 func emptyAppInputUnsupported(err error) bool {

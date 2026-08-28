@@ -139,11 +139,14 @@ func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
 	if got := controllerFailureReason(DispatchResult{}, errSharedAppServerEnvironmentConflict); got != "shared_app_server_environment_conflict" || !controllerFailureNeedsAction(got) {
 		t.Fatalf("shared environment conflict was not classified as actionable: %s", got)
 	}
+	if got := controllerFailureReason(DispatchResult{}, errSharedAppServerConfigInvalid); got != "shared_app_server_config_invalid" || !controllerFailureNeedsAction(got) {
+		t.Fatalf("invalid shared-server config was not classified as actionable: %s", got)
+	}
 	if got := controllerFailureReason(DispatchResult{Outcome: outcomeRetryLater, Reason: "shared_app_server_disabled"}, nil); got != "shared_app_server_disabled" || !controllerFailureNeedsAction(got) {
 		t.Fatalf("disabled shared mode was not treated as a terminal fail-open condition: %s", got)
 	}
 	for _, reason := range []string{
-		"shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict",
+		"shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_config_invalid",
 		"codex_background_channel_unavailable", "codex_background_dispatch_failed",
 		"controller_timeout", "controller_invalid_result", "controller_unavailable",
 	} {

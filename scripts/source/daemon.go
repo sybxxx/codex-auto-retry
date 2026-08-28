@@ -206,7 +206,8 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 	// exits after login is recreated before Codex receives a dead endpoint.
 	needsProbe := d.config.SharedAppServerEnabled ||
 		d.controllerState == "codex_restart_required" ||
-		d.controllerState == "codex_not_running"
+		d.controllerState == "codex_not_running" ||
+		d.controllerState == "shared_app_server_config_invalid"
 	if !needsProbe {
 		for _, thread := range d.state.Threads {
 			if thread.Stopped != nil && (thread.Stopped.Reason == "codex_restart_required" ||
@@ -221,22 +222,25 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 		return false
 	}
 	sharedEnabled := d.config.SharedAppServerEnabled
+	latchedConfigFailure := d.controllerState == "shared_app_server_config_invalid"
 	d.lastControllerProbe = now
 	d.mu.Unlock()
+	if sharedEnabled && latchedConfigFailure {
+		state := d.failOpenSharedBackend(ctx, "shared_app_server_config_invalid")
+		d.mu.Lock()
+		if state == "shared_app_server_disabled" {
+			d.config.SharedAppServerEnabled = false
+		}
+		d.controllerState = state
+		if state != "shared_app_server_disabled" {
+			d.lastError = "shared_app_server_config_invalid"
+		}
+		d.mu.Unlock()
+		return false
+	}
 	state := runner.ControllerState(ctx)
 	if sharedEnabled && controllerFailureNeedsFailOpen(state) {
-		if cleaner, supported := d.runner.(sharedBackendFailureHandler); supported {
-			failureReason := state
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			cleanupErr := cleaner.FailOpenSharedBackend(cleanupCtx)
-			cleanupCancel()
-			if cleanupErr != nil {
-				d.logger.Printf("shared app-server fail-open cleanup failed category=%s", failureReason)
-			} else {
-				state = "shared_app_server_disabled"
-				d.logger.Printf("shared app-server disabled after runtime failure category=%s", failureReason)
-			}
-		}
+		state = d.failOpenSharedBackend(ctx, state)
 	}
 	d.mu.Lock()
 	if state == "shared_app_server_disabled" {
@@ -245,6 +249,22 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 	d.controllerState = state
 	d.mu.Unlock()
 	return state == "ready"
+}
+
+func (d *daemon) failOpenSharedBackend(ctx context.Context, reason string) string {
+	cleaner, supported := d.runner.(sharedBackendFailureHandler)
+	if !supported {
+		return reason
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
+	cleanupErr := cleaner.FailOpenSharedBackend(cleanupCtx)
+	cleanupCancel()
+	if cleanupErr != nil {
+		d.logger.Printf("shared app-server fail-open cleanup failed category=%s", reason)
+		return reason
+	}
+	d.logger.Printf("shared app-server disabled after runtime failure category=%s", reason)
+	return "shared_app_server_disabled"
 }
 
 func (d *daemon) reopenRestartRequiredLocked(now time.Time) {
@@ -580,7 +600,7 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 
 func controllerFailureNeedsAction(reason string) bool {
 	switch reason {
-	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_disabled":
+	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_disabled", "shared_app_server_config_invalid":
 		return true
 	default:
 		return false
@@ -590,7 +610,7 @@ func controllerFailureNeedsAction(reason string) bool {
 func controllerFailureNeedsFailOpen(reason string) bool {
 	switch reason {
 	case "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict",
-		"codex_background_channel_unavailable", "codex_background_dispatch_failed",
+		"shared_app_server_config_invalid", "codex_background_channel_unavailable", "codex_background_dispatch_failed",
 		"controller_timeout", "controller_invalid_result", "controller_unavailable":
 		return true
 	default:
@@ -642,7 +662,8 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	if d.paused {
 		return jobs
 	}
-	if !d.config.SharedAppServerEnabled || d.controllerState == "shared_app_server_disabled" {
+	if !d.config.SharedAppServerEnabled || d.controllerState == "shared_app_server_disabled" ||
+		d.controllerState == "shared_app_server_config_invalid" {
 		// The fail-open mode deliberately has no recovery transport. Do not
 		// promote a due item to AwaitingRetry: doing so looks like a retry was
 		// started and then failed, even though Codex never received a request.

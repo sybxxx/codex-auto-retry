@@ -25,6 +25,16 @@ If the optional mode is already enabled but cannot prepare its backend at
 startup, the watchdog performs the same transition automatically and records the
 failure reason while Codex continues with its official backend.
 
+The shared server also mirrors the bundled Desktop `codex_app` definition when
+it starts. The JSON definition is converted to the app-server's TOML override,
+the plugin-only `type` field is removed, relative paths are made absolute, and
+the normalized definition is hashed in `shared-server.json`. A Codex update
+that changes this definition schedules an owned-server migration after the
+Desktop process closes. If the app-server reports an invalid `codex_app`
+transport, the watchdog disables shared mode, restores the official endpoint,
+and stops the affected retry instead of repeatedly sending requests to a bad
+backend.
+
 If the stored shared-mode flag is still enabled but `CODEX_APP_SERVER_WS_URL`
 has disappeared, readiness first verifies the plugin-owned server state and
 restores the recorded endpoint, then broadcasts the environment change. A

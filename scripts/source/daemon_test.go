@@ -224,6 +224,27 @@ func TestSharedBackendFailureFailsOpenAndStopsReusingDeadEndpoint(t *testing.T) 
 	}
 }
 
+func TestInvalidCodexAppConfigFailsOpenWithoutRepeatedRetry(t *testing.T) {
+	now := time.Now().UTC()
+	runner := &failOpenRunner{
+		stateAwareRunner: &stateAwareRunner{fakeResumeRunner: successfulRunner(), state: "ready"},
+	}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.controllerState = "shared_app_server_config_invalid"
+	if d.controllerRestartReady(context.Background(), now) {
+		t.Fatal("invalid shared app-server configuration was reported as ready")
+	}
+	if runner.failOpenCalls != 1 {
+		t.Fatalf("invalid shared app-server configuration did not trigger fail-open cleanup: %d", runner.failOpenCalls)
+	}
+	if d.controllerState != "shared_app_server_disabled" || d.config.SharedAppServerEnabled {
+		t.Fatalf("invalid shared app-server configuration was not disabled: state=%s config=%+v", d.controllerState, d.config)
+	}
+	if d.controllerRestartReady(context.Background(), now.Add(11*time.Second)) {
+		t.Fatal("disabled shared app-server was probed after fail-open")
+	}
+}
+
 func TestDaemonPauseAndQueuedControls(t *testing.T) {
 	d := newTestDaemon(t, isolatedConfig(filepath.Join(t.TempDir(), ".codex")), successfulRunner())
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0423"

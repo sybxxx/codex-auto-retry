@@ -631,6 +631,25 @@ func TestClassifyAppServerErrorRetainsFailedMethodWithoutMessageContent(t *testi
 	}
 }
 
+func TestClassifyAppServerErrorRecognizesInvalidCodexAppTransport(t *testing.T) {
+	err := &appServerRequestError{
+		Method:  "thread/resume",
+		Code:    -32600,
+		Message: "failed to load configuration: invalid transport in `mcp_servers.codex_app`",
+	}
+	if got := classifyAppServerError(err); got != "shared_app_server_config_invalid" {
+		t.Fatalf("invalid codex_app transport was classified as %q", got)
+	}
+	for _, message := range []string{
+		"failed to load configuration: invalid transport in `mcp_servers.other`",
+		"failed to load configuration: invalid command in `mcp_servers.codex_app`",
+	} {
+		if got := classifyAppServerError(&appServerRequestError{Method: "thread/resume", Message: message}); got == "shared_app_server_config_invalid" {
+			t.Fatalf("unrelated app-server error was classified as shared config failure: %q", message)
+		}
+	}
+}
+
 func containsString(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {

@@ -195,8 +195,14 @@ it with the hidden-console server.
 - If an enabled backend cannot prepare at startup, the watchdog clears its
   owned endpoint and persists the fail-open mode with a diagnostic reason.
 - The watchdog records the server PID, executable, endpoint, Codex home, and
-  start time. A responsive port is rejected unless its live process still
+  start time. It records a hash of the normalized bundled `codex_app` MCP
+  definition as well, so an app update can trigger a controlled server
+  migration. A responsive port is rejected unless its live process still
   matches that owned record.
+- The shared launch reproduces Desktop's `codex_app` configuration through a
+  structured `-c` override. Plugin-only transport metadata is normalized before
+  launch; a reported invalid transport is classified as a configuration fault
+  and fails open to the official Desktop backend.
 - Loopback WebSocket traffic bypasses environment HTTP proxies.
 - JSON-RPC calls are fixed structured methods; task IDs, fallback prompts, and
   allowlisted settings are JSON values, not executable strings.

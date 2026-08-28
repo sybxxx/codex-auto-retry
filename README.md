@@ -313,6 +313,16 @@ If an explicitly enabled shared backend later fails during watchdog startup,
 the watchdog performs the same fail-open transition: it clears its owned
 endpoint, disables shared mode, and leaves Codex on its official backend.
 
+The shared launch mirrors the bundled Desktop `codex_app` MCP definition so the
+WebSocket app-server sees the same server shape as the official Desktop launch.
+The plugin reads that JSON definition without editing it, removes only the
+plugin-marketplace `type` field that older app-server versions do not accept,
+normalizes relative paths, and records a hash so a Codex update can trigger an
+owned-server migration. If the server still reports an invalid `codex_app`
+transport, the watchdog disables shared mode, restores the official endpoint,
+and stops the affected retry rather than leaving Codex connected to a broken
+local backend.
+
 The tray form stays responsive while this check runs and stops waiting after
 35 seconds. A failed or timed-out check leaves Codex on its previous backend
 and does not save the shared-mode switch.

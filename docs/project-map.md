@@ -57,7 +57,8 @@ Source code lives under `scripts/source`.
 | `runner.go` | Controller result validation, privacy-safe failure codes, runtime shared-backend fail-open handling, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup, exact-thread rollout discovery, and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
 | `app_server_rpc.go` | Loopback JSON-RPC WebSocket transport, initialization, request correlation, and fail-closed handling of interactive server requests. |
-| `shared_server_windows.go` | Starts and records the opt-in shared app-server in one hidden inherited console, validates loopback health and versioned process ownership, migrates the older detached launch after Codex closes, and discovers the Codex CLI. |
+| `shared_server_windows.go` | Starts and records the opt-in shared app-server in one hidden inherited console, applies the normalized bundled `codex_app` MCP override, validates loopback health and versioned process ownership, migrates stale launch/config state after Codex closes, and discovers the Codex CLI. |
+| `codex_app_mcp_windows.go` | Reads the bundled Desktop `codex_app` definition without modifying it, normalizes it into a TOML app-server override, and computes the migration hash. |
 | `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, process-boundary cleanup, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
 | `desktop_transport_windows.go` | Read-only detection of stopped, old Desktop-owned stdio, or shared-server Codex transport. |
 | `shared_controller.go` | Settings-preserving unloaded task and parent resume, live task/goal rechecks, deterministic parent notification, exact-child continuation, goal recovery/blocking, and silent normal continuation. |

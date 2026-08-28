@@ -38,6 +38,7 @@ type sharedServerState struct {
 	CodexHome      string    `json:"codex_home"`
 	Executable     string    `json:"executable"`
 	ExecutableHash string    `json:"executable_hash"`
+	MCPConfigHash  string    `json:"mcp_config_hash,omitempty"`
 	Owner          string    `json:"owner"`
 	Version        string    `json:"version"`
 	StartedAt      time.Time `json:"started_at"`
@@ -100,13 +101,17 @@ func (m *sharedServerManager) SupportsHome(value string) bool {
 func (m *sharedServerManager) Ensure(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	_, desiredMCPConfigHash, err := loadCodexAppMCPOverride()
+	if err != nil {
+		return fmt.Errorf("%w: codex_app MCP configuration: %v", errSharedAppServerConfigInvalid, err)
+	}
 	if m.probe(ctx) == nil {
 		state, err := m.readState()
 		if err == nil && m.sharedServerStateOwnedByPlugin(state) && m.ownsProcess(ctx, state) {
 			if err := m.adoptSharedServerState(&state); err != nil {
 				return fmt.Errorf("adopt shared app-server state: %w", err)
 			}
-			if state.LaunchMode != sharedServerLaunchMode {
+			if m.sharedServerNeedsMigration(state, desiredMCPConfigHash) {
 				m.scheduleLaunchMigration()
 			}
 			return nil
@@ -131,6 +136,9 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 				probeErr := m.probe(probeCtx)
 				cancel()
 				if probeErr == nil {
+					if m.sharedServerNeedsMigration(state, desiredMCPConfigHash) {
+						m.scheduleLaunchMigration()
+					}
 					return nil
 				}
 				select {
@@ -254,7 +262,11 @@ func (m *sharedServerManager) migrateLegacyLaunch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if state.LaunchMode == sharedServerLaunchMode {
+	_, desiredMCPConfigHash, err := loadCodexAppMCPOverride()
+	if err != nil {
+		return fmt.Errorf("%w: %v", errSharedAppServerConfigInvalid, err)
+	}
+	if !m.sharedServerNeedsMigration(state, desiredMCPConfigHash) {
 		return nil
 	}
 	if codexDesktopRunning() {
@@ -369,10 +381,11 @@ func (m *sharedServerManager) start(executable string) error {
 	if hash == "" {
 		return errors.New("Codex executable hash could not be verified")
 	}
-	arguments := []string{
-		"-c", "features.code_mode_host=true",
-		"app-server", "--analytics-default-enabled", "--listen", m.endpoint,
+	mcpOverride, mcpConfigHash, err := loadCodexAppMCPOverride()
+	if err != nil {
+		return fmt.Errorf("%w: %v", errSharedAppServerConfigInvalid, err)
 	}
+	arguments := sharedServerStartArguments(m.endpoint, mcpOverride)
 	command := exec.Command(executable, arguments...)
 	command.Env = replaceEnvironmentValue(os.Environ(), "CODEX_HOME", m.codexHome)
 	command.Stdin = nil
@@ -394,8 +407,8 @@ func (m *sharedServerManager) start(executable string) error {
 	state := sharedServerState{
 		PID: pid, Endpoint: m.endpoint, CodexHome: m.codexHome,
 		Executable: executable, Owner: sharedServerOwner, Version: appVersion,
-		ExecutableHash: hash,
-		StartedAt:      time.Now().UTC(), LaunchMode: sharedServerLaunchMode,
+		ExecutableHash: hash, MCPConfigHash: mcpConfigHash,
+		StartedAt: time.Now().UTC(), LaunchMode: sharedServerLaunchMode,
 	}
 	if err := writeJSONAtomic(filepath.Join(m.dataDir, "shared-server.json"), state); err != nil {
 		_ = terminateProcessTree(context.Background(), pid)
@@ -405,6 +418,24 @@ func (m *sharedServerManager) start(executable string) error {
 		m.logger.Printf("shared app-server starting pid=%d port=%d", pid, m.config.SharedAppServerPort)
 	}
 	return nil
+}
+
+// sharedServerStartArguments keeps the app-server command line in one place so
+// its ordering can be tested without launching a second Codex process. The
+// Desktop app uses the same global -c override after the app-server command.
+func sharedServerStartArguments(endpoint, mcpOverride string) []string {
+	arguments := []string{
+		"-c", "features.code_mode_host=true",
+		"app-server", "--analytics-default-enabled",
+	}
+	if strings.TrimSpace(mcpOverride) != "" {
+		arguments = append(arguments, "-c", mcpOverride)
+	}
+	return append(arguments, "--listen", endpoint)
+}
+
+func (m *sharedServerManager) sharedServerNeedsMigration(state sharedServerState, desiredMCPConfigHash string) bool {
+	return state.LaunchMode != sharedServerLaunchMode || state.MCPConfigHash != desiredMCPConfigHash
 }
 
 func executableHash(path string) string {

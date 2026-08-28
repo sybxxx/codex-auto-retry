@@ -217,6 +217,10 @@ function renderService(next: ManagementSnapshot): void {
     label = "共享后台环境冲突";
     detail = "检测到 CODEX_APP_SERVER_WS_URL 已指向其他地址，插件未覆盖；请清理冲突值后再启用共享后台";
     dot.classList.add("status-dot-danger");
+  } else if (next.running && next.controller_state === "shared_app_server_config_invalid") {
+    label = "共享后台配置不兼容";
+    detail = "已自动切回 Codex 官方后台，避免错误配置继续影响对话";
+    dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state && !["ready", "starting"].includes(next.controller_state)) {
     label = "恢复通道异常";
     detail = `自动重试已停止继续空转：${controllerStateLabel(next.controller_state)}`;
@@ -449,6 +453,9 @@ function stopReasonLabel(retry: ManagedRetry): string {
   if (retry.stop_reason === "shared_app_server_environment_conflict") {
     return "共享后台环境变量已被其他值占用";
   }
+  if (retry.stop_reason === "shared_app_server_config_invalid") {
+    return "共享后台配置与当前 Codex 不兼容，已自动切回官方后台";
+  }
   if (retry.stop_reason?.startsWith("controller_") || retry.stop_reason?.startsWith("codex_background_") || retry.stop_reason === "app_server_request_failed") {
     return "后台恢复通道连续失败，已停止空转";
   }
@@ -494,6 +501,7 @@ function controllerStateLabel(value: string): string {
     shared_app_server_port_conflict: "共享端口被占用",
     shared_app_server_port_reserved: "共享端口被 Windows 保留",
     shared_app_server_environment_conflict: "CODEX_APP_SERVER_WS_URL 已被其他值占用",
+    shared_app_server_config_invalid: "共享后台配置与当前 Codex 不兼容，已切回官方后台",
     codex_background_channel_unavailable: "共享通道不可用",
     codex_background_dispatch_failed: "恢复请求失败",
     controller_timeout: "恢复请求超时",

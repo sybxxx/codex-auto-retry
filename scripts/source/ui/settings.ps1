@@ -395,6 +395,7 @@ function Get-StoppedStateText {
     if ($Reason -eq 'codex_home_not_shared') { return '任务目录未接入' }
     if ($Reason -eq 'shared_app_server_port_conflict') { return '恢复端口冲突' }
     if ($Reason -eq 'shared_app_server_port_reserved') { return '端口被 Windows 保留' }
+    if ($Reason -eq 'shared_app_server_config_invalid') { return '共享后台配置不兼容，已切回官方后台' }
     if ($Reason -like 'controller_*' -or $Reason -like 'codex_background_*' -or $Reason -eq 'app_server_request_failed') { return '恢复通道失败' }
     if ($Reason -eq 'goal_empty_response_limit_block_failed') { return '目标停止失败' }
     if ($Reason -eq 'goal_empty_response_limit') { return '目标空回复已停止' }
@@ -472,6 +473,9 @@ function Update-RuntimeView {
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ([string]$status.controller_state -eq 'shared_app_server_port_conflict') {
         $serviceValue.Text = '共享端口被其他程序占用，重试未执行'
+        $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
+    } elseif ([string]$status.controller_state -eq 'shared_app_server_config_invalid') {
+        $serviceValue.Text = '共享后台配置不兼容，已切回官方后台'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ($paused) {
         $serviceValue.Text = '已暂停'
