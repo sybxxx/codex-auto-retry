@@ -284,8 +284,10 @@ function Verify-Installation {
         }
         $runProperty = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
         $runValue = if ($null -eq $runProperty) { $null } else { $runProperty.CodexAutoRetry }
-        if ([string]::IsNullOrWhiteSpace([string]$runValue) -or $runValue -notmatch [regex]::Escape($watchdog)) {
-            throw 'The current-user startup entry was not registered.'
+        if ([string]::IsNullOrWhiteSpace([string]$runValue) -or
+            $runValue -notmatch [regex]::Escape($watchdog) -or
+            $runValue -notmatch '(?i)\bsupervise\b') {
+            throw 'The current-user startup entry was not registered in supervised mode.'
         }
     }
 }
@@ -438,7 +440,12 @@ try {
     $success = $true
 
     Write-Step 'Installation completed successfully.'
-    Write-Host 'Restart Codex once so it connects to the shared recovery service, then open a new task to load the management panel.'
+    if ($EnableSharedAppServer) {
+        Write-Host 'Restart Codex once so it connects to the shared recovery service, then open a new task to load the management panel.'
+    }
+    else {
+        Write-Host 'Shared recovery remains disabled; open a new task to load the management panel.'
+    }
     [pscustomobject]@{
         Installed = $true
         Running = -not $SkipRuntimeInstall

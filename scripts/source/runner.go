@@ -35,6 +35,13 @@ type controllerStateRunner interface {
 	ControllerState(context.Context) string
 }
 
+// sharedBackendFailureHandler is optional so the daemon can fail open when a
+// shared endpoint becomes unhealthy after startup. A runner that does not own
+// the shared backend keeps the existing test and fallback behavior.
+type sharedBackendFailureHandler interface {
+	FailOpenSharedBackend(context.Context) error
+}
+
 // retryLifecycleReader is optional so the daemon can safely inspect a turn
 // that was acknowledged by Codex but never produced a matching completion.
 // The probe is read-only and deliberately kept out of resumeRunner's required
@@ -74,6 +81,30 @@ func (r *appResumeRunner) ControllerState(ctx context.Context) string {
 		return controllerFailureReason(DispatchResult{}, err)
 	}
 	return state
+}
+
+func (r *appResumeRunner) FailOpenSharedBackend(ctx context.Context) error {
+	if r.configPath == "" {
+		return nil
+	}
+	config, err := loadOrCreateConfig(r.configPath)
+	if err != nil {
+		return err
+	}
+	config.SharedAppServerEnabled = false
+	if err := config.validate(); err != nil {
+		return err
+	}
+	// Persist the fail-open decision before restoring the endpoint. If cleanup
+	// is interrupted, a later startup still cannot take over Codex's backend.
+	if err := writeJSONAtomic(r.configPath, config); err != nil {
+		cleanupErr := disableSharedAppServer(ctx, filepath.Dir(r.configPath), config)
+		if cleanupErr != nil {
+			return fmt.Errorf("save fail-open setting: %w; cleanup shared backend: %v", err, cleanupErr)
+		}
+		return err
+	}
+	return disableSharedAppServer(ctx, filepath.Dir(r.configPath), config)
 }
 
 func (r *appResumeRunner) RetryThreadStatus(ctx context.Context, threadID, codexHome string) (string, error) {

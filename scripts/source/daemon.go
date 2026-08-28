@@ -220,10 +220,28 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 		d.mu.Unlock()
 		return false
 	}
+	sharedEnabled := d.config.SharedAppServerEnabled
 	d.lastControllerProbe = now
 	d.mu.Unlock()
 	state := runner.ControllerState(ctx)
+	if sharedEnabled && controllerFailureNeedsFailOpen(state) {
+		if cleaner, supported := d.runner.(sharedBackendFailureHandler); supported {
+			failureReason := state
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cleanupErr := cleaner.FailOpenSharedBackend(cleanupCtx)
+			cleanupCancel()
+			if cleanupErr != nil {
+				d.logger.Printf("shared app-server fail-open cleanup failed category=%s", failureReason)
+			} else {
+				state = "shared_app_server_disabled"
+				d.logger.Printf("shared app-server disabled after runtime failure category=%s", failureReason)
+			}
+		}
+	}
 	d.mu.Lock()
+	if state == "shared_app_server_disabled" {
+		d.config.SharedAppServerEnabled = false
+	}
 	d.controllerState = state
 	d.mu.Unlock()
 	return state == "ready"

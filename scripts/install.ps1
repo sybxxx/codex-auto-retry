@@ -26,6 +26,16 @@ function Get-RunValue {
     return [string]$property.$runName
 }
 
+function Set-SupervisedStartupEntry {
+    New-Item -Path $runKey -Force | Out-Null
+    Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" supervise' -f $watchdogTarget)
+    $value = Get-RunValue
+    if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch '(?i)\bsupervise\b' -or
+        $value -notmatch [regex]::Escape($watchdogTarget)) {
+        throw 'The current-user startup entry was not migrated to supervised mode.'
+    }
+}
+
 function Stop-OwnedProcessPath {
     param([string]$Path)
     @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -188,8 +198,7 @@ try {
     Copy-Item -LiteralPath $candidateWatchdog -Destination $watchdogTarget -Force
     Copy-Item -LiteralPath $candidateMcp -Destination $mcpTarget -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\ui\settings.ps1') -Destination $settingsTarget -Force
-    New-Item -Path $runKey -Force | Out-Null
-    Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" supervise' -f $watchdogTarget)
+    Set-SupervisedStartupEntry
 
     Set-ConfigSharedMode ([bool]$EnableSharedAppServer)
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
@@ -229,7 +238,7 @@ catch {
         }
         if ($environmentChanged) { $null = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir }
         if ($oldEnvironmentPresent) { [Environment]::SetEnvironmentVariable($environmentName, $oldEnvironment, 'User') }
-        else { [Environment]::SetEnvironmentVariable($environmentName, $null, 'User') }
+        else { Remove-CodexAutoRetryUserEnvironmentValue -Name $environmentName }
         if ($oldRunValue) { New-Item -Path $runKey -Force | Out-Null; Set-ItemProperty -Path $runKey -Name $runName -Value $oldRunValue }
         else { Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue }
         foreach ($pair in @(

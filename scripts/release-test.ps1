@@ -49,6 +49,7 @@ try {
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\supervisor-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
@@ -118,6 +119,7 @@ try {
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
         'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\supervisor-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\uninstall.ps1',
         'payload\codex-auto-retry\scripts\smoke-test.ps1',
@@ -164,8 +166,10 @@ try {
     if (-not $installerSource.Contains('Set-ConfigSharedMode ([bool]$EnableSharedAppServer)') -or
         -not $installerSource.Contains('Assert-CodexAutoRetryHostPath') -or
         -not $installerSource.Contains('-WorkingDirectory $installDir') -or
-        -not $installerSource.Contains('-LegacyOwnedEndpoint')) {
-        throw 'Installer does not enforce fail-open shared-backend upgrades.'
+        -not $installerSource.Contains('-LegacyOwnedEndpoint') -or
+        -not $installerSource.Contains('Set-SupervisedStartupEntry') -or
+        -not $installerSource.Contains("ArgumentList @('supervise')")) {
+        throw 'Installer does not enforce fail-open upgrades and supervised startup migration.'
     }
     $deploySource = [System.IO.File]::ReadAllText(
         (Join-Path $root 'deploy.ps1'),

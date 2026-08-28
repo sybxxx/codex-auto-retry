@@ -10,6 +10,14 @@ $conflictDir = Join-Path $testRoot 'conflict'
 $configPath = Join-Path $dataDir 'config.json'
 $name = 'CODEX_AUTO_RETRY_ENV_TEST_' + [guid]::NewGuid().ToString('N')
 $apiKeyBefore = [Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User')
+
+function Remove-TestEnvironmentValue {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    [Environment]::SetEnvironmentVariable($Name, $null, 'User')
+    Remove-ItemProperty -Path 'HKCU:\Environment' -Name $Name -ErrorAction SilentlyContinue
+    Remove-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
+}
+
 try {
     New-Item -ItemType Directory -Force -Path $dataDir, $conflictDir | Out-Null
     [System.IO.File]::WriteAllText(
@@ -17,7 +25,7 @@ try {
         '{"shared_app_server_port":51234}',
         [System.Text.UTF8Encoding]::new($false)
     )
-    [Environment]::SetEnvironmentVariable($name, $null, 'User')
+    Remove-TestEnvironmentValue -Name $name
     $first = Set-CodexAutoRetrySharedEnvironment -DataDir $dataDir -ConfigPath $configPath -EnvironmentName $name -SkipBroadcast
     if ($first.Value -ne 'ws://127.0.0.1:51234' -or
         [Environment]::GetEnvironmentVariable($name, 'User') -ne $first.Value) {
@@ -58,6 +66,19 @@ try {
         throw 'An unowned legacy endpoint was overwritten.'
     }
 
+    $staleStateDir = Join-Path $testRoot 'stale-state'
+    New-Item -ItemType Directory -Force -Path $staleStateDir | Out-Null
+    $staleStatePath = Join-Path $staleStateDir 'shared-server.json'
+    [System.IO.File]::WriteAllText(
+        $staleStatePath,
+        (@{ pid = 4000000; endpoint = 'ws://127.0.0.1:49621'; owner = 'codex-auto-retry'; version = '0.7.6'; executable = 'C:\Windows\System32\cmd.exe' } | ConvertTo-Json),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $staleRemoved = Stop-CodexAutoRetrySharedServerIfUnused -DataDir $staleStateDir
+    if (-not $staleRemoved -or (Test-Path -LiteralPath $staleStatePath)) {
+        throw 'A dead plugin-owned shared-server state record was not removed.'
+    }
+
     [Environment]::SetEnvironmentVariable($name, 'ws://127.0.0.1:59999', 'User')
     $conflictCaught = $false
     try {
@@ -68,7 +89,7 @@ try {
         throw 'A different existing environment value was overwritten.'
     }
 
-    [Environment]::SetEnvironmentVariable($name, $null, 'User')
+    Remove-CodexAutoRetryUserEnvironmentValue -Name $name
     $invalidDataDir = Join-Path $testRoot 'not-a-directory'
     [System.IO.File]::WriteAllText($invalidDataDir, 'x', [System.Text.Encoding]::ASCII)
     $writeFailureCaught = $false
@@ -88,14 +109,14 @@ try {
         PreviousValueRestored = $true
         LegacyOwnedEndpointCleared = $true
         UnownedEndpointPreserved = $true
+        StaleOwnedStateRemoved = $true
         ConflictingValuePreserved = $true
         FailedInstallRolledBack = $true
         ApiKeyUntouched = ([Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User') -eq $apiKeyBefore)
     }
 }
 finally {
-    [Environment]::SetEnvironmentVariable($name, $null, 'User')
-    Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+    Remove-TestEnvironmentValue -Name $name
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
         $resolved = [System.IO.Path]::GetFullPath($testRoot)
         $tempPrefix = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'

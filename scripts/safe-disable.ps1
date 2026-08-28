@@ -23,7 +23,11 @@ function Stop-OwnedSharedServer {
         [int]$state.pid -le 0 -or [string]$state.endpoint -notmatch '^ws://127\.0\.0\.1:\d+$' -or
         [string]::IsNullOrWhiteSpace([string]$state.executable)) { return $false }
     $process = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [int]$state.pid) -ErrorAction SilentlyContinue
-    if ($null -eq $process -or -not [string]::Equals([string]$process.ExecutablePath, [string]$state.executable, [System.StringComparison]::OrdinalIgnoreCase) -or
+    if ($null -eq $process) {
+        Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    if (-not [string]::Equals([string]$process.ExecutablePath, [string]$state.executable, [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]$process.CommandLine -notmatch '(?i)(^|\s)app-server(\s|$)' -or
         [string]$process.CommandLine.IndexOf([string]$state.endpoint, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
     Stop-Process -Id ([int]$state.pid) -Force -ErrorAction SilentlyContinue
@@ -60,6 +64,9 @@ if (-not $legacyOwnedEndpoint -and $runValue.IndexOf($watchdog, [System.StringCo
     $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
 }
 
+# Persist fail-open before removing the endpoint. A later startup must not
+# re-enable the shared route if this cleanup is interrupted halfway through.
+$sharedModeDisabled = Disable-CodexAutoRetrySharedMode -DataDir $dataRoot
 New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
 Stop-ExactExecutable $watchdog
 Stop-ExactExecutable $mcp
@@ -85,6 +92,7 @@ if ($stateEndpoint -and $afterEndpoint -eq $stateEndpoint -and $stateEndpoint -m
     WatchdogStopped = $true
     SharedServerStopped = [bool]$sharedStopped
     StartupRemoved = [string]::IsNullOrWhiteSpace([string](Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue).$runName)
+    SharedModeDisabled = [bool]$sharedModeDisabled
     EndpointRestored = [bool]$environmentResult.Restored
     EndpointChangedByUser = [bool]$environmentResult.ChangedByUser
     ApiKeyPreserved = $true

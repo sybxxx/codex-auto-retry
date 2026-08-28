@@ -112,6 +112,29 @@ func disableSharedAppServer(ctx context.Context, dataDir string, config Config) 
 	return manager.StopOwned(ctx)
 }
 
+// cleanupSharedBackend is used at process boundaries. It deliberately keeps
+// the persisted shared-mode preference unchanged; a supervised worker can
+// recreate the owned backend after restart, while the endpoint is absent
+// during the gap instead of pointing Codex at a dead port.
+func cleanupSharedBackend(ctx context.Context, dataDir string) error {
+	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		return err
+	}
+	return disableSharedAppServer(ctx, dataDir, config)
+}
+
+// detachOwnedSharedEnvironment removes an endpoint left by a previous worker
+// before this worker starts preparing the server. The ownership backup is
+// restored and consumed first, so Codex cannot inherit a dead plugin endpoint
+// while Windows starts the supervisor and Desktop in an unspecified order.
+// Prepare will publish a fresh endpoint only after its health checks pass.
+func detachOwnedSharedEnvironment(ctx context.Context, dataDir string, config Config) error {
+	manager := newSharedServerManager(config, dataDir, nil)
+	_, err := restoreOwnedSharedEnvironment(dataDir, manager.ownedLegacyEndpoints(ctx)...)
+	return err
+}
+
 // ownedLegacyEndpoints returns an endpoint that may be cleaned up when the
 // ownership backup is absent. A configured port alone is not proof of
 // ownership: only a matching, versioned shared-server state record qualifies.

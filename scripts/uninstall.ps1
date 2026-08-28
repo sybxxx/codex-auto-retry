@@ -34,6 +34,10 @@ if (-not $legacyOwnedEndpoint -and $runValue.IndexOf((Join-Path $installDir 'cod
     $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
 }
 
+# Persist fail-open before tearing down the route. This also protects a later
+# startup if the uninstaller is interrupted after stopping the worker.
+$sharedModeDisabled = Disable-CodexAutoRetrySharedMode -DataDir $installDir
+
 if (Test-Path -LiteralPath $installDir) {
     New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
     New-Item -ItemType File -Force -Path $stopSignal | Out-Null
@@ -89,4 +93,5 @@ if (Test-Path -LiteralPath $installDir) {
     EnvironmentRestored = [bool]$environmentResult.Restored
     EnvironmentChangedByUser = [bool]$environmentResult.ChangedByUser
     SharedServerStopped = [bool]$sharedServerStopped
+    SharedModeDisabled = [bool]$sharedModeDisabled
 }

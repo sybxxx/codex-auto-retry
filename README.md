@@ -167,10 +167,15 @@ field and never forwards or logs developer instructions, conversation
 messages, assistant output text, tool input, tool output, credentials, provider
 URLs, or response bodies.
 
-Recovery uses one local app-server bound only to `127.0.0.1`. The installer
-sets `CODEX_APP_SERVER_WS_URL` for the current Windows user, and after one Codex
-restart the Desktop App and watchdog connect to that same server. The watchdog
-uses only the structured `thread/read`, `thread/resume`,
+Optional shared recovery uses one local app-server bound only to `127.0.0.1`.
+It is disabled by default: an ordinary install leaves
+`CODEX_APP_SERVER_WS_URL` untouched, so Codex keeps its official backend. When
+the user explicitly enables shared mode, the plugin first validates the
+plugin-owned server and only then sets the current-user endpoint. At worker
+startup it temporarily detaches a prior owned endpoint until the replacement
+server passes its health check. When a worker or supervisor exits, it restores
+the prior endpoint and removes stale owned state before Codex can inherit a
+dead port. The watchdog uses only the structured `thread/read`, `thread/resume`,
 `thread/inject_items`, `thread/goal/get`, `thread/goal/set`, and `turn/start`
 methods used by Codex. It validates ownership of the loopback server before
 using it and never routes local recovery traffic through an HTTP proxy. It
@@ -197,7 +202,10 @@ console, so Playwright, Node REPL, code-mode, and shell subprocesses reuse that
 hidden console instead of opening separate Windows Terminal windows. An upgrade
 from the older detached launch waits until Codex is fully closed, terminates only
 that owned app-server process tree, and starts the corrected server before the
-next launch. Runtime state, heartbeat, configuration, controls, and
+next launch. The Windows sign-in entry always starts the lightweight
+`supervise` command rather than the worker's old direct `run` command, so a
+worker exit cannot leave a published endpoint behind. Runtime state, heartbeat,
+configuration, controls, and
 privacy-safe logs remain in the same local directory. Plugin management
 commands live in `skills/codex-auto-retry/SKILL.md`.
 
@@ -287,7 +295,8 @@ ports. The settings window reports those two cases separately and keeps the
 shared mode disabled when the check fails.
 
 An install or upgrade without `-EnableSharedAppServer` explicitly puts the
-runtime back into fail-open mode. It restores the recorded endpoint and also
+runtime back into fail-open mode. It restores the recorded endpoint, removes
+dead plugin-owned shared-server state, and also
 clears a legacy endpoint only when the old plugin state proves ownership;
 unrelated user values are preserved.
 
@@ -301,6 +310,6 @@ and does not save the shared-mode switch.
 
 If startup or an upgrade is broken, run `scripts/safe-disable.ps1`. This
 break-glass script is independent of the watchdog: it removes only the plugin's
-startup entry, stops only plugin-owned processes, restores only the endpoint
+startup entry, persists shared mode as disabled, stops only plugin-owned processes, restores only the endpoint
 recorded in `environment-backup.json`, broadcasts the environment change, and
 leaves chats, state, logs, and user-owned credentials intact.

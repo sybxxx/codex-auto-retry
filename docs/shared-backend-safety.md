@@ -46,7 +46,19 @@ worker, restarts it after an unexpected exit with a one-second-to-one-minute
 backoff, and records only lifecycle categories. A clean tray exit, uninstall,
 or upgrade writes a one-shot stop marker so an intentional shutdown is not
 resurrected. The worker remains the sole owner of the tray, retry state, and
-shared app-server; the supervisor never creates a second backend.
+shared app-server; the supervisor never creates a second backend. Installation
+always migrates the current-user `Run` entry to `"...\\codex-auto-retry.exe"
+supervise` and verifies that migration. This replaces the older direct `run`
+entry that could exit without a stable cleanup owner.
+
+The worker and supervisor both clean up the plugin-owned route at process
+boundaries. Before a new worker prepares shared mode, it removes an endpoint
+left by an earlier worker. After a worker exits or cannot start, the supervisor
+restores the prior endpoint and removes a dead owned state record. A runtime
+shared-backend failure also persists `shared_app_server_enabled=false` before
+cleanup. Therefore an interrupted plugin backend fails open to Codex's normal
+backend rather than leaving `CODEX_APP_SERVER_WS_URL` pointing at an unbound
+loopback port.
 
 Installation is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
@@ -63,8 +75,8 @@ already exited, and leaves Codex on its previous backend.
 `scripts/safe-disable.ps1` is the break-glass path. It does not use the
 watchdog or Codex, and it only stops processes whose absolute executable path,
 owner marker, endpoint, and command line match the plugin's state. It removes
-the plugin's startup entry, restores the endpoint recorded in
-`environment-backup.json`, broadcasts `Environment`, and verifies that the
+the plugin's startup entry, persists shared mode disabled, restores the endpoint
+recorded in `environment-backup.json`, broadcasts `Environment`, and verifies that the
 stopped endpoint was not left in place. It never deletes `CODEX_API_KEY`, chat
 data, state, or logs.
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -54,6 +55,7 @@ func runSupervisor(dataDir string, noTray bool) error {
 		configureSupervisorWorker(worker)
 		appendSupervisorLog(dataDir, fmt.Sprintf("worker starting version=%s", appVersion))
 		if err := worker.Start(); err != nil {
+			cleanupSupervisorSharedBackend(dataDir)
 			appendSupervisorLog(dataDir, "worker start failed category=process_start")
 			if waitSupervisorBackoff(stopPath, backoff) {
 				return nil
@@ -64,6 +66,7 @@ func runSupervisor(dataDir string, noTray bool) error {
 
 		workerPID := worker.Process.Pid
 		err = worker.Wait()
+		cleanupSupervisorSharedBackend(dataDir)
 		intentionalStop := consumeSupervisorStop(stopPath)
 		if !intentionalStop && workerStateCleanlyStopped(dataDir, workerPID) {
 			// The worker writes this marker only for an intentional shutdown when
@@ -84,6 +87,17 @@ func runSupervisor(dataDir string, noTray bool) error {
 			return nil
 		}
 		backoff = nextSupervisorBackoff(backoff)
+	}
+}
+
+// cleanupSupervisorSharedBackend closes the plugin-owned route before a dead
+// worker can leave Codex pointing at an endpoint with no listener. Ownership is
+// checked again by disableSharedAppServer; user-owned endpoints are preserved.
+func cleanupSupervisorSharedBackend(dataDir string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cleanupSharedBackend(ctx, dataDir); err != nil {
+		appendSupervisorLog(dataDir, "shared backend cleanup deferred category=worker_exit")
 	}
 }
 

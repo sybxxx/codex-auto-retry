@@ -28,6 +28,17 @@ type stateAwareRunner struct {
 
 func (r *stateAwareRunner) ControllerState(context.Context) string { return r.state }
 
+type failOpenRunner struct {
+	*stateAwareRunner
+	failOpenCalls int
+	failOpenErr   error
+}
+
+func (r *failOpenRunner) FailOpenSharedBackend(context.Context) error {
+	r.failOpenCalls++
+	return r.failOpenErr
+}
+
 type lifecycleRunner struct {
 	*fakeResumeRunner
 	mu       sync.Mutex
@@ -189,6 +200,27 @@ func TestSharedBackendReadinessIsSupervisedWhileReady(t *testing.T) {
 	}
 	if !d.controllerRestartReady(context.Background(), now.Add(11*time.Second)) {
 		t.Fatal("shared backend was not rechecked after the probe interval")
+	}
+}
+
+func TestSharedBackendFailureFailsOpenAndStopsReusingDeadEndpoint(t *testing.T) {
+	now := time.Now().UTC()
+	runner := &failOpenRunner{
+		stateAwareRunner: &stateAwareRunner{fakeResumeRunner: successfulRunner(), state: "codex_background_channel_unavailable"},
+	}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	d.controllerState = "ready"
+	if d.controllerRestartReady(context.Background(), now) {
+		t.Fatal("unhealthy shared backend was reported as ready")
+	}
+	if runner.failOpenCalls != 1 {
+		t.Fatalf("shared backend failure did not invoke fail-open cleanup once: %d", runner.failOpenCalls)
+	}
+	if d.controllerState != "shared_app_server_disabled" || d.config.SharedAppServerEnabled {
+		t.Fatalf("shared backend was not disabled after runtime failure: state=%s config=%+v", d.controllerState, d.config)
+	}
+	if d.controllerRestartReady(context.Background(), now.Add(11*time.Second)) {
+		t.Fatal("disabled shared backend was probed as a live recovery channel")
 	}
 }
 

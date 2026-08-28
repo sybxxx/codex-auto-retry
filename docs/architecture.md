@@ -394,7 +394,9 @@ becoming additional writers for `state.json`.
   no visible user item, and no real provider use.
 - `environment-smoke-test.ps1` uses a random temporary user environment name to
   prove endpoint ownership, idempotent updates, prior-value restoration, and
-  refusal to overwrite a conflicting value. `smoke-test.ps1` runs both checks.
+  refusal to overwrite a conflicting value. It also proves that a dead
+  plugin-owned shared-server state record is removed. `smoke-test.ps1` runs
+  both checks.
 - `app-server-protocol-smoke-test.ps1` uses a temporary `CODEX_HOME` to prove
   that model, provider, service tier, workspace, approvals, permissions, and
   reasoning effort survive resume; goal activation starts native continuation;
@@ -457,6 +459,14 @@ configuration, environment value, and startup entry. Uninstall and the
 independent `scripts/safe-disable.ps1` restore only the endpoint recorded in
 `environment-backup.json`; neither path removes `CODEX_API_KEY` or chat/state
 data by default.
+
+The current-user Windows `Run` entry invokes `supervise`, not the worker's
+legacy direct `run` command. The supervisor and worker both remove their owned
+shared endpoint and stale state when the worker stops or cannot start. On a
+runtime shared-controller failure, the worker persists shared mode disabled
+before cleanup. A new worker also detaches any previous owned endpoint before
+publishing a replacement that has passed health checks. These lifecycle rules
+prevent a dead local port from being inherited by a later Codex startup.
 
 Before any release or direct runtime mutation, `path-safety.ps1` probes the
 intended `%LOCALAPPDATA%\CodexAutoRetry` directory. A packaged Codex tool

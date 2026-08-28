@@ -8,14 +8,14 @@
 | `.gitignore`, `.gitattributes` | Keep local runtime state out of public source and make cross-platform line endings deterministic. |
 | `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
-| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services without inspecting conversation content. |
-| `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, registers a supervised per-user startup entry, and rolls back on failure. |
+| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services, startup mode, endpoint presence, and shared-server state without inspecting conversation content. |
+| `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, migrates the per-user startup entry to supervised mode, and rolls back on failure. |
 | `scripts/path-safety.ps1` | Detects Windows package redirection or directory links before runtime installation can be mistaken for a host installation. |
 | `scripts/path-safety-smoke-test.ps1` | Verifies ordinary paths, missing-path probe cleanup, redirected-path rejection, and non-destructive failure. |
 | `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration, and optionally preserves runtime data. |
-| `scripts/safe-disable.ps1` | Independent break-glass cleanup for plugin-owned processes, startup, and endpoint; never removes chat data or user-owned `CODEX_API_KEY`. |
-| `docs/shared-backend-safety.md` | Operational contract for fail-open startup, opt-in shared mode, transactional rollback, emergency disable, and stale-heartbeat diagnostics. |
-| `scripts/environment.ps1` | Shared current-user environment ownership, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
+| `scripts/safe-disable.ps1` | Independent break-glass cleanup for plugin-owned processes, startup, and endpoint; persists shared mode disabled and never removes chat data or user-owned `CODEX_API_KEY`. |
+| `docs/shared-backend-safety.md` | Operational contract for fail-open startup, supervised migration, opt-in shared mode, transactional rollback, emergency disable, and stale-backend diagnostics. |
+| `scripts/environment.ps1` | Shared current-user environment ownership, explicit registry-value removal, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
 | `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds both Windows executables with the GUI subsystem. |
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
 | `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs path-safety plus mutation-free installer/uninstaller checks. |
@@ -23,6 +23,7 @@
 | `scripts/tray-smoke-test.ps1` | Starts an isolated watchdog, verifies its native tray window, visible non-overlapping settings form, concurrent refresh stability, settings-process shutdown, heartbeat, and clean status shutdown. |
 | `scripts/smoke-test.ps1` | Runs the isolated shared-server and environment-ownership smoke tests. |
 | `scripts/supervisor-smoke-test.ps1` | Starts the sign-in supervisor, kills only the worker to prove bounded restart, then verifies an intentional stop is honored. |
+| `scripts/status-smoke-test.ps1` | Verifies the installed watchdog process and UTC heartbeat are reported as fresh, including on non-UTC Windows time zones. |
 | `scripts/shared-app-server-smoke-test.ps1` | Uses a real isolated Codex WebSocket app-server, two clients, and a local fake provider to prove Desktop-visible same-task recovery without a visible user message. |
 | `scripts/environment-smoke-test.ps1` | Proves safe environment ownership, idempotent endpoint updates, restoration, and conflict refusal through a random test-only user variable. |
 | `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, continuation beside an unchanged paused goal, settings-preserving resume of an unloaded parent before fixed event injection, and active-to-blocked goal closure against an isolated app-server and temporary `CODEX_HOME`. |
@@ -39,7 +40,7 @@ Source code lives under `scripts/source`.
 | Module | Ownership |
 | --- | --- |
 | `main.go` | Process startup, supervised worker shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
-| `supervisor.go` | Stable sign-in supervisor, bounded worker restart backoff, intentional-stop marker handling, and privacy-safe worker lifecycle logging. |
+| `supervisor.go` | Stable sign-in supervisor, bounded worker restart backoff, intentional-stop marker handling, worker-exit shared-backend cleanup, and privacy-safe lifecycle logging. |
 | `daemon.go` | Scan loop, bounded parallel dispatch, generic controller lifecycle, acknowledgement timeouts, and status publication. |
 | `retry_state.go` | Generic retry transitions, dual attempt limits, visible-progress resets, startup reconciliation, later external-turn attribution, and management command application. |
 | `goal_recovery.go` | Goal lifecycle holds, native-turn adoption, stale-update protection, bounded post-limit goal blocking, and goal-specific controller reconciliation. |
@@ -52,11 +53,11 @@ Source code lives under `scripts/source`.
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, parent-to-child recovery-event routing, rollout paths, and mirrored-session detection. |
 | `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, and the plugin's fixed subagent recovery event. |
 | `classifier.go` | Provider-independent retry decisions, empty-response classification, and limited authentication budgets. |
-| `runner.go` | Controller result validation, privacy-safe failure codes, PowerShell discovery support, and retry backoff. |
+| `runner.go` | Controller result validation, privacy-safe failure codes, runtime shared-backend fail-open handling, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup, exact-thread rollout discovery, and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
 | `app_server_rpc.go` | Loopback JSON-RPC WebSocket transport, initialization, request correlation, and fail-closed handling of interactive server requests. |
 | `shared_server_windows.go` | Starts and records the opt-in shared app-server in one hidden inherited console, validates loopback health and versioned process ownership, migrates the older detached launch after Codex closes, and discovers the Codex CLI. |
-| `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
+| `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, process-boundary cleanup, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
 | `desktop_transport_windows.go` | Read-only detection of stopped, old Desktop-owned stdio, or shared-server Codex transport. |
 | `shared_controller.go` | Settings-preserving unloaded task and parent resume, live task/goal rechecks, deterministic parent notification, exact-child continuation, goal recovery/blocking, and silent normal continuation. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |

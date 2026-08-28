@@ -4,6 +4,16 @@ function Test-CodexAutoRetryEnvironmentValue {
     return [string]::Equals($Left, $Right, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Remove-CodexAutoRetryUserEnvironmentValue {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    # PowerShell/.NET versions can serialize a null User value as an empty
+    # registry value. Delete the value explicitly so cleanup leaves no stale
+    # endpoint key behind.
+    [Environment]::SetEnvironmentVariable($Name, $null, 'User')
+    Remove-ItemProperty -Path 'HKCU:\Environment' -Name $Name -ErrorAction SilentlyContinue
+    Remove-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
+}
+
 function Send-CodexAutoRetryEnvironmentChange {
     # Do not compile a new P/Invoke type here. Codex can expose a very large
     # inherited environment block, and Add-Type starts a compiler process whose
@@ -50,6 +60,20 @@ function Write-CodexAutoRetryJsonAtomic {
     finally {
         Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Disable-CodexAutoRetrySharedMode {
+    param([Parameter(Mandatory = $true)][string]$DataDir)
+    $configPath = Join-Path $DataDir 'config.json'
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return $false }
+    try { $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json }
+    catch { throw "The shared app-server configuration is invalid: $configPath" }
+    if ($null -eq $config.PSObject.Properties['shared_app_server_enabled']) {
+        $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $false
+    }
+    else { $config.shared_app_server_enabled = $false }
+    Write-CodexAutoRetryJsonAtomic -Path $configPath -Value $config
+    return $true
 }
 
 function Get-CodexAutoRetrySharedAppServerPort {
@@ -116,7 +140,7 @@ function Set-CodexAutoRetrySharedEnvironment {
     }
     catch {
         [Environment]::SetEnvironmentVariable($name, $current, 'User')
-        if ($null -eq $current) { Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue }
+        if ($null -eq $current) { Remove-CodexAutoRetryUserEnvironmentValue -Name $name }
         else { Set-Item -Path "Env:$name" -Value $current }
         if ($backupExisted) { [System.IO.File]::WriteAllBytes($backupPath, $backupBytes) }
         else { Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue }
@@ -147,8 +171,7 @@ function Restore-CodexAutoRetrySharedEnvironment {
         foreach ($endpoint in @($LegacyOwnedEndpoint)) {
             if (-not [string]::IsNullOrWhiteSpace([string]$endpoint) -and
                 (Test-CodexAutoRetryEnvironmentValue $current ([string]$endpoint))) {
-                [Environment]::SetEnvironmentVariable($name, $null, 'User')
-                Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+                Remove-CodexAutoRetryUserEnvironmentValue -Name $name
                 if (-not $SkipBroadcast) { Send-CodexAutoRetryEnvironmentChange }
                 return [pscustomobject]@{ Restored = $true; ChangedByUser = $false }
             }
@@ -167,9 +190,13 @@ function Restore-CodexAutoRetrySharedEnvironment {
         -not (Test-CodexAutoRetryEnvironmentValue $current $previous)
     $restored = $false
     if (-not $changedByUser -and -not (Test-CodexAutoRetryEnvironmentValue $current $previous)) {
-        [Environment]::SetEnvironmentVariable($name, $previous, 'User')
-        if ($null -eq $previous) { Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue }
-        else { Set-Item -Path "Env:$name" -Value $previous }
+        if ($null -eq $previous) {
+            Remove-CodexAutoRetryUserEnvironmentValue -Name $name
+        }
+        else {
+            [Environment]::SetEnvironmentVariable($name, $previous, 'User')
+            Set-Item -Path "Env:$name" -Value $previous
+        }
         if (-not $SkipBroadcast) { Send-CodexAutoRetryEnvironmentChange }
         $restored = $true
     }
@@ -181,16 +208,23 @@ function Stop-CodexAutoRetrySharedServerIfUnused {
     param([Parameter(Mandatory = $true)][string]$DataDir)
     $statePath = Join-Path $DataDir 'shared-server.json'
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return $false }
-    $codexDesktop = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -eq 'ChatGPT.exe' -and (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
-    })
-    if ($codexDesktop.Count -gt 0) { return $false }
     try { $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json }
     catch { return $false }
     $pidValue = [int]$state.pid
     if ($pidValue -le 0 -or [string]$state.owner -ne 'codex-auto-retry' -or [string]::IsNullOrWhiteSpace([string]$state.version) -or
         [string]$state.endpoint -notmatch '^ws://127\.0\.0\.1:\d+$' -or [string]::IsNullOrWhiteSpace([string]$state.executable)) { return $false }
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        # A dead PID cannot be confused with another process. Remove its
+        # ownership record even when Codex is open, so a later startup cannot
+        # mistake stale state for a live shared backend.
+        Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    $codexDesktop = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -eq 'ChatGPT.exe' -and (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
+    })
+    if ($codexDesktop.Count -gt 0) { return $false }
     if ($null -eq $process -or -not $process.CommandLine -or
         $process.CommandLine.IndexOf('app-server', [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -or
         $process.CommandLine.IndexOf([string]$state.endpoint, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -or

@@ -100,16 +100,23 @@ func main() {
 		logger.Printf("startup failed category=config")
 		return
 	}
+	manager := newSharedServerManager(config, dataDir, logger)
 	if !config.SharedAppServerEnabled {
 		// Fail-open startup also cleans an ownership record left by an older
 		// release, but never guesses at an unrecorded user endpoint here.
-		if _, cleanupErr := restoreOwnedSharedEnvironment(dataDir); cleanupErr != nil {
+		if _, cleanupErr := restoreOwnedSharedEnvironment(dataDir, manager.ownedLegacyEndpoints(context.Background())...); cleanupErr != nil {
 			logger.Printf("shared app-server cleanup failed category=environment")
 		}
-		manager := newSharedServerManager(config, dataDir, logger)
 		if cleanupErr := manager.StopOwned(context.Background()); cleanupErr != nil {
 			logger.Printf("shared app-server cleanup failed category=process")
 		}
+	}
+	if config.SharedAppServerEnabled {
+		detachCtx, detachCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if detachErr := detachOwnedSharedEnvironment(detachCtx, dataDir, config); detachErr != nil {
+			logger.Printf("shared app-server startup endpoint cleanup failed category=environment")
+		}
+		detachCancel()
 	}
 	runner := newAppResumeRunner(config, dataDir, logger)
 	var prepareErr error
@@ -183,6 +190,11 @@ func main() {
 	if err != nil && err != errStopRequested {
 		logger.Printf("watchdog stopped category=runtime_error")
 	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if cleanupErr := cleanupSharedBackend(cleanupCtx, dataDir); cleanupErr != nil {
+		logger.Printf("shared app-server shutdown cleanup failed category=environment")
+	}
+	cleanupCancel()
 	_ = daemon.writeStatus(false)
 	if *supervisedFlag && (err == nil || errors.Is(err, errStopRequested)) {
 		// A clean worker shutdown is intentional. Tell the supervisor not to

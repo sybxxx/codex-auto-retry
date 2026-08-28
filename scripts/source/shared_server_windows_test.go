@@ -245,3 +245,74 @@ func TestSharedServerDoesNotGuessUnrecordedLegacyEndpointOwnership(t *testing.T)
 		t.Fatalf("unrecorded endpoint was treated as plugin-owned: %v", endpoints)
 	}
 }
+
+func TestDetachOwnedSharedEnvironmentClearsPreviousEndpointBeforeStartup(t *testing.T) {
+	dataDir := t.TempDir()
+	previous, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restoreUserEnvironment(sharedAppServerEnvironmentName, previous, present) })
+	if err := restoreUserEnvironment(sharedAppServerEnvironmentName, "", false); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := fmt.Sprintf("ws://127.0.0.1:%d", defaultConfig().SharedAppServerPort)
+	if _, err := setOwnedSharedEnvironment(dataDir, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreOwnedSharedEnvironment(dataDir)
+	if err != nil || !result.Restored {
+		t.Fatalf("owned endpoint was not detached before startup: result=%+v err=%v", result, err)
+	}
+	value, stillPresent, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil || stillPresent || value != "" {
+		t.Fatalf("detached endpoint remained in the user environment: value=%q present=%v err=%v", value, stillPresent, err)
+	}
+}
+
+func TestFailOpenCleanupRestoresOwnedLegacyEndpointWithoutBackup(t *testing.T) {
+	dataDir := t.TempDir()
+	previous, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restoreUserEnvironment(sharedAppServerEnvironmentName, previous, present) })
+	if err := restoreUserEnvironment(sharedAppServerEnvironmentName, "", false); err != nil {
+		t.Fatal(err)
+	}
+	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sharedServerState{
+		PID:            4_000_000,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	if err := writeJSONAtomic(filepath.Join(dataDir, "shared-server.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setOwnedSharedEnvironment(dataDir, manager.Endpoint()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dataDir, "environment-backup.json")); err != nil {
+		t.Fatal(err)
+	}
+	endpoints := manager.ownedLegacyEndpoints(context.Background())
+	if len(endpoints) != 1 || endpoints[0] != manager.Endpoint() {
+		t.Fatalf("owned legacy endpoint was not discovered: %v", endpoints)
+	}
+	result, err := restoreOwnedSharedEnvironment(dataDir, endpoints...)
+	if err != nil || !result.Restored {
+		t.Fatalf("owned legacy endpoint was not restored: result=%+v err=%v", result, err)
+	}
+	value, stillPresent, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil || stillPresent || value != "" {
+		t.Fatalf("legacy endpoint remained after fail-open cleanup: value=%q present=%v err=%v", value, stillPresent, err)
+	}
+}

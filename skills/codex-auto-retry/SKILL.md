@@ -108,9 +108,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 ```
 
 Report whether the process is running, its version and PID, pause state, MCP
-server installation, the last scan time, pending and active retry counts, and
-the privacy-safe log path. Do not read Codex conversation content while
-checking status. Treat `RuntimePathRedirected=true` or
+server installation, startup mode, endpoint presence, shared-server state, the
+last scan time, pending and active retry counts, and the privacy-safe log path.
+Do not read Codex conversation content while checking status. Treat
+`StartupMode=run` as an old entry that should be repaired by the installer.
+Treat `RuntimePathRedirected=true` or
 `runtime_path_redirected` as not installed: a package `LocalCache` copy is not
 visible to Explorer or Windows sign-in even when the Codex tool process can
 read it.
@@ -126,6 +128,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\tray-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\path-safety-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\supervisor-smoke-test.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\status-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1"
@@ -152,7 +155,7 @@ provider and no real account.
 Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces both
 executables, leaves `CODEX_APP_SERVER_WS_URL` untouched by default (or sets it
 only after the explicit shared-mode health gate), registers per-user Windows
-startup for the watchdog only, points the plugin at the direct installed MCP
+startup in `supervise` mode rather than the legacy direct `run` mode, points the plugin at the direct installed MCP
 executable, starts both GUI-subsystem processes without a visible console, and
 launches the shared Codex app-server with one hidden inherited console so its
 Playwright, Node REPL, code-mode, and shell descendants do not create separate
@@ -230,8 +233,10 @@ Installation and update are transactional; a failed health check restores the
 previous binary, config, endpoint, and startup entry.
 
 For a startup emergency, run `scripts/safe-disable.ps1` directly. It is
-watchdog-independent, stops only processes proven to belong to this plugin,
-restores only the endpoint in `environment-backup.json`, removes only the
-plugin's startup entry, broadcasts the environment change, and never removes
-chat data or a user-owned `CODEX_API_KEY`. Stale PID or heartbeat data must be
-shown as `后台服务未运行`, never as healthy `running`.
+watchdog-independent, persists shared mode disabled, stops only processes
+proven to belong to this plugin, restores only the endpoint in
+`environment-backup.json`, removes only the plugin's startup entry, broadcasts
+the environment change, and never removes chat data or a user-owned
+`CODEX_API_KEY`. The worker and supervisor perform the same owned-endpoint
+cleanup when a worker exits or cannot start. Stale PID or heartbeat data must
+be shown as `后台服务未运行`, never as healthy `running`.

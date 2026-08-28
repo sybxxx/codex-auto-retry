@@ -2,6 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'environment.ps1')
 $binary = Join-Path $PSScriptRoot 'bin\codex-auto-retry.exe'
 $testRoot = Join-Path $env:TEMP ('codex-auto-retry-startup-' + [guid]::NewGuid().ToString('N'))
 $dataDir = Join-Path $testRoot 'data'
@@ -109,7 +110,8 @@ finally {
     }
     if ($listener) { $listener.Stop() }
     [Environment]::SetEnvironmentVariable($environmentName, $beforeEndpoint, 'User')
-    if ($null -eq $beforeProcessEndpoint) { Remove-Item -Path "Env:$environmentName" -ErrorAction SilentlyContinue }
+    if ($null -eq $beforeEndpoint) { Remove-CodexAutoRetryUserEnvironmentValue -Name $environmentName }
+    elseif ($null -eq $beforeProcessEndpoint) { Remove-Item -Path "Env:$environmentName" -ErrorAction SilentlyContinue }
     else { Set-Item -Path "Env:$environmentName" -Value $beforeProcessEndpoint }
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue

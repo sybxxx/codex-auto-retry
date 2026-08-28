@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -152,5 +153,25 @@ func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
 	}
 	if controllerFailureNeedsFailOpen("codex_restart_required") || controllerFailureNeedsFailOpen("codex_not_running") {
 		t.Fatal("recoverable Codex lifecycle states were incorrectly marked fail-open")
+	}
+}
+
+func TestFailOpenSharedBackendPersistsDisabledModeBeforeCleanup(t *testing.T) {
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	if err := writeJSONAtomic(filepath.Join(dataDir, "config.json"), config); err != nil {
+		t.Fatal(err)
+	}
+	runner := newAppResumeRunner(config, dataDir, nil)
+	if err := runner.FailOpenSharedBackend(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SharedAppServerEnabled {
+		t.Fatal("fail-open did not persist the disabled shared-mode setting")
 	}
 }
