@@ -252,9 +252,11 @@ watchdog-independent, persists shared mode disabled, stops only processes
 proven to belong to this plugin, restores only the endpoint in
 `environment-backup.json`, removes only the plugin's startup entry, broadcasts
 the environment change, and never removes chat data or a user-owned
-`CODEX_API_KEY`. The worker and supervisor perform the same owned-endpoint
-cleanup when a worker exits or cannot start. Stale PID or heartbeat data must
-be shown as `后台服务未运行`, never as healthy `running`.
+`CODEX_API_KEY`. A worker restart adopts a healthy owned endpoint. If a live
+Codex Desktop is still using the shared server, cleanup is deferred and the
+worker retries it after Desktop closes; dead owned state is removed immediately.
+Stale PID or heartbeat data must be shown as `后台服务未运行`, never as healthy
+`running`.
 
 If `config.json` is damaged, process-boundary cleanup does not replace it. The
 watchdog uses the ownership-verified `shared-server.json` record to recover the

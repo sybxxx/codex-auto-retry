@@ -15,6 +15,10 @@ The plugin has two deliberately separate modes:
 The default loopback port is `49621`. The watchdog binds it before launching
 Codex so Windows-excluded ranges and occupied ports can be reported separately
 and the shared mode can fail open without a generic health-check message.
+If that preferred port is occupied by an unknown or stale listener, the health
+check selects the first available loopback port in a bounded range, persists
+that port in `config.json`, and publishes only the new owned endpoint. It never
+terminates the process that occupied the preferred port.
 
 Upgrades are fail-open unless `-EnableSharedAppServer` is explicitly supplied:
 the installer disables the stored shared-mode flag, restores the owned endpoint,
@@ -61,14 +65,14 @@ always migrates the current-user `Run` entry to `"...\\codex-auto-retry.exe"
 supervise` and verifies that migration. This replaces the older direct `run`
 entry that could exit without a stable cleanup owner.
 
-The worker and supervisor both clean up the plugin-owned route at process
-boundaries. Before a new worker prepares shared mode, it removes an endpoint
-left by an earlier worker. After a worker exits or cannot start, the supervisor
-restores the prior endpoint and removes a dead owned state record. A runtime
-shared-backend failure also persists `shared_app_server_enabled=false` before
-cleanup. Therefore an interrupted plugin backend fails open to Codex's normal
-backend rather than leaving `CODEX_APP_SERVER_WS_URL` pointing at an unbound
-loopback port.
+The worker and supervisor share the same endpoint ownership record across
+restarts. A new worker adopts a healthy owned server instead of creating a
+disconnect window. A runtime shared-backend failure persists
+`shared_app_server_enabled=false`; if Codex is still using the live server,
+cleanup is deferred and the worker retries it after Desktop closes. Dead owned
+state is removed immediately. This prevents a process boundary from killing
+Codex's active route while still ensuring that a disabled backend is eventually
+removed instead of remaining a permanent stale endpoint.
 
 If `config.json` is unreadable during one of these boundaries, cleanup does not
 rewrite or replace it. It derives the actual loopback port and Codex home from
@@ -88,6 +92,14 @@ environment cannot make the transaction fail after the durable registry write.
 The tray settings form keeps the health check bounded and responsive. A failed
 or timed-out start removes stale plugin-owned server state when its process has
 already exited, and leaves Codex on its previous backend.
+
+When shared mode is turned off or a fail-open transition is recorded while
+Codex is still open, the service reports
+`shared_app_server_migration_deferred` and keeps the ownership record. The
+worker retries cleanup on later ticks; after Codex closes it restores the prior
+endpoint and removes the owned server. Killing a live process immediately can
+strand Codex in a broken session, while deleting the record early can make a
+stale port look user-owned on the next startup.
 
 `scripts/safe-disable.ps1` is the break-glass path. It does not use the
 watchdog or Codex, and it only stops processes whose absolute executable path,

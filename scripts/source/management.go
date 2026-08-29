@@ -51,6 +51,10 @@ type ManagementSnapshot struct {
 	DelayIncrementSeconds  int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
 	DelayStrategy          string         `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
 	ShowNotifications      bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
+	MemoryLimitMB          int            `json:"memory_limit_mb" jsonschema:"private memory limit for the watchdog process, from 128 to 65536 MB"`
+	MemoryUsageMB          int64          `json:"memory_usage_mb" jsonschema:"current watchdog private memory in MB"`
+	MemoryGuardTriggered   bool           `json:"memory_guard_triggered" jsonschema:"whether the memory guard stopped the service"`
+	SharedAppServerPort    int            `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
 	SharedAppServerEnabled bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
 	Now                    string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
 	LastScanAt             string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
@@ -147,6 +151,8 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		DelayIncrementSeconds:  config.DelayIncrementSeconds,
 		DelayStrategy:          config.DelayStrategy,
 		ShowNotifications:      config.ShowNotifications,
+		MemoryLimitMB:          config.MemoryLimitMB,
+		SharedAppServerPort:    config.SharedAppServerPort,
 		SharedAppServerEnabled: config.SharedAppServerEnabled,
 		Now:                    now.Format(time.RFC3339Nano),
 		PendingRetries:         pending,
@@ -161,6 +167,11 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		snapshot.WatchedRoots = status.WatchedRoots
 		snapshot.LastError = status.LastError
 		snapshot.ControllerState = status.ControllerState
+		snapshot.MemoryUsageMB = status.MemoryUsageMB
+		if status.MemoryLimitMB > 0 {
+			snapshot.MemoryLimitMB = status.MemoryLimitMB
+		}
+		snapshot.MemoryGuardTriggered = status.MemoryGuardTriggered
 		if !status.LastScanAt.IsZero() {
 			snapshot.LastScanAt = status.LastScanAt.Format(time.RFC3339Nano)
 		}
@@ -186,9 +197,11 @@ func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Tim
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if enabled {
-		if err := enableSharedAppServer(ctx, m.dataDir, config); err != nil {
+		preparedConfig, err := enableSharedAppServer(ctx, m.dataDir, config)
+		if err != nil {
 			return ManagementSnapshot{}, err
 		}
+		config = preparedConfig
 		config.SharedAppServerEnabled = true
 		if err := config.validate(); err != nil {
 			_ = disableSharedAppServer(context.Background(), m.dataDir, config)
@@ -233,6 +246,7 @@ type RetrySettings struct {
 	DelayIncrementSeconds int    `json:"delay_increment_seconds"`
 	DelayStrategy         string `json:"delay_strategy"`
 	ShowNotifications     bool   `json:"show_notifications"`
+	MemoryLimitMB         int    `json:"memory_limit_mb,omitempty"`
 }
 
 func (m *managementService) setRetrySettings(settings RetrySettings, now time.Time) (ManagementSnapshot, error) {
@@ -291,6 +305,9 @@ func applyRetrySettings(config *Config, settings RetrySettings) {
 	}
 	config.DelayStrategy = settings.DelayStrategy
 	config.ShowNotifications = settings.ShowNotifications
+	if settings.MemoryLimitMB > 0 {
+		config.MemoryLimitMB = settings.MemoryLimitMB
+	}
 }
 
 func (m *managementService) setRetryPrompt(prompt string, now time.Time) (ManagementSnapshot, error) {

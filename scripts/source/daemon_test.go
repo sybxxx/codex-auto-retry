@@ -39,6 +39,17 @@ func (r *failOpenRunner) FailOpenSharedBackend(context.Context) error {
 	return r.failOpenErr
 }
 
+type cleanupRunner struct {
+	*fakeResumeRunner
+	cleanupCalls int
+	cleanupErr   error
+}
+
+func (r *cleanupRunner) ReconcileSharedBackendCleanup(context.Context) error {
+	r.cleanupCalls++
+	return r.cleanupErr
+}
+
 type lifecycleRunner struct {
 	*fakeResumeRunner
 	mu       sync.Mutex
@@ -221,6 +232,30 @@ func TestSharedBackendFailureFailsOpenAndStopsReusingDeadEndpoint(t *testing.T) 
 	}
 	if d.controllerRestartReady(context.Background(), now.Add(11*time.Second)) {
 		t.Fatal("disabled shared backend was probed as a live recovery channel")
+	}
+}
+
+func TestDisabledSharedBackendReconcilesDeferredCleanup(t *testing.T) {
+	config := isolatedConfig(t.TempDir())
+	config.SharedAppServerEnabled = false
+	runner := &cleanupRunner{fakeResumeRunner: successfulRunner()}
+	d := newTestDaemon(t, config, runner)
+	if err := d.tick(context.Background(), time.Now().UTC()); err != nil {
+		t.Fatalf("disabled shared backend tick failed: %v", err)
+	}
+	if runner.cleanupCalls != 1 {
+		t.Fatalf("disabled shared backend did not reconcile cleanup: %d", runner.cleanupCalls)
+	}
+}
+
+func TestEnabledSharedBackendDoesNotRunDisabledCleanupReconciler(t *testing.T) {
+	runner := &cleanupRunner{fakeResumeRunner: successfulRunner()}
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), runner)
+	if err := d.tick(context.Background(), time.Now().UTC()); err != nil {
+		t.Fatalf("enabled shared backend tick failed: %v", err)
+	}
+	if runner.cleanupCalls != 0 {
+		t.Fatalf("enabled shared backend ran disabled cleanup: %d", runner.cleanupCalls)
 	}
 }
 

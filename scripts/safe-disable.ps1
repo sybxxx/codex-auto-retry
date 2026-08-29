@@ -42,6 +42,15 @@ function Stop-OwnedSharedServer {
         Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
         return $true
     }
+    $desktop = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -eq 'ChatGPT.exe' -and (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
+    })
+    if ($desktop.Count -gt 0) {
+        # Never terminate a shared app-server while Codex Desktop may still
+        # have an inherited connection. Keep the ownership record so the next
+        # safe-disable or service start can finish cleanup after Desktop exits.
+        return $false
+    }
     if (-not [string]::Equals([string]$process.ExecutablePath, [string]$state.executable, [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]$process.CommandLine -notmatch '(?i)(^|\s)app-server(\s|$)' -or
         [string]$process.CommandLine.IndexOf([string]$state.endpoint, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
@@ -106,6 +115,7 @@ if ($stateEndpoint -and $afterEndpoint -eq $stateEndpoint -and $stateEndpoint -m
     Status = 'disabled'
     WatchdogStopped = $true
     SharedServerStopped = [bool]$sharedStopped
+    SharedServerCleanupDeferred = (-not [bool]$sharedStopped -and (Test-Path -LiteralPath $statePath -PathType Leaf))
     StartupRemoved = [string]::IsNullOrWhiteSpace([string](Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue).$runName)
     SharedModeDisabled = [bool]$sharedModeDisabled
     EndpointRestored = [bool]$environmentResult.Restored

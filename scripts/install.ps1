@@ -14,6 +14,7 @@ $stopSignal = Join-Path $installDir 'stop.signal'
 $supervisorStop = Join-Path $installDir 'supervisor.stop'
 $statusPath = Join-Path $installDir 'status.json'
 $configPath = Join-Path $installDir 'config.json'
+$installJournalPath = Join-Path $installDir 'install-journal.json'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'CodexAutoRetry'
 $environmentName = 'CODEX_APP_SERVER_WS_URL'
@@ -75,7 +76,7 @@ function Stop-InstalledRuntime {
             $existing = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                 Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) })
         } while ($existing.Count -gt 0 -and (Get-Date) -lt $deadline)
-        if ($existing.Count -gt 0) { $existing | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }
+        if ($existing.Count -gt 0) { throw 'The watchdog did not stop gracefully. Runtime installation was cancelled.' }
     }
     Stop-OwnedProcessPath $mcpTarget
     @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -83,6 +84,133 @@ function Stop-InstalledRuntime {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
+}
+
+function Test-CodexDesktopRunning {
+    try {
+        $main = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            $_.Name -eq 'ChatGPT.exe' -and
+            (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
+        })
+        return $main.Count -gt 0
+    }
+    catch {
+        return $true
+    }
+}
+
+function Test-SharedBackendInUse {
+    $config = $null
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        try { $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json } catch { }
+    }
+    if ($config -and [bool]$config.shared_app_server_enabled) { return $true }
+
+    $statePath = Join-Path $installDir 'shared-server.json'
+    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        try {
+            $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json
+            $owned = [string]$state.owner -eq 'codex-auto-retry' -and
+                [string]$state.endpoint -match '^ws://127\.0\.0\.1:\d+$' -and
+                [int]$state.pid -gt 0 -and
+                -not [string]::IsNullOrWhiteSpace([string]$state.executable)
+            if (-not $owned) { return $true }
+            $process = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$state.pid) -ErrorAction Stop
+            if ($null -eq $process) { return $true }
+            return $true
+        }
+        catch {
+            return $true
+        }
+    }
+
+    $backupPath = Join-Path $installDir 'environment-backup.json'
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { return $false }
+    try {
+        $backup = Get-Content -Raw -Encoding UTF8 -LiteralPath $backupPath | ConvertFrom-Json
+        if ([int]$backup.schema_version -ne 1 -or [string]$backup.name -ne $environmentName -or
+            [string]$backup.installed_value -notmatch '^ws://127\.0\.0\.1:\d+$') { return $true }
+        $endpoint = [Environment]::GetEnvironmentVariable($environmentName, 'User')
+        return [string]::Equals($endpoint, [string]$backup.installed_value, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $true
+    }
+}
+
+function Test-SafeInstallTransactionRoot {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        $candidate = [System.IO.Path]::GetFullPath($Path)
+        return $candidate.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Recover-IncompleteInstall {
+    if (-not (Test-Path -LiteralPath $installJournalPath -PathType Leaf)) { return }
+    try { $journal = Get-Content -Raw -Encoding UTF8 -LiteralPath $installJournalPath | ConvertFrom-Json }
+    catch { throw "The runtime install journal is invalid and was not modified: $installJournalPath" }
+    if ($null -eq $journal -or [int]$journal.schema_version -ne 1 -or
+        [string]::IsNullOrWhiteSpace([string]$journal.transaction_root) -or
+        -not (Test-SafeInstallTransactionRoot ([string]$journal.transaction_root))) {
+        throw 'The runtime install journal is invalid or points outside the temporary transaction area.'
+    }
+    $transactionRoot = [System.IO.Path]::GetFullPath([string]$journal.transaction_root)
+    if ([string]$journal.phase -eq 'committed') {
+        Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
+        return
+    }
+    if ([bool]$journal.shared_enabled -and (Test-CodexDesktopRunning)) {
+        throw 'An interrupted runtime install requires Codex Desktop to be closed before rollback.'
+    }
+    $backupRoot = Join-Path $transactionRoot 'previous'
+    if (-not (Test-Path -LiteralPath $backupRoot -PathType Container)) {
+        throw 'The incomplete runtime install is missing its backup directory; refusing a guessed rollback.'
+    }
+    Stop-InstalledRuntime
+    foreach ($name in @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')) {
+        $target = Join-Path $installDir $name
+        $backup = Join-Path $backupRoot $name
+        $recorded = $journal.files.PSObject.Properties[$name]
+        $wasPresent = $null -ne $recorded -and [bool]$recorded.Value
+        if (Test-Path -LiteralPath $backup -PathType Leaf) { Copy-Item -LiteralPath $backup -Destination $target -Force }
+        elseif (-not $wasPresent) { Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }
+    }
+    foreach ($name in @('config.json', 'environment-backup.json', 'shared-server.json')) {
+        $target = Join-Path $installDir $name
+        $backup = Join-Path $backupRoot $name
+        $recorded = $journal.files.PSObject.Properties[$name]
+        $wasPresent = $null -ne $recorded -and [bool]$recorded.Value
+        if (Test-Path -LiteralPath $backup -PathType Leaf) { Copy-Item -LiteralPath $backup -Destination $target -Force }
+        elseif (-not $wasPresent) { Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }
+    }
+    if ([bool]$journal.run_present) {
+        New-Item -Path $runKey -Force | Out-Null
+        Set-ItemProperty -Path $runKey -Name $runName -Value ([string]$journal.run_value)
+    }
+    else {
+        Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
+    }
+    if ([bool]$journal.environment_present) {
+        [Environment]::SetEnvironmentVariable($environmentName, [string]$journal.environment_value, 'User')
+    }
+    else {
+        Remove-CodexAutoRetryUserEnvironmentValue -Name $environmentName
+    }
+    Send-CodexAutoRetryEnvironmentChange
+	if ([bool]$journal.watchdog_was_running -and (Test-Path -LiteralPath $watchdogTarget -PathType Leaf)) {
+		Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
+		Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
+		Start-Process -FilePath $watchdogTarget -ArgumentList @('supervise') -WorkingDirectory $installDir -WindowStyle Hidden | Out-Null
+	}
+    Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
 }
 
 function Set-ConfigSharedMode {
@@ -137,6 +265,16 @@ if (-not (Test-Path -LiteralPath $watchdogSource -PathType Leaf)) { throw "Built
 if (-not (Test-Path -LiteralPath $mcpSource -PathType Leaf)) { throw "Built MCP server not found: $mcpSource" }
 [void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
+Recover-IncompleteInstall
+
+$existingConfig = $null
+if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+    try { $existingConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json } catch { }
+}
+if ((Test-SharedBackendInUse) -and (Test-CodexDesktopRunning)) {
+	throw 'Codex Desktop is using the shared backend. Close Codex completely before installing or upgrading the runtime.'
+}
+
 $transactionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('codex-auto-retry-runtime-' + [guid]::NewGuid().ToString('N'))
 $backupRoot = Join-Path $transactionRoot 'previous'
 $environmentBackupPath = Join-Path $installDir 'environment-backup.json'
@@ -156,6 +294,7 @@ $legacyOwnedEndpoint = $null
 $environmentChanged = $false
 $startedProcess = $null
 $installationSucceeded = $false
+$journalCleared = $false
 
 try {
     New-Item -ItemType Directory -Force -Path $installDir, $backupRoot | Out-Null
@@ -203,8 +342,35 @@ try {
             if ($pair[0] -eq $settingsTarget) { $oldSettings = $true }
         }
     }
+	$runtimeProcessesBefore = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+		Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) })
+	$runtimeBackupFiles = [ordered]@{}
+	foreach ($name in @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1', 'config.json', 'environment-backup.json', 'shared-server.json')) {
+		$source = Join-Path $installDir $name
+		$runtimeBackupFiles[$name] = Test-Path -LiteralPath $source -PathType Leaf
+		if ($runtimeBackupFiles[$name]) {
+			Copy-Item -LiteralPath $source -Destination (Join-Path $backupRoot $name) -Force
+		}
+	}
+	$journal = [pscustomobject][ordered]@{
+		schema_version = 1
+		transaction_id = [guid]::NewGuid().ToString('N')
+		phase = 'prepared'
+		transaction_root = $transactionRoot
+		files = [pscustomobject]$runtimeBackupFiles
+		run_present = -not [string]::IsNullOrWhiteSpace([string]$oldRunValue)
+		run_value = [string]$oldRunValue
+		environment_present = $oldEnvironmentPresent
+		environment_value = if ($oldEnvironmentPresent) { [string]$oldEnvironment } else { '' }
+		shared_enabled = if ($existingConfig) { [bool]$existingConfig.shared_app_server_enabled } else { $false }
+		watchdog_was_running = $runtimeProcessesBefore.Count -gt 0
+		created_at = [DateTime]::UtcNow.ToString('o')
+	}
+	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
 
     Stop-InstalledRuntime
+	$journal.phase = 'runtime_stopped'
+	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     if (-not $EnableSharedAppServer) {
         # A previous release may have installed the endpoint by default. Remove
         # only the recorded value, or a legacy value proven to belong to this
@@ -222,10 +388,14 @@ try {
         (Get-FileHash -LiteralPath $mcpSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidateMcp -Algorithm SHA256).Hash) {
         throw 'Candidate binary verification failed.'
     }
+	$journal.phase = 'candidate_verified'
+	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     Copy-Item -LiteralPath $candidateWatchdog -Destination $watchdogTarget -Force
     Copy-Item -LiteralPath $candidateMcp -Destination $mcpTarget -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\ui\settings.ps1') -Destination $settingsTarget -Force
     Set-SupervisedStartupEntry
+	$journal.phase = 'startup_registered'
+	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
 
     Set-ConfigSharedMode ([bool]$EnableSharedAppServer)
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
@@ -239,6 +409,8 @@ try {
         $environmentChanged = $true
     }
     $installationSucceeded = $true
+	$journal.phase = 'committed'
+	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     [pscustomobject]@{
         Installed = $true
         Running = $status.running
@@ -283,12 +455,22 @@ catch {
         if ($oldSharedStateExisted) { [System.IO.File]::WriteAllBytes($sharedStatePath, $oldSharedStateBytes) }
         else { Remove-Item -LiteralPath $sharedStatePath -Force -ErrorAction SilentlyContinue }
         Send-CodexAutoRetryEnvironmentChange
+		if (Test-Path -LiteralPath $installJournalPath -PathType Leaf) {
+			$rollbackJournal = Get-Content -Raw -Encoding UTF8 -LiteralPath $installJournalPath | ConvertFrom-Json
+			$rollbackJournal.phase = 'rolled_back'
+			Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $rollbackJournal
+			Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
+			$journalCleared = $true
+		}
     }
     catch { Write-Warning 'Automatic runtime rollback was incomplete; user task data was not deleted.' }
     throw $failure
 }
 finally {
-    if (Test-Path -LiteralPath $transactionRoot -PathType Container) {
+    if (($installationSucceeded -or $journalCleared) -and (Test-Path -LiteralPath $transactionRoot -PathType Container)) {
         Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($installationSucceeded) {
+        Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
     }
 }

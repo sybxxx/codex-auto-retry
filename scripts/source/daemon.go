@@ -24,20 +24,22 @@ type daemon struct {
 	runner      resumeRunner
 	startedAt   time.Time
 
-	mu                  sync.Mutex
-	wg                  sync.WaitGroup
-	state               RuntimeState
-	active              map[string]RetryJob
-	activeCtx           map[string]context.CancelFunc
-	lastScan            time.Time
-	lastError           string
-	controllerState     string
-	lastControllerProbe time.Time
-	paused              bool
-	writeState          func(string, any) error
-	writeStatusFile     func(string, any) error
-	stateWriteDeferred  bool
-	statusWriteDeferred bool
+	mu                   sync.Mutex
+	wg                   sync.WaitGroup
+	state                RuntimeState
+	active               map[string]RetryJob
+	activeCtx            map[string]context.CancelFunc
+	lastScan             time.Time
+	lastError            string
+	controllerState      string
+	lastControllerProbe  time.Time
+	paused               bool
+	memoryUsageBytes     uint64
+	memoryGuardTriggered bool
+	writeState           func(string, any) error
+	writeStatusFile      func(string, any) error
+	stateWriteDeferred   bool
+	statusWriteDeferred  bool
 }
 
 func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeRunner) (*daemon, error) {
@@ -138,11 +140,15 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 	}
 	d.refreshControlsLocked(now)
 	d.expireUnacknowledgedLocked(now)
+	sharedBackendEnabled := d.config.SharedAppServerEnabled
 	// Acknowledged turns normally finish through rollout events. If a previous
 	// process stopped after task_started, release the mutex while the optional
 	// app-server lifecycle probe verifies that the turn is still active. The
 	// probe never starts a task and its result is revalidated under the lock.
 	d.mu.Unlock()
+	if !sharedBackendEnabled {
+		d.reconcileSharedBackendCleanup(ctx)
+	}
 	d.reconcileAwaitingLifecycle(ctx, now)
 	d.mu.Lock()
 	jobs := d.dispatchDueLocked(now)
@@ -172,6 +178,25 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
+func (d *daemon) reconcileSharedBackendCleanup(ctx context.Context) {
+	cleaner, ok := d.runner.(sharedBackendCleanupReconciler)
+	if !ok {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	err := cleaner.ReconcileSharedBackendCleanup(cleanupCtx)
+	cancel()
+	if err == nil || errors.Is(err, errSharedServerMigrationDeferred) {
+		return
+	}
+	d.mu.Lock()
+	d.lastError = controllerFailureReason(DispatchResult{}, err)
+	d.mu.Unlock()
+	if d.logger != nil {
+		d.logger.Printf("shared app-server deferred cleanup failed category=%s", controllerFailureReason(DispatchResult{}, err))
+	}
+}
+
 func (d *daemon) persistStateLocked() error {
 	writer := d.writeState
 	if writer == nil {
@@ -190,6 +215,30 @@ func (d *daemon) persistStateLocked() error {
 		d.logger.Printf("state save recovered category=state_write")
 	}
 	return nil
+}
+
+func (d *daemon) recordMemorySample(sample memorySample) {
+	d.mu.Lock()
+	d.memoryUsageBytes = sample.PrivateBytes
+	d.mu.Unlock()
+}
+
+func (d *daemon) handleMemoryLimit(sample memorySample) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.memoryUsageBytes = sample.PrivateBytes
+	if d.memoryGuardTriggered {
+		return
+	}
+	d.memoryGuardTriggered = true
+	d.controllerState = "memory_limit_exceeded"
+	d.lastError = "memory_limit_exceeded"
+	if d.logger != nil {
+		d.logger.Printf("memory guard triggered pid=%d private_memory_mb=%d limit_mb=%d", os.Getpid(), memoryBytesToMB(sample.PrivateBytes), d.config.MemoryLimitMB)
+	}
+	// Publish the terminal state before the process exits so the manager can
+	// distinguish a guarded shutdown from a stale heartbeat.
+	_ = d.writeStatusLocked(false, len(discoverSessionRoots(d.config)))
 }
 
 func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool {
@@ -600,7 +649,7 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 
 func controllerFailureNeedsAction(reason string) bool {
 	switch reason {
-	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_disabled", "shared_app_server_config_invalid":
+	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_disabled", "shared_app_server_config_invalid", "shared_app_server_migration_deferred":
 		return true
 	default:
 		return false
@@ -881,6 +930,9 @@ func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 		SharedAppServerEnabled: d.config.SharedAppServerEnabled,
 		ControllerState:        d.controllerState,
 		LastError:              d.lastError,
+		MemoryUsageMB:          memoryBytesToMB(d.memoryUsageBytes),
+		MemoryLimitMB:          d.config.MemoryLimitMB,
+		MemoryGuardTriggered:   d.memoryGuardTriggered,
 		LogPath:                d.logger.path,
 	}
 	writer := d.writeStatusFile

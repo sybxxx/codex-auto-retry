@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -51,11 +52,24 @@ func processIsRunning(pid int) bool {
 	}
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return false
+		// Access-denied and transient query failures must be treated as live for
+		// cleanup decisions. Returning false here can remove shared-server state
+		// while the app-server still owns its listening socket. Only explicit
+		// invalid-handle/not-found errors prove that the PID is gone.
+		return !processGoneError(err)
 	}
 	defer windows.CloseHandle(handle)
 	var exitCode uint32
-	return windows.GetExitCodeProcess(handle, &exitCode) == nil && exitCode == stillActive
+	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return !processGoneError(err)
+	}
+	return exitCode == stillActive
+}
+
+func processGoneError(err error) bool {
+	return errors.Is(err, windows.ERROR_INVALID_PARAMETER) ||
+		errors.Is(err, windows.ERROR_INVALID_HANDLE) ||
+		errors.Is(err, windows.ERROR_NOT_FOUND)
 }
 
 func codexDesktopRunning() bool {

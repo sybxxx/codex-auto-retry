@@ -91,6 +91,10 @@ if ($settingsProcesses) {
 Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
 $environmentResult = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir -LegacyOwnedEndpoint $legacyOwnedEndpoint
 $sharedServerStopped = Stop-CodexAutoRetrySharedServerIfUnused -DataDir $installDir
+$sharedStateStillPresent = Test-Path -LiteralPath $statePath -PathType Leaf
+if ($sharedStateStillPresent -and -not $KeepData) {
+    throw 'The plugin-owned shared app-server is still in use or could not be verified as stopped. Runtime data was not deleted; close Codex and run uninstall again.'
+}
 if (Test-Path -LiteralPath $installDir) {
     if ($KeepData) {
         foreach ($runtimeFile in @(
@@ -116,5 +120,6 @@ if (Test-Path -LiteralPath $installDir) {
     EnvironmentRestored = [bool]$environmentResult.Restored
     EnvironmentChangedByUser = [bool]$environmentResult.ChangedByUser
     SharedServerStopped = [bool]$sharedServerStopped
+    SharedServerCleanupDeferred = [bool]$sharedStateStillPresent
     SharedModeDisabled = [bool]$sharedModeDisabled
 }

@@ -30,6 +30,7 @@ type Config struct {
 	SharedAppServerPort    int      `json:"shared_app_server_port"`
 	SharedAppServerEnabled bool     `json:"shared_app_server_enabled"`
 	ControllerFailureLimit int      `json:"controller_failure_limit"`
+	MemoryLimitMB          int      `json:"memory_limit_mb"`
 	RetryPrompt            string   `json:"retry_prompt"`
 	ShowNotifications      bool     `json:"show_notifications"`
 }
@@ -43,10 +44,12 @@ const maxRetryPromptRunes = 500
 const (
 	maxConsecutiveRetriesLimit = 100
 	maxRecoveryAttemptsLimit   = 1000
+	minMemoryLimitMB           = 128
+	maxMemoryLimitMB           = 65536
 )
 
 const (
-	currentConfigVersion             = 8
+	currentConfigVersion             = 9
 	legacyDefaultSharedAppServerPort = 49321
 	defaultSharedAppServerPort       = 49621
 )
@@ -76,6 +79,7 @@ func defaultConfig() Config {
 		SharedAppServerPort:    defaultSharedAppServerPort,
 		SharedAppServerEnabled: false,
 		ControllerFailureLimit: 3,
+		MemoryLimitMB:          1024,
 		RetryPrompt:            defaultRetryPrompt,
 		ShowNotifications:      true,
 	}
@@ -113,7 +117,8 @@ func loadOrCreateConfig(path string) (Config, error) {
 	// recovery to the shared local app-server channel used by current Codex App.
 	// Version 7 makes that channel an explicit opt-in so a broken plugin cannot
 	// prevent Codex from starting with its own official backend. Version 8 moves
-	// the default endpoint out of a Windows-excluded port range.
+	// the default endpoint out of a Windows-excluded port range. Version 9 adds
+	// a bounded private-memory guard for the watchdog process.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -161,6 +166,10 @@ func loadOrCreateConfig(path string) (Config, error) {
 		}
 		if _, found := fields["shared_app_server_enabled"]; !found {
 			cfg.SharedAppServerEnabled = defaultConfig().SharedAppServerEnabled
+			changed = true
+		}
+		if _, found := fields["memory_limit_mb"]; !found {
+			cfg.MemoryLimitMB = defaultConfig().MemoryLimitMB
 			changed = true
 		}
 	}
@@ -229,6 +238,9 @@ func (c Config) validate() error {
 	}
 	if c.ControllerFailureLimit < 1 || c.ControllerFailureLimit > 20 {
 		return errors.New("controller_failure_limit must be between 1 and 20")
+	}
+	if c.MemoryLimitMB < minMemoryLimitMB || c.MemoryLimitMB > maxMemoryLimitMB {
+		return fmt.Errorf("memory_limit_mb must be between %d and %d", minMemoryLimitMB, maxMemoryLimitMB)
 	}
 	return nil
 }

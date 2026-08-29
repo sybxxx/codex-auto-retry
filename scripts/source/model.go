@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const appVersion = "0.7.8"
+const appVersion = "0.7.9"
 
 type FailureClass string
 
@@ -211,5 +211,8 @@ type StatusSnapshot struct {
 	SharedAppServerEnabled bool      `json:"shared_app_server_enabled"`
 	ControllerState        string    `json:"controller_state,omitempty"`
 	LastError              string    `json:"last_error,omitempty"`
+	MemoryUsageMB          int64     `json:"memory_usage_mb,omitempty"`
+	MemoryLimitMB          int       `json:"memory_limit_mb,omitempty"`
+	MemoryGuardTriggered   bool      `json:"memory_guard_triggered,omitempty"`
 	LogPath                string    `json:"log_path"`
 }

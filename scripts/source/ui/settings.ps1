@@ -18,6 +18,7 @@ $localCommandExitPortConflict = 3
 $script:localCommandProcess = $null
 $script:localCommandTimedOut = $false
 $script:localCommandInProgress = $false
+$script:memoryGuardTriggered = $false
 
 $configPath = Join-Path $DataDir 'config.json'
 $controlPath = Join-Path $DataDir 'control.json'
@@ -143,7 +144,7 @@ $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
-$form.ClientSize = [System.Drawing.Size]::new(620, 800)
+$form.ClientSize = [System.Drawing.Size]::new(620, 840)
 $form.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
 $form.Icon = [System.Drawing.SystemIcons]::Application
 if ($SmokeTest) {
@@ -210,7 +211,7 @@ $queueGroup.Controls.AddRange(@($retryNowButton, $cancelRetryButton, $restartRet
 $settingsGroup = [System.Windows.Forms.GroupBox]::new()
 $settingsGroup.Text = '自动重试设置'
 $settingsGroup.Location = [System.Drawing.Point]::new(20, 378)
-$settingsGroup.Size = [System.Drawing.Size]::new(580, 355)
+$settingsGroup.Size = [System.Drawing.Size]::new(580, 390)
 $form.Controls.Add($settingsGroup)
 
 $enabledCheck = [System.Windows.Forms.CheckBox]::new()
@@ -223,12 +224,14 @@ $sharedCheck.Text = '启用共享 Codex 后台（健康检查）'
 $sharedCheck.Location = [System.Drawing.Point]::new(18, 52)
 $sharedCheck.Size = [System.Drawing.Size]::new(260, 24)
 $sharedCheck.Checked = [bool]$config.shared_app_server_enabled
+$sharedPortValue = New-Label ('当前共享端口：' + [int]$config.shared_app_server_port) 300 25 255 24
+$sharedPortValue.ForeColor = [System.Drawing.Color]::DimGray
 $notificationsCheck = [System.Windows.Forms.CheckBox]::new()
 $notificationsCheck.Text = '达到重试上限时显示插件通知'
 $notificationsCheck.Location = [System.Drawing.Point]::new(300, 52)
 $notificationsCheck.Size = [System.Drawing.Size]::new(255, 24)
 $notificationsCheck.Checked = [bool]$config.show_notifications
-$settingsGroup.Controls.AddRange(@($enabledCheck, $sharedCheck, $notificationsCheck))
+$settingsGroup.Controls.AddRange(@($enabledCheck, $sharedCheck, $sharedPortValue, $notificationsCheck))
 
 $settingsGroup.Controls.Add((New-Label '后备重试文字' 18 85 180 22))
 $promptBox = [System.Windows.Forms.TextBox]::new()
@@ -244,7 +247,9 @@ $recoveryLabel = New-Label '本次故障恢复上限' 18 176 145 22
 $recoveryBox = New-NumberBox 168 173 1 1000 ([int]$config.max_recovery_attempts) 120
 $consecutiveLabel = New-Label '连续无进展重试上限' 310 176 128 22
 $consecutiveBox = New-NumberBox 438 173 1 100 ([int]$config.max_consecutive_retries) 120
-$settingsGroup.Controls.AddRange(@($recoveryLabel, $recoveryBox, $consecutiveLabel, $consecutiveBox))
+$memoryLabel = New-Label '内存保护上限（MB）' 18 302 145 22
+$memoryBox = New-NumberBox 168 299 128 65536 ([int]$config.memory_limit_mb) 120
+$settingsGroup.Controls.AddRange(@($recoveryLabel, $recoveryBox, $consecutiveLabel, $consecutiveBox, $memoryLabel, $memoryBox))
 
 $strategyLabel = New-Label '等待策略' 18 218 145 22
 $strategyBox = [System.Windows.Forms.ComboBox]::new()
@@ -259,6 +264,32 @@ $strategyBox.SelectedIndex = switch ([string]$config.delay_strategy) {
     'fixed' { 2 }
     default { 0 }
 }
+
+function Test-SettingsMemoryLimit {
+    if ($script:memoryGuardTriggered) { return $true }
+    $limitMB = 1024
+    try {
+        if ($config.memory_limit_mb) { $limitMB = [int]$config.memory_limit_mb }
+        $process = Get-Process -Id $PID -ErrorAction Stop
+        $usageMB = [int][Math]::Ceiling($process.PrivateMemorySize64 / 1MB)
+        if ($limitMB -ge 128 -and $usageMB -ge $limitMB) {
+            $script:memoryGuardTriggered = $true
+            $logPath = Join-Path $DataDir 'logs\daemon.log'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+            Add-Content -LiteralPath $logPath -Value ("{0} memory guard triggered component=settings pid={1} private_memory_mb={2} limit_mb={3}" -f ([DateTime]::UtcNow.ToString('o')), $PID, $usageMB, $limitMB)
+            [System.Windows.Forms.MessageBox]::Show(
+                "设置窗口私有内存已达到 $usageMB MB，超过上限 $limitMB MB。窗口将关闭，Codex 任务数据未被删除。",
+                'Codex Auto Retry 内存保护',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            ) | Out-Null
+            $form.Close()
+            return $true
+        }
+    }
+    catch { }
+    return $false
+}
 $initialDelayLabel = New-Label '首次等待（秒）' 310 218 118 22
 $initialDelayBox = New-NumberBox 438 215 1 3600 ([int]$config.initial_delay_seconds) 120
 $settingsGroup.Controls.AddRange(@($strategyLabel, $strategyBox, $initialDelayLabel, $initialDelayBox))
@@ -267,7 +298,7 @@ $maxDelayLabel = New-Label '最大等待（秒）' 18 260 145 22
 $maxDelayBox = New-NumberBox 168 257 1 86400 ([int]$config.max_delay_seconds) 120
 $incrementLabel = New-Label '每次增加（秒）' 310 260 128 22
 $incrementBox = New-NumberBox 438 257 1 3600 ([int]$config.delay_increment_seconds) 120
-$previewLabel = New-Label '' 18 297 540 38
+$previewLabel = New-Label '' 18 335 540 38
 $previewLabel.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.AddRange(@($maxDelayLabel, $maxDelayBox, $incrementLabel, $incrementBox, $previewLabel))
 
@@ -275,6 +306,7 @@ function Assert-SettingsLayout {
     foreach ($pair in @(
         @($recoveryLabel, $recoveryBox, '本次故障恢复上限'),
         @($consecutiveLabel, $consecutiveBox, '连续无进展重试上限'),
+        @($memoryLabel, $memoryBox, '内存保护上限'),
         @($strategyLabel, $strategyBox, '等待策略'),
         @($initialDelayLabel, $initialDelayBox, '首次等待'),
         @($maxDelayLabel, $maxDelayBox, '最大等待'),
@@ -331,19 +363,19 @@ function Update-DelayPreview {
 
 Update-DelayPreview
 
-$noticeLabel = New-Label '' 22 747 390 28
+$noticeLabel = New-Label '' 22 782 390 28
 $noticeLabel.ForeColor = [System.Drawing.Color]::SeaGreen
 $form.Controls.Add($noticeLabel)
 $saveButton = [System.Windows.Forms.Button]::new()
 $saveButton.Text = '保存设置'
-$saveButton.Location = [System.Drawing.Point]::new(420, 747)
+$saveButton.Location = [System.Drawing.Point]::new(420, 782)
 $saveButton.Size = [System.Drawing.Size]::new(85, 30)
 $saveButton.BackColor = [System.Drawing.Color]::FromArgb(35, 39, 37)
 $saveButton.ForeColor = [System.Drawing.Color]::White
 $saveButton.FlatStyle = 'Flat'
 $closeButton = [System.Windows.Forms.Button]::new()
 $closeButton.Text = '关闭'
-$closeButton.Location = [System.Drawing.Point]::new(515, 747)
+$closeButton.Location = [System.Drawing.Point]::new(515, 782)
 $closeButton.Size = [System.Drawing.Size]::new(85, 30)
 $form.Controls.AddRange(@($saveButton, $closeButton))
 $form.CancelButton = $closeButton
@@ -351,7 +383,7 @@ $form.CancelButton = $closeButton
 $settingsInputControls = @(
     $enabledCheck, $sharedCheck, $notificationsCheck, $promptBox,
     $recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox,
-    $maxDelayBox, $incrementBox
+    $maxDelayBox, $incrementBox, $memoryBox
 )
 
 function Set-SettingsBusy {
@@ -448,6 +480,10 @@ function Update-RuntimeView {
     $status = Read-JsonFile $statusPath
     $state = Read-JsonFile $statePath
     $currentControl = Read-JsonFile $controlPath
+    $currentConfig = Read-JsonFile $configPath
+    if ($currentConfig -and [int]$currentConfig.shared_app_server_port -gt 0) {
+        $sharedPortValue.Text = '当前共享端口：' + [int]$currentConfig.shared_app_server_port
+    }
     $running = $false
     if ($status -and [bool]$status.running -and [int]$status.pid -gt 0) {
         try {
@@ -472,8 +508,11 @@ function Update-RuntimeView {
         $serviceValue.Text = '共享端口被 Windows 保留，重试未执行'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ([string]$status.controller_state -eq 'shared_app_server_port_conflict') {
-        $serviceValue.Text = '共享端口被其他程序占用，重试未执行'
-        $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
+        $serviceValue.Text = '首选共享端口不可用，启用时将自动选择安全端口'
+        $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
+    } elseif ([string]$status.controller_state -eq 'shared_app_server_migration_deferred') {
+        $serviceValue.Text = '等待 Codex 关闭后完成共享后台迁移'
+        $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
     } elseif ([string]$status.controller_state -eq 'shared_app_server_config_invalid') {
         $serviceValue.Text = '共享后台配置不兼容，已切回官方后台'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
@@ -616,6 +655,7 @@ $saveButton.add_Click({
         initial_delay_seconds = [int]$initialDelayBox.Value
         max_delay_seconds = [int]$maxDelayBox.Value
         delay_increment_seconds = [int]$incrementBox.Value
+        memory_limit_mb = [int]$memoryBox.Value
         delay_strategy = $delayStrategy
         show_notifications = [bool]$notificationsCheck.Checked
         paused = -not [bool]$enabledCheck.Checked
@@ -688,6 +728,7 @@ $timer = [System.Windows.Forms.Timer]::new()
 $timer.Interval = if ($SmokeTest) { 100 } else { 1000 }
 $smokeDeadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
 $timer.add_Tick({
+    if (Test-SettingsMemoryLimit) { return }
     if ($SmokeTest) {
         Update-RuntimeView
         if ((Test-Path -LiteralPath $smokeClosePath) -or [DateTimeOffset]::UtcNow -ge $smokeDeadline) {

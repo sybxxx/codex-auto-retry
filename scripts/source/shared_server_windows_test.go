@@ -37,8 +37,27 @@ func TestValidSharedServerEndpointAcceptsOnlyExpectedLoopbackPort(t *testing.T) 
 	}
 }
 
-func TestSharedServerRefusesUnownedResponsivePort(t *testing.T) {
+func TestSharedServerSelectsAlternatePortForUnownedResponsivePort(t *testing.T) {
 	fake := newFakeAppServer(t, "019fa94e-0103-7183-b405-36bd307b6db7")
+	parsed, err := url.Parse(fake.endpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := selectAvailableSharedServerPort(port)
+	if err != nil {
+		t.Fatalf("responsive unowned port blocked safe alternate selection: %v", err)
+	}
+	if selected == port {
+		t.Fatalf("preferred occupied port was retained: port=%d", selected)
+	}
+}
+
+func TestSharedServerDoesNotAutoMigratePreferredPortDuringStartup(t *testing.T) {
+	fake := newFakeAppServer(t, "019fa94e-0103-7183-b405-36bd307b6db8")
 	parsed, err := url.Parse(fake.endpoint())
 	if err != nil {
 		t.Fatal(err)
@@ -49,9 +68,16 @@ func TestSharedServerRefusesUnownedResponsivePort(t *testing.T) {
 	}
 	config := defaultConfig()
 	config.SharedAppServerPort = port
-	manager := newSharedServerManager(config, t.TempDir(), nil)
+	dataDir := t.TempDir()
+	if err := writeJSONAtomic(filepath.Join(dataDir, "config.json"), config); err != nil {
+		t.Fatal(err)
+	}
+	manager := newSharedServerManager(config, dataDir, nil)
 	if err := manager.Ensure(context.Background()); !errors.Is(err, errSharedServerPortConflict) {
-		t.Fatalf("responsive unowned port was accepted: %v", err)
+		t.Fatalf("startup unexpectedly migrated around an unowned port: %v", err)
+	}
+	if manager.config.SharedAppServerPort != port {
+		t.Fatalf("startup changed the configured port after an unowned conflict: %d", manager.config.SharedAppServerPort)
 	}
 }
 
@@ -73,6 +99,101 @@ func TestSharedServerPortPreflightDetectsOccupiedPort(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	if err := checkSharedServerPort(port); !errors.Is(err, errSharedServerPortConflict) {
 		t.Fatalf("occupied port was not rejected: %v", err)
+	}
+}
+
+func TestSelectAvailableSharedServerPortSkipsOccupiedPort(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	preferred := listener.Addr().(*net.TCPAddr).Port
+	selected, err := selectAvailableSharedServerPort(preferred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == preferred {
+		t.Fatalf("occupied preferred port was selected: %d", selected)
+	}
+	if err := checkSharedServerPort(selected); err != nil {
+		t.Fatalf("selected alternate port is not available: %v", err)
+	}
+}
+
+func TestSelectAvailableSharedServerPortKeepsFreePreferredPort(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	selected, err := selectAvailableSharedServerPort(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != port {
+		t.Fatalf("free preferred port was unnecessarily changed: got %d want %d", selected, port)
+	}
+}
+
+func TestStopOwnedCleansAlternatePortWhenConfigRetainsPreferredPort(t *testing.T) {
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerPort = 49621
+	manager := newSharedServerManager(config, dataDir, nil)
+	manager.desktopRunning = func() bool { return false }
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sharedServerState{
+		PID:            4_000_000,
+		Endpoint:       "ws://127.0.0.1:49622",
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	statePath := filepath.Join(dataDir, "shared-server.json")
+	if err := writeJSONAtomic(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StopOwned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("alternate-port state was not removed: %v", err)
+	}
+}
+
+func TestStopOwnedDoesNotDependOnCurrentCodexHome(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	manager.desktopRunning = func() bool { return false }
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sharedServerState{
+		PID:            4_000_000,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      filepath.Join(t.TempDir(), ".codex"),
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	statePath := filepath.Join(dataDir, "shared-server.json")
+	if err := writeJSONAtomic(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StopOwned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned state tied to a previous Codex home was not removed: %v", err)
 	}
 }
 
@@ -214,6 +335,7 @@ func TestSharedServerAdoptsStateFromOlderPluginRelease(t *testing.T) {
 func TestStopOwnedRemovesStaleStateAfterOwnedProcessExits(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	manager.desktopRunning = func() bool { return false }
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -236,6 +358,60 @@ func TestStopOwnedRemovesStaleStateAfterOwnedProcessExits(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale owned state was not removed: %v", err)
+	}
+}
+
+func TestCleanupIfUnusedDefersLiveOwnedServerWhileDesktopRuns(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	manager.desktopRunning = func() bool { return true }
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sharedServerState{
+		PID:            os.Getpid(),
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	statePath := filepath.Join(dataDir, "shared-server.json")
+	if err := writeJSONAtomic(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CleanupIfUnused(context.Background()); !errors.Is(err, errSharedServerMigrationDeferred) {
+		t.Fatalf("live owned server was cleaned while Desktop was active: %v", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("deferred cleanup removed live ownership state: %v", err)
+	}
+}
+
+func TestStopOwnedDefersWhileDesktopIsRunning(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.desktopRunning = func() bool { return true }
+	state := sharedServerState{
+		PID:            os.Getpid(),
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	if err := writeJSONAtomic(filepath.Join(dataDir, "shared-server.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StopOwned(context.Background()); !errors.Is(err, errSharedServerMigrationDeferred) {
+		t.Fatalf("owned endpoint was torn down while Desktop was active: %v", err)
 	}
 }
 
@@ -318,6 +494,9 @@ func TestFailOpenCleanupRestoresOwnedLegacyEndpointWithoutBackup(t *testing.T) {
 }
 
 func TestCleanupSharedBackendFallsBackWhenConfigIsCorrupt(t *testing.T) {
+	previousDesktopProbe := desktopRunningProbe
+	desktopRunningProbe = func() bool { return false }
+	t.Cleanup(func() { desktopRunningProbe = previousDesktopProbe })
 	dataDir := t.TempDir()
 	previous, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
 	if err != nil {
@@ -373,5 +552,36 @@ func TestCleanupSharedBackendFallsBackWhenConfigIsCorrupt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "shared-server.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("owned shared-server state was not removed: %v", err)
+	}
+}
+
+func TestCleanupSharedBackendRestoresEndpointWhenOnlyBackupExists(t *testing.T) {
+	previousDesktopProbe := desktopRunningProbe
+	desktopRunningProbe = func() bool { return true }
+	t.Cleanup(func() { desktopRunningProbe = previousDesktopProbe })
+	dataDir := t.TempDir()
+	previous, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restoreUserEnvironment(sharedAppServerEnvironmentName, previous, present) })
+	if err := restoreUserEnvironment(sharedAppServerEnvironmentName, "", false); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "ws://127.0.0.1:51234"
+	if _, err := setOwnedSharedEnvironment(dataDir, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	if err := writeJSONAtomic(filepath.Join(dataDir, "config.json"), config); err != nil {
+		t.Fatal(err)
+	}
+	if err := disableSharedAppServer(context.Background(), dataDir, config); err != nil {
+		t.Fatalf("backup-only cleanup failed while Desktop was running: %v", err)
+	}
+	value, stillPresent, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil || stillPresent || value != "" {
+		t.Fatalf("backup-only cleanup left endpoint installed: value=%q present=%v err=%v", value, stillPresent, err)
 	}
 }

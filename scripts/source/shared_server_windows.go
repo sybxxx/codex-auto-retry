@@ -25,6 +25,8 @@ const (
 	sharedServerLaunchMode = "hidden_inherited_console_v1"
 )
 
+var desktopRunningProbe = codexDesktopRunning
+
 var (
 	errSharedServerUnavailable       = errors.New("shared Codex app-server is unavailable")
 	errSharedServerPortConflict      = errors.New("shared Codex app-server port is occupied")
@@ -46,13 +48,15 @@ type sharedServerState struct {
 }
 
 type sharedServerManager struct {
-	config        Config
-	dataDir       string
-	logger        *safeLogger
-	endpoint      string
-	codexHome     string
-	mu            sync.Mutex
-	migrationOnce sync.Once
+	config             Config
+	dataDir            string
+	logger             *safeLogger
+	endpoint           string
+	codexHome          string
+	mu                 sync.Mutex
+	migrationOnce      sync.Once
+	desktopRunning     func() bool
+	allowAlternatePort bool
 }
 
 // A running server survives a watchdog upgrade. Its plugin ownership is
@@ -61,9 +65,14 @@ type sharedServerManager struct {
 // This lets the new watchdog adopt its own old server instead of reporting a
 // false port conflict during login.
 func (m *sharedServerManager) sharedServerStateOwnedByPlugin(state sharedServerState) bool {
+	return m.sharedServerStateOwnedForCleanup(state) &&
+		endpointPort(state.Endpoint) == m.config.SharedAppServerPort
+}
+
+func (m *sharedServerManager) sharedServerStateOwnedForCleanup(state sharedServerState) bool {
 	return state.Owner == sharedServerOwner && strings.TrimSpace(state.Version) != "" &&
-		validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) &&
-		m.SupportsHome(state.CodexHome) && state.Executable != "" &&
+		validSharedServerEndpoint(state.Endpoint, endpointPort(state.Endpoint)) &&
+		filepath.IsAbs(state.CodexHome) && state.Executable != "" &&
 		state.ExecutableHash != "" && state.ExecutableHash == executableHash(state.Executable)
 }
 
@@ -82,12 +91,20 @@ func newSharedServerManager(config Config, dataDir string, logger *safeLogger) *
 		codexHome = filepath.Join(home, ".codex")
 	}
 	return &sharedServerManager{
-		config:    config,
-		dataDir:   dataDir,
-		logger:    logger,
-		endpoint:  fmt.Sprintf("ws://127.0.0.1:%d", config.SharedAppServerPort),
-		codexHome: expandPath(codexHome),
+		config:         config,
+		dataDir:        dataDir,
+		logger:         logger,
+		endpoint:       fmt.Sprintf("ws://127.0.0.1:%d", config.SharedAppServerPort),
+		codexHome:      expandPath(codexHome),
+		desktopRunning: desktopRunningProbe,
 	}
+}
+
+func (m *sharedServerManager) desktopIsRunning() bool {
+	if m != nil && m.desktopRunning != nil {
+		return m.desktopRunning()
+	}
+	return codexDesktopRunning()
 }
 
 func (m *sharedServerManager) Endpoint() string {
@@ -101,9 +118,32 @@ func (m *sharedServerManager) SupportsHome(value string) bool {
 func (m *sharedServerManager) Ensure(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refreshConfiguredPort()
 	_, desiredMCPConfigHash, err := loadCodexAppMCPOverride()
 	if err != nil {
 		return fmt.Errorf("%w: codex_app MCP configuration: %v", errSharedAppServerConfigInvalid, err)
+	}
+	// A settings write or interrupted upgrade can leave config.json pointing at
+	// the old preferred port while the plugin-owned server is healthy on the
+	// already-recorded alternate port. Adopt that exact state before probing or
+	// selecting another port.
+	if state, stateErr := m.readState(); stateErr == nil && m.sharedServerStateOwnedForCleanup(state) && m.ownsProcess(ctx, state) {
+		if port := endpointPort(state.Endpoint); port >= 1024 && port <= 65535 {
+			if state.Endpoint != m.endpoint {
+				if updateErr := m.updateConfiguredPort(port); updateErr != nil {
+					return updateErr
+				}
+			}
+			if probeErr := m.probe(ctx); probeErr == nil {
+				if err := m.adoptSharedServerState(&state); err != nil {
+					return fmt.Errorf("adopt shared app-server state: %w", err)
+				}
+				if m.sharedServerNeedsMigration(state, desiredMCPConfigHash) {
+					m.scheduleLaunchMigration()
+				}
+				return nil
+			}
+		}
 	}
 	if m.probe(ctx) == nil {
 		state, err := m.readState()
@@ -116,7 +156,18 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 			}
 			return nil
 		}
-		return errSharedServerPortConflict
+		if err == nil && m.sharedServerStateOwnedForCleanup(state) && state.Endpoint == m.endpoint && processIsRunning(state.PID) {
+			// The endpoint is recorded as ours, but the ownership probe could not
+			// verify the live command line. Do not create a second server or switch
+			// ports while Desktop may still be connected to this one.
+			return errSharedServerPortConflict
+		}
+		if !m.allowAlternatePort {
+			return errSharedServerPortConflict
+		}
+		if err := m.selectAlternatePort(); err != nil {
+			return err
+		}
 	}
 	address := fmt.Sprintf("127.0.0.1:%d", m.config.SharedAppServerPort)
 	connection, err := net.DialTimeout("tcp", address, 300*time.Millisecond)
@@ -147,15 +198,35 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 				case <-time.After(100 * time.Millisecond):
 				}
 			}
+			if m.desktopIsRunning() {
+				// Do not tear down a route while the visible Desktop may still be
+				// using it. The next readiness probe can retry after Desktop closes.
+				return errSharedServerMigrationDeferred
+			}
 			if stopErr := m.StopOwned(ctx); stopErr != nil {
 				return stopErr
 			}
-		} else {
+		} else if stateErr == nil && m.sharedServerStateOwnedForCleanup(state) && state.Endpoint == m.endpoint && processIsRunning(state.PID) {
 			return errSharedServerPortConflict
+		} else {
+			if !m.allowAlternatePort {
+				return errSharedServerPortConflict
+			}
+			if err := m.selectAlternatePort(); err != nil {
+				return err
+			}
 		}
 	}
 	if err := checkSharedServerPort(m.config.SharedAppServerPort); err != nil {
-		return err
+		if !errors.Is(err, errSharedServerPortConflict) && !errors.Is(err, errSharedServerPortReserved) {
+			return err
+		}
+		if !m.allowAlternatePort {
+			return err
+		}
+		if selectErr := m.selectAlternatePort(); selectErr != nil {
+			return err
+		}
 	}
 	executable, err := findCodexExecutable()
 	if err != nil {
@@ -193,6 +264,87 @@ func (m *sharedServerManager) Ensure(ctx context.Context) error {
 		}
 	}
 	return cleanup(errSharedServerUnavailable)
+}
+
+func (m *sharedServerManager) refreshConfiguredPort() {
+	if m == nil || strings.TrimSpace(m.dataDir) == "" {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(m.dataDir, "config.json"))
+	if err != nil {
+		return
+	}
+	var stored struct {
+		SharedAppServerPort int `json:"shared_app_server_port"`
+	}
+	if json.Unmarshal(data, &stored) != nil || stored.SharedAppServerPort < 1024 || stored.SharedAppServerPort > 65535 ||
+		stored.SharedAppServerPort == m.config.SharedAppServerPort {
+		return
+	}
+	m.config.SharedAppServerPort = stored.SharedAppServerPort
+	m.endpoint = fmt.Sprintf("ws://127.0.0.1:%d", stored.SharedAppServerPort)
+}
+
+func (m *sharedServerManager) selectAlternatePort() error {
+	if m == nil {
+		return errSharedServerUnavailable
+	}
+	port, err := selectAvailableSharedServerPort(m.config.SharedAppServerPort)
+	if err != nil {
+		return err
+	}
+	if port == m.config.SharedAppServerPort {
+		return nil
+	}
+	previousPort := m.config.SharedAppServerPort
+	if err := m.updateConfiguredPort(port); err != nil {
+		return err
+	}
+	if m.logger != nil {
+		m.logger.Printf("shared app-server selected alternate port=%d previous_port=%d", port, previousPort)
+	}
+	return nil
+}
+
+// selectAvailableSharedServerPort chooses a loopback port without touching the
+// process currently occupying the preferred one. The short deterministic scan
+// keeps configuration stable across restarts while allowing an orphaned port
+// from an older release to be bypassed safely.
+func selectAvailableSharedServerPort(preferred int) (int, error) {
+	if preferred < 1024 || preferred > 65535 {
+		return 0, fmt.Errorf("invalid shared app-server port: %d", preferred)
+	}
+	for offset := 0; offset <= 256; offset++ {
+		candidate := preferred + offset
+		if candidate > 65535 {
+			candidate = 1024 + (candidate - 65536)
+		}
+		if err := checkSharedServerPort(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return 0, errors.New("no available loopback app-server port was found")
+}
+
+func (m *sharedServerManager) updateConfiguredPort(port int) error {
+	if m == nil || port == m.config.SharedAppServerPort {
+		return nil
+	}
+	configPath := filepath.Join(m.dataDir, "config.json")
+	config, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("load config while selecting shared app-server port: %w", err)
+	}
+	config.SharedAppServerPort = port
+	if err := config.validate(); err != nil {
+		return err
+	}
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		return fmt.Errorf("save selected shared app-server port: %w", err)
+	}
+	m.config.SharedAppServerPort = port
+	m.endpoint = fmt.Sprintf("ws://127.0.0.1:%d", port)
+	return nil
 }
 
 func checkSharedServerPort(port int) error {
@@ -235,7 +387,7 @@ func (m *sharedServerManager) scheduleLaunchMigration() {
 
 func (m *sharedServerManager) waitForDesktopExitAndMigrate() {
 	for {
-		if codexDesktopRunning() {
+		if m.desktopIsRunning() {
 			time.Sleep(250 * time.Millisecond)
 			continue
 		}

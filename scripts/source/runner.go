@@ -42,6 +42,14 @@ type sharedBackendFailureHandler interface {
 	FailOpenSharedBackend(context.Context) error
 }
 
+// sharedBackendCleanupReconciler lets the worker finish a fail-open cleanup
+// after Codex Desktop has closed. A cleanup request made while Desktop is
+// alive must not terminate the shared app-server, but it also must not leave
+// the endpoint and ownership record stranded indefinitely.
+type sharedBackendCleanupReconciler interface {
+	ReconcileSharedBackendCleanup(context.Context) error
+}
+
 // retryLifecycleReader is optional so the daemon can safely inspect a turn
 // that was acknowledged by Codex but never produced a matching completion.
 // The probe is read-only and deliberately kept out of resumeRunner's required
@@ -111,6 +119,19 @@ func (r *appResumeRunner) FailOpenSharedBackend(ctx context.Context) error {
 		return err
 	}
 	return disableSharedAppServer(ctx, filepath.Dir(r.configPath), config)
+}
+
+func (r *appResumeRunner) ReconcileSharedBackendCleanup(ctx context.Context) error {
+	if r == nil || r.configPath == "" {
+		return nil
+	}
+	config, err := loadOrCreateConfig(r.configPath)
+	if err == nil && config.SharedAppServerEnabled {
+		return nil
+	}
+	// A malformed config is handled by the ownership-checked fallback. It does
+	// not replace the damaged file with defaults.
+	return cleanupSharedBackend(ctx, filepath.Dir(r.configPath))
 }
 
 func (r *appResumeRunner) RetryThreadStatus(ctx context.Context, threadID, codexHome string) (string, error) {
@@ -245,6 +266,8 @@ func controllerFailureReason(result DispatchResult, err error) string {
 		return "shared_app_server_port_reserved"
 	case errors.Is(err, errSharedServerPortConflict):
 		return "shared_app_server_port_conflict"
+	case errors.Is(err, errSharedServerMigrationDeferred):
+		return "shared_app_server_migration_deferred"
 	case errors.Is(err, errSharedAppServerEnvironmentConflict):
 		return "shared_app_server_environment_conflict"
 	case errors.Is(err, errSharedAppServerConfigInvalid):

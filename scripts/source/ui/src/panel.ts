@@ -59,6 +59,10 @@ type ManagementSnapshot = {
   delay_increment_seconds: number;
   delay_strategy: "fixed" | "linear" | "exponential";
   show_notifications: boolean;
+  memory_limit_mb: number;
+  memory_usage_mb?: number;
+  memory_guard_triggered?: boolean;
+  shared_app_server_port: number;
   now: string;
   last_scan_at?: string;
   pending_retries: number;
@@ -93,6 +97,7 @@ const elements = {
   pauseToggle: required<HTMLInputElement>("pause-toggle"),
   sharedAppServerToggle: required<HTMLInputElement>("shared-app-server-toggle"),
   sharedAppServerDescription: required<HTMLElement>("shared-app-server-description"),
+  sharedAppServerPort: required<HTMLElement>("shared-app-server-port"),
   pauseDescription: required<HTMLElement>("pause-description"),
   retryPrompt: required<HTMLTextAreaElement>("retry-prompt"),
   promptCount: required<HTMLElement>("prompt-count"),
@@ -100,6 +105,7 @@ const elements = {
   savePrompt: required<HTMLButtonElement>("save-prompt"),
   maxRecoveryAttempts: required<HTMLInputElement>("max-recovery-attempts"),
   maxConsecutiveRetries: required<HTMLInputElement>("max-consecutive-retries"),
+  memoryLimit: required<HTMLInputElement>("memory-limit-mb"),
   delayStrategies: requiredAll<HTMLInputElement>('input[name="delay-strategy"]'),
   initialDelayLabel: required<HTMLElement>("initial-delay-label"),
   initialDelay: required<HTMLInputElement>("initial-delay"),
@@ -117,6 +123,7 @@ let savedPrompt = "";
 let savedSettings = "";
 let busyCount = 0;
 let noticeTimer = 0;
+let statusPollInFlight = false;
 
 function required<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -167,6 +174,7 @@ function render(next: ManagementSnapshot): void {
     elements.retryPrompt.value = next.retry_prompt;
     elements.maxRecoveryAttempts.value = String(next.max_recovery_attempts);
     elements.maxConsecutiveRetries.value = String(next.max_consecutive_retries);
+    elements.memoryLimit.value = String(next.memory_limit_mb);
     elements.initialDelay.value = String(next.initial_delay_seconds);
     elements.maxDelay.value = String(next.max_delay_seconds);
     elements.delayIncrement.value = String(next.delay_increment_seconds);
@@ -177,8 +185,9 @@ function render(next: ManagementSnapshot): void {
   elements.pauseToggle.checked = !next.paused;
   elements.sharedAppServerToggle.checked = next.shared_app_server_enabled;
   elements.sharedAppServerDescription.textContent = next.shared_app_server_enabled
-    ? "正在使用插件拥有且已通过健康检查的后台"
+    ? `正在使用插件拥有且已通过健康检查的后台（端口 ${next.shared_app_server_port}）`
     : "默认关闭，不影响 Codex 官方后台";
+  elements.sharedAppServerPort.textContent = next.shared_app_server_port > 0 ? `端口 ${next.shared_app_server_port}` : "";
   updatePromptState();
   renderService(next);
   renderMetrics(next);
@@ -193,7 +202,11 @@ function renderService(next: ManagementSnapshot): void {
   dot.className = "status-dot";
   let label = "未运行";
   let detail = "未检测到有效心跳";
-  if (next.running && next.controller_state === "codex_restart_required") {
+  if (next.controller_state === "memory_limit_exceeded") {
+    label = "内存保护已停止";
+    detail = `后台内存 ${next.memory_usage_mb ?? 0} MB，已超过上限 ${next.memory_limit_mb} MB`;
+    dot.classList.add("status-dot-danger");
+  } else if (next.running && next.controller_state === "codex_restart_required") {
     label = "等待重启";
     detail = "请重启一次 Codex，使后台恢复通道生效";
     dot.classList.add("status-dot-warning");
@@ -210,9 +223,13 @@ function renderService(next: ManagementSnapshot): void {
     detail = "共享后台未启动，自动重试已停止；更换端口后再启用共享后台";
     dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state === "shared_app_server_port_conflict") {
-    label = "共享端口被占用";
-    detail = "共享后台未启动，自动重试已停止；释放端口后再启用共享后台";
+    label = "共享端口正在迁移";
+    detail = `首选端口不可用；启用共享后台时会选择安全的本机端口（当前配置 ${next.shared_app_server_port}）`;
     dot.classList.add("status-dot-danger");
+  } else if (next.running && next.controller_state === "shared_app_server_migration_deferred") {
+    label = "等待 Codex 关闭";
+    detail = "共享后台清理或迁移已延后，避免中断当前 Codex 会话";
+    dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state === "shared_app_server_environment_conflict") {
     label = "共享后台环境冲突";
     detail = "检测到 CODEX_APP_SERVER_WS_URL 已指向其他地址，插件未覆盖；请清理冲突值后再启用共享后台";
@@ -238,6 +255,9 @@ function renderService(next: ManagementSnapshot): void {
   }
   elements.serviceStatus.replaceChildren(dot, document.createTextNode(label));
   elements.serviceLine.textContent = detail;
+  if (next.memory_guard_triggered) {
+    elements.serviceLine.textContent = `${detail}；内存保护已触发（${next.memory_usage_mb ?? 0} MB/${next.memory_limit_mb} MB）`;
+  }
   elements.pauseDescription.textContent = next.paused ? "已暂停新重试" : "运行中";
 }
 
@@ -445,7 +465,7 @@ function stopReasonLabel(retry: ManagedRetry): string {
     return "此任务不在当前 Codex 的共享会话目录中";
   }
   if (retry.stop_reason === "shared_app_server_port_conflict") {
-    return "后台恢复端口被其他程序占用";
+    return "首选恢复端口不可用，等待安全迁移";
   }
   if (retry.stop_reason === "shared_app_server_port_reserved") {
     return "后台恢复端口被 Windows 保留";
@@ -455,6 +475,9 @@ function stopReasonLabel(retry: ManagedRetry): string {
   }
   if (retry.stop_reason === "shared_app_server_config_invalid") {
     return "共享后台配置与当前 Codex 不兼容，已自动切回官方后台";
+  }
+  if (retry.stop_reason === "shared_app_server_migration_deferred") {
+    return "等待 Codex 关闭后完成后台迁移";
   }
   if (retry.stop_reason?.startsWith("controller_") || retry.stop_reason?.startsWith("codex_background_") || retry.stop_reason === "app_server_request_failed") {
     return "后台恢复通道连续失败，已停止空转";
@@ -487,6 +510,8 @@ function stoppedStateLabel(retry: ManagedRetry): string {
       return "端口被 Windows 保留";
     case "shared_app_server_environment_conflict":
       return "共享后台环境冲突";
+    case "shared_app_server_migration_deferred":
+      return "等待 Codex 关闭";
     default:
       return "达到上限";
   }
@@ -501,6 +526,7 @@ function controllerStateLabel(value: string): string {
     shared_app_server_port_conflict: "共享端口被占用",
     shared_app_server_port_reserved: "共享端口被 Windows 保留",
     shared_app_server_environment_conflict: "CODEX_APP_SERVER_WS_URL 已被其他值占用",
+    shared_app_server_migration_deferred: "等待 Codex 关闭后完成后台迁移",
     shared_app_server_config_invalid: "共享后台配置与当前 Codex 不兼容，已切回官方后台",
     codex_background_channel_unavailable: "共享通道不可用",
     codex_background_dispatch_failed: "恢复请求失败",
@@ -525,11 +551,14 @@ function updatePromptState(): void {
   const delayIncrement = Number(elements.delayIncrement.value);
   const recoveryAttempts = Number(elements.maxRecoveryAttempts.value);
   const consecutiveRetries = Number(elements.maxConsecutiveRetries.value);
+  const memoryLimit = Number(elements.memoryLimit.value);
   let settingsError = "";
   if (!Number.isInteger(recoveryAttempts) || recoveryAttempts < 1 || recoveryAttempts > 1000) {
     settingsError = "本次故障恢复上限应为 1 到 1000";
   } else if (!Number.isInteger(consecutiveRetries) || consecutiveRetries < 1 || consecutiveRetries > 100) {
     settingsError = "连续无进展重试上限应为 1 到 100";
+  } else if (!Number.isInteger(memoryLimit) || memoryLimit < 128 || memoryLimit > 65536) {
+    settingsError = "内存上限应为 128 到 65536 MB";
   } else if ((strategy !== "fixed" && strategy !== "linear" && strategy !== "exponential")
     || !Number.isInteger(initialDelay) || initialDelay < 1 || initialDelay > 3600
     || !Number.isInteger(maxDelay) || maxDelay < 1 || maxDelay > 86400
@@ -552,6 +581,7 @@ function currentSettings(): string {
     retry_prompt: elements.retryPrompt.value,
     max_recovery_attempts: Number(elements.maxRecoveryAttempts.value),
     max_consecutive_retries: Number(elements.maxConsecutiveRetries.value),
+    memory_limit_mb: Number(elements.memoryLimit.value),
     initial_delay_seconds: Number(elements.initialDelay.value),
     max_delay_seconds: Number(elements.maxDelay.value),
     delay_increment_seconds: Number(elements.delayIncrement.value),
@@ -565,6 +595,7 @@ function serializedSettings(value: ManagementSnapshot): string {
     retry_prompt: value.retry_prompt,
     max_recovery_attempts: value.max_recovery_attempts,
     max_consecutive_retries: value.max_consecutive_retries,
+    memory_limit_mb: value.memory_limit_mb,
     initial_delay_seconds: value.initial_delay_seconds,
     max_delay_seconds: value.max_delay_seconds,
     delay_increment_seconds: value.delay_increment_seconds,
@@ -629,7 +660,12 @@ async function callTool(name: string, args: Record<string, unknown> = {}, quiet 
     showNotice("管理面板尚未连接", true);
     return;
   }
-  if (!quiet) setBusy(true);
+  if (quiet) {
+    if (statusPollInFlight) return;
+    statusPollInFlight = true;
+  } else {
+    setBusy(true);
+  }
   try {
     const result = (await app.callServerTool({ name, arguments: args })) as ToolResult;
     const next = extractSnapshot(result);
@@ -641,7 +677,11 @@ async function callTool(name: string, args: Record<string, unknown> = {}, quiet 
     }
     if (!quiet) showNotice(error instanceof Error ? error.message : "操作失败", true);
   } finally {
-    if (!quiet) setBusy(false);
+    if (quiet) {
+      statusPollInFlight = false;
+    } else {
+      setBusy(false);
+    }
   }
 }
 
@@ -662,16 +702,17 @@ function showNotice(message: string, isError: boolean): void {
 
 elements.refreshButton.addEventListener("click", () => void callTool("get_auto_retry_status"));
 elements.pauseToggle.addEventListener("change", () => void callTool("set_auto_retry_paused", { paused: !elements.pauseToggle.checked }));
-elements.sharedAppServerToggle.addEventListener("change", () => {
+  elements.sharedAppServerToggle.addEventListener("change", () => {
   const enabled = elements.sharedAppServerToggle.checked;
   elements.sharedAppServerDescription.textContent = enabled
-    ? "正在使用插件拥有且已通过健康检查的后台"
+    ? `正在使用插件拥有且已通过健康检查的后台（端口 ${snapshot?.shared_app_server_port ?? ""}）`
     : "默认关闭，不影响 Codex 官方后台";
   void callTool("set_shared_app_server_enabled", { enabled });
 });
 elements.retryPrompt.addEventListener("input", updatePromptState);
 elements.maxRecoveryAttempts.addEventListener("input", updatePromptState);
 elements.maxConsecutiveRetries.addEventListener("input", updatePromptState);
+elements.memoryLimit.addEventListener("input", updatePromptState);
 for (const option of elements.delayStrategies) option.addEventListener("change", updatePromptState);
 elements.initialDelay.addEventListener("input", updatePromptState);
 elements.maxDelay.addEventListener("input", updatePromptState);
@@ -689,7 +730,7 @@ window.setInterval(() => {
 if (new URLSearchParams(window.location.search).has("preview")) {
   render(previewSnapshot());
 } else {
-  app = new App({ name: "Codex Auto Retry", version: "0.7.8" });
+  app = new App({ name: "Codex Auto Retry", version: "0.7.9" });
   app.onerror = (error) => showNotice(error instanceof Error ? error.message : "连接失败", true);
   app.onhostcontextchanged = handleHostContext;
   app.ontoolresult = (result) => {
@@ -708,14 +749,16 @@ if (new URLSearchParams(window.location.search).has("preview")) {
 function previewSnapshot(): ManagementSnapshot {
   const now = Date.now();
   return {
-    version: "0.7.8",
+    version: "0.7.9",
     running: true,
     heartbeat_stale: false,
     paused: false,
     shared_app_server_enabled: false,
+    shared_app_server_port: 49621,
     retry_prompt: "继续",
     max_recovery_attempts: 15,
     max_consecutive_retries: 5,
+    memory_limit_mb: 1024,
     initial_delay_seconds: 5,
     max_delay_seconds: 300,
     delay_increment_seconds: 2,

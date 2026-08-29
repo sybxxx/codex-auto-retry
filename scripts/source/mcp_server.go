@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
+	"path/filepath"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,6 +33,7 @@ type setRetrySettingsInput struct {
 	DelayIncrementSeconds int    `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry, from 1 to 3600 seconds"`
 	DelayStrategy         string `json:"delay_strategy" jsonschema:"fixed for a constant delay, exponential for doubling delays, or linear for a fixed increase each retry"`
 	ShowNotifications     bool   `json:"show_notifications" jsonschema:"whether Windows retry notifications are enabled"`
+	MemoryLimitMB         *int   `json:"memory_limit_mb,omitempty" jsonschema:"private memory limit for the watchdog process, from 128 to 65536 MB; omit to keep the current value"`
 }
 
 type setPausedInput struct {
@@ -48,7 +51,32 @@ type threadControlInput struct {
 func runManagementMCP(dataDir string) error {
 	service := newManagementService(dataDir)
 	server := newManagementMCPServer(service)
-	return server.Run(context.Background(), &mcp.StdioTransport{})
+	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		config = defaultConfig()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	memoryTriggered := make(chan memorySample, 1)
+	guard := newProcessMemoryGuard(config.MemoryLimitMB, memoryCheckInterval, nil, nil, func(sample memorySample) {
+		appendMemoryGuardLog(dataDir, "mcp", sample, config.MemoryLimitMB)
+		select {
+		case memoryTriggered <- sample:
+		default:
+		}
+		cancel()
+	})
+	go guard.Run(ctx)
+	err = server.Run(ctx, &mcp.StdioTransport{})
+	select {
+	case sample := <-memoryTriggered:
+		showMemoryLimitAlert(sample, config.MemoryLimitMB)
+	default:
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
 }
 
 func newManagementMCPServer(service *managementService) *mcp.Server {
@@ -103,7 +131,20 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Description: "同时修改后备重试文字、连续无进展重试上限、单次故障恢复上限、固定、翻倍或线性等待策略，以及插件达到上限时的通知设置。",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false), Title: "修改自动重试设置"},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, input setRetrySettingsInput) (*mcp.CallToolResult, ManagementSnapshot, error) {
-		snapshot, err := service.setRetrySettings(RetrySettings(input), time.Now().UTC())
+		settings := RetrySettings{
+			RetryPrompt:           input.RetryPrompt,
+			MaxConsecutiveRetries: input.MaxConsecutiveRetries,
+			MaxRecoveryAttempts:   input.MaxRecoveryAttempts,
+			InitialDelaySeconds:   input.InitialDelaySeconds,
+			MaxDelaySeconds:       input.MaxDelaySeconds,
+			DelayIncrementSeconds: input.DelayIncrementSeconds,
+			DelayStrategy:         input.DelayStrategy,
+			ShowNotifications:     input.ShowNotifications,
+		}
+		if input.MemoryLimitMB != nil {
+			settings.MemoryLimitMB = *input.MemoryLimitMB
+		}
+		snapshot, err := service.setRetrySettings(settings, time.Now().UTC())
 		return nil, snapshot, err
 	})
 

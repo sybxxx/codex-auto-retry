@@ -28,7 +28,7 @@ func TestLoadConfigMigratesLegacyCliDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ConfigVersion != currentConfigVersion || cfg.MaxParallelRetries != 4 || cfg.StartAckTimeoutSeconds != 30 || cfg.RetryPrompt != defaultRetryPrompt {
+	if cfg.ConfigVersion != currentConfigVersion || cfg.MaxParallelRetries != 4 || cfg.StartAckTimeoutSeconds != 30 || cfg.MemoryLimitMB != defaultConfig().MemoryLimitMB || cfg.RetryPrompt != defaultRetryPrompt {
 		t.Fatalf("legacy config was not migrated: %+v", cfg)
 	}
 	written, err := os.ReadFile(path)
@@ -136,6 +136,16 @@ func TestConfigValidatesUserVisibleRetrySettings(t *testing.T) {
 	config.MaxConsecutiveRetries = maxConsecutiveRetriesLimit + 1
 	if err := config.validate(); err == nil {
 		t.Fatal("consecutive retry limit above the documented maximum was accepted")
+	}
+	config = defaultConfig()
+	config.MemoryLimitMB = minMemoryLimitMB - 1
+	if err := config.validate(); err == nil {
+		t.Fatal("memory limit below the documented minimum was accepted")
+	}
+	config = defaultConfig()
+	config.MemoryLimitMB = maxMemoryLimitMB + 1
+	if err := config.validate(); err == nil {
+		t.Fatal("memory limit above the documented maximum was accepted")
 	}
 	config = defaultConfig()
 	config.MaxRecoveryAttempts = maxRecoveryAttemptsLimit + 1

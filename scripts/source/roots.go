@@ -8,23 +8,37 @@ import (
 )
 
 type sessionRoot struct {
-	Sessions  string
-	CodexHome string
+	Sessions         string
+	ArchivedSessions string
+	CodexHome        string
 }
 
 func discoverSessionRoots(cfg Config) []sessionRoot {
 	seen := make(map[string]sessionRoot)
 	add := func(path string) {
 		path = expandPath(path)
-		if filepath.Base(path) != "sessions" {
-			path = filepath.Join(path, "sessions")
+		base := strings.ToLower(filepath.Base(path))
+		home := path
+		if base == "sessions" || base == "archived_sessions" {
+			home = filepath.Dir(path)
 		}
-		info, err := os.Stat(path)
-		if err != nil || !info.IsDir() {
+		sessions := filepath.Join(home, "sessions")
+		archived := filepath.Join(home, "archived_sessions")
+		sessionsInfo, sessionsErr := os.Stat(sessions)
+		archivedInfo, archivedErr := os.Stat(archived)
+		if (sessionsErr != nil || !sessionsInfo.IsDir()) && (archivedErr != nil || !archivedInfo.IsDir()) {
 			return
 		}
-		clean := strings.ToLower(filepath.Clean(path))
-		seen[clean] = sessionRoot{Sessions: filepath.Clean(path), CodexHome: filepath.Dir(filepath.Clean(path))}
+		home = filepath.Clean(home)
+		clean := strings.ToLower(home)
+		root := sessionRoot{CodexHome: home}
+		if sessionsErr == nil && sessionsInfo.IsDir() {
+			root.Sessions = sessions
+		}
+		if archivedErr == nil && archivedInfo.IsDir() {
+			root.ArchivedSessions = archived
+		}
+		seen[clean] = root
 	}
 
 	if cfg.IncludeDefaultHome {

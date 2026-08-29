@@ -32,6 +32,17 @@ func TestProcessOwnsRuntimeRejectsReusedPIDFromAnotherExecutable(t *testing.T) {
 	}
 }
 
+func TestProcessGoneErrorOnlyTreatsExplicitMissingProcessAsDead(t *testing.T) {
+	for _, err := range []error{windows.ERROR_INVALID_PARAMETER, windows.ERROR_INVALID_HANDLE, windows.ERROR_NOT_FOUND} {
+		if !processGoneError(err) {
+			t.Fatalf("explicit missing-process error was treated as live: %v", err)
+		}
+	}
+	if processGoneError(syscall.Errno(5)) {
+		t.Fatal("access denied was treated as proof that the process exited")
+	}
+}
+
 func TestHiddenInheritedConsoleAttributes(t *testing.T) {
 	attributes := hiddenInheritedConsoleAttributes()
 	if !attributes.HideWindow {

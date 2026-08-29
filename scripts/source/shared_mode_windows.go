@@ -38,25 +38,28 @@ type sharedEnvironmentResult struct {
 	ChangedByUser bool
 }
 
-func enableSharedAppServer(ctx context.Context, dataDir string, config Config) error {
+func enableSharedAppServer(ctx context.Context, dataDir string, config Config) (Config, error) {
 	manager := newSharedServerManager(config, dataDir, nil)
+	manager.allowAlternatePort = true
+	manager.config.SharedAppServerEnabled = true
 	if err := manager.Ensure(ctx); err != nil {
-		return fmt.Errorf("shared app-server health check failed: %w", err)
+		return config, fmt.Errorf("shared app-server health check failed: %w", err)
 	}
+	config = manager.config
 	if err := manager.ValidateOwned(ctx); err != nil {
 		cleanupSharedServer(manager)
-		return fmt.Errorf("shared app-server ownership check failed: %w", err)
+		return config, fmt.Errorf("shared app-server ownership check failed: %w", err)
 	}
 	endpoint := manager.Endpoint()
 	if !validSharedServerEndpoint(endpoint, config.SharedAppServerPort) {
 		cleanupSharedServer(manager)
-		return errors.New("shared app-server endpoint is not the expected loopback address")
+		return config, errors.New("shared app-server endpoint is not the expected loopback address")
 	}
 	if _, err := setOwnedSharedEnvironment(dataDir, endpoint); err != nil {
 		cleanupSharedServer(manager)
-		return err
+		return config, err
 	}
-	return nil
+	return manager.config, nil
 }
 
 // EnsureOwnedEnvironment repairs an endpoint that this plugin previously
@@ -101,21 +104,17 @@ func cleanupSharedServer(manager *sharedServerManager) {
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = manager.StopOwned(cleanupCtx)
+	_ = manager.CleanupIfUnused(cleanupCtx)
 }
 
 func disableSharedAppServer(ctx context.Context, dataDir string, config Config) error {
 	manager := newSharedServerManager(config, dataDir, nil)
-	if _, err := restoreOwnedSharedEnvironment(dataDir, manager.ownedLegacyEndpoints(ctx)...); err != nil {
-		return err
-	}
-	return manager.StopOwned(ctx)
+	return manager.CleanupIfUnused(ctx)
 }
 
-// cleanupSharedBackend is used at process boundaries. It deliberately keeps
-// the persisted shared-mode preference unchanged; a supervised worker can
-// recreate the owned backend after restart, while the endpoint is absent
-// during the gap instead of pointing Codex at a dead port.
+// cleanupSharedBackend is used at process boundaries and by the worker's
+// disabled-mode reconciler. It never changes the persisted preference; it
+// only removes artifacts that are proven to belong to this plugin.
 func cleanupSharedBackend(ctx context.Context, dataDir string) error {
 	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
 	if err == nil {
@@ -158,26 +157,62 @@ func cleanupSharedBackendWithoutConfig(ctx context.Context, dataDir string) erro
 		}
 	}
 
-	var legacyEndpoints []string
-	if stateErr == nil {
-		legacyEndpoints = manager.ownedLegacyEndpoints(ctx)
-	}
-	// Restore the environment first. If the process is still alive, StopOwned
-	// then terminates only the same state that passed the ownership checks.
-	_, environmentErr := restoreOwnedSharedEnvironment(dataDir, legacyEndpoints...)
-	processErr := manager.StopOwned(ctx)
-	return errors.Join(environmentErr, processErr)
+	return manager.CleanupIfUnused(ctx)
 }
 
-// detachOwnedSharedEnvironment removes an endpoint left by a previous worker
-// before this worker starts preparing the server. The ownership backup is
-// restored and consumed first, so Codex cannot inherit a dead plugin endpoint
-// while Windows starts the supervisor and Desktop in an unspecified order.
-// Prepare will publish a fresh endpoint only after its health checks pass.
-func detachOwnedSharedEnvironment(ctx context.Context, dataDir string, config Config) error {
-	manager := newSharedServerManager(config, dataDir, nil)
-	_, err := restoreOwnedSharedEnvironment(dataDir, manager.ownedLegacyEndpoints(ctx)...)
-	return err
+func (m *sharedServerManager) shouldDeferStopForDesktop() bool {
+	if m == nil || !m.desktopIsRunning() {
+		return false
+	}
+	state, err := m.readState()
+	return err == nil && m.sharedServerStateOwnedForCleanup(state) && processIsRunning(state.PID)
+}
+
+// hasOwnedCleanupArtifacts is intentionally stricter than checking whether a
+// port is occupied. Only a plugin ownership record or a matching environment
+// backup can authorize deferred cleanup; user-owned endpoints are untouched.
+func (m *sharedServerManager) hasOwnedCleanupArtifacts() bool {
+	if m == nil {
+		return false
+	}
+	if state, err := m.readState(); err == nil && m.sharedServerStateOwnedForCleanup(state) {
+		return true
+	}
+	return m.ownedEnvironmentBackupMatchesCurrent()
+}
+
+func (m *sharedServerManager) ownedEnvironmentBackupMatchesCurrent() bool {
+	if m == nil {
+		return false
+	}
+	backupPath := filepath.Join(m.dataDir, "environment-backup.json")
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		return false
+	}
+	var backup sharedEnvironmentBackup
+	if json.Unmarshal(data, &backup) != nil || backup.SchemaVersion != 1 || backup.Name != sharedAppServerEnvironmentName ||
+		!validSharedServerEndpoint(backup.InstalledValue, endpointPort(backup.InstalledValue)) {
+		return false
+	}
+	current, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	return err == nil && present && current == backup.InstalledValue
+}
+
+// CleanupIfUnused restores the owned environment and stops the owned server
+// only after Codex Desktop is gone when that server is still alive. A dead
+// server has no process to disrupt, so its stale state and endpoint backup can
+// be removed immediately.
+func (m *sharedServerManager) CleanupIfUnused(ctx context.Context) error {
+	if m == nil || !m.hasOwnedCleanupArtifacts() {
+		return nil
+	}
+	if m.shouldDeferStopForDesktop() {
+		return errSharedServerMigrationDeferred
+	}
+	_, environmentErr := restoreOwnedSharedEnvironment(m.dataDir, m.ownedLegacyEndpoints(ctx)...)
+	processErr := m.StopOwned(ctx)
+	return errors.Join(environmentErr, processErr)
 }
 
 // ownedLegacyEndpoints returns an endpoint that may be cleaned up when the
@@ -185,7 +220,7 @@ func detachOwnedSharedEnvironment(ctx context.Context, dataDir string, config Co
 // ownership: only a matching, versioned shared-server state record qualifies.
 func (m *sharedServerManager) ownedLegacyEndpoints(ctx context.Context) []string {
 	state, err := m.readState()
-	if err != nil || !m.sharedServerStateOwnedByPlugin(state) {
+	if err != nil || !m.sharedServerStateOwnedForCleanup(state) {
 		return nil
 	}
 	if processIsRunning(state.PID) && !m.ownsProcess(ctx, state) {
@@ -199,7 +234,7 @@ func (m *sharedServerManager) ValidateOwned(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !m.sharedServerStateOwnedByPlugin(state) {
+	if !m.sharedServerStateOwnedForCleanup(state) {
 		return errors.New("shared app-server state is not owned by this plugin")
 	}
 	if err := m.adoptSharedServerState(&state); err != nil {
@@ -231,8 +266,12 @@ func (m *sharedServerManager) StopOwned(ctx context.Context) error {
 	if err != nil {
 		return nil
 	}
-	if !m.sharedServerStateOwnedByPlugin(state) {
+	if !m.sharedServerStateOwnedForCleanup(state) {
 		return nil
+	}
+	if m.desktopIsRunning() && processIsRunning(state.PID) {
+		// Do not terminate a live server while Desktop may still be using it.
+		return errSharedServerMigrationDeferred
 	}
 	if processIsRunning(state.PID) {
 		// A live PID must still prove ownership before it can be terminated. A

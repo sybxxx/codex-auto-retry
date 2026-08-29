@@ -20,6 +20,74 @@ function Write-Step {
     Write-Host ('[Codex Auto Retry] ' + $Message)
 }
 
+function Test-CodexDesktopRunning {
+    try {
+        $main = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            $_.Name -eq 'ChatGPT.exe' -and
+            (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
+        })
+        return $main.Count -gt 0
+    }
+    catch {
+        # An inability to inspect Desktop is not permission to mutate a shared
+        # endpoint. Upgrade fails closed when process inspection is unavailable.
+        return $true
+    }
+}
+
+function Test-SharedBackendInUse {
+    param([string]$RuntimePath)
+
+    $configPath = Join-Path $RuntimePath 'config.json'
+    $config = $null
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        try { $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json } catch { }
+    }
+    if ($config -and [bool]$config.shared_app_server_enabled) { return $true }
+
+    $statePath = Join-Path $RuntimePath 'shared-server.json'
+    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        try {
+            $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json
+            $owned = [string]$state.owner -eq 'codex-auto-retry' -and
+                [string]$state.endpoint -match '^ws://127\.0\.0\.1:\d+$' -and
+                [int]$state.pid -gt 0 -and
+                -not [string]::IsNullOrWhiteSpace([string]$state.executable)
+            if (-not $owned) { return $true }
+            $process = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$state.pid) -ErrorAction Stop
+            if ($null -eq $process) {
+                # The ownership record can outlive a process after an
+                # interrupted stop. Require Desktop to be closed before the
+                # installer repairs that ambiguous state.
+                return $true
+            }
+            # A live owned app-server is in use even when the user endpoint was
+            # already removed. Replacing the watchdog must not kill it while
+            # Desktop may still have an inherited connection.
+            return $true
+        }
+        catch {
+            # An unreadable or ambiguous ownership record is not proof that the
+            # endpoint is safe to mutate. Require Desktop to be closed so the
+            # next run can repair it deliberately.
+            return $true
+        }
+    }
+
+    $backupPath = Join-Path $RuntimePath 'environment-backup.json'
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { return $false }
+    try {
+        $backup = Get-Content -Raw -Encoding UTF8 -LiteralPath $backupPath | ConvertFrom-Json
+        if ([int]$backup.schema_version -ne 1 -or [string]$backup.name -ne 'CODEX_APP_SERVER_WS_URL' -or
+            [string]$backup.installed_value -notmatch '^ws://127\.0\.0\.1:\d+$') { return $true }
+        $endpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')
+        return [string]::Equals($endpoint, [string]$backup.installed_value, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $true
+    }
+}
+
 function Set-ObjectProperty {
     param($Object, [string]$Name, $Value)
     if ($null -ne $Object.PSObject.Properties[$Name]) {
@@ -207,7 +275,7 @@ function Stop-RuntimeForUpgrade {
                 Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) })
         } while ($watchdogProcesses.Count -gt 0 -and (Get-Date) -lt $deadline)
         if ($watchdogProcesses.Count -gt 0) {
-            $watchdogProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            throw 'The watchdog did not stop gracefully. Upgrade was cancelled without replacing files.'
         }
     }
 
@@ -217,6 +285,72 @@ function Stop-RuntimeForUpgrade {
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
     return $wasRunning
+}
+
+function Test-SafeUpgradeTransactionRoot {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        $tempRoot = (Get-FullPath ([System.IO.Path]::GetTempPath())).TrimEnd('\') + '\'
+        $candidate = Get-FullPath $Path
+        return $candidate.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Read-UpgradeJournal {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $journal = Read-JsonDocument -Path $Path
+    if ($null -eq $journal -or [int]$journal.schema_version -ne 1 -or
+        [string]::IsNullOrWhiteSpace([string]$journal.transaction_id) -or
+        [string]::IsNullOrWhiteSpace([string]$journal.transaction_root)) {
+        throw "The upgrade journal is invalid and was not modified: $Path"
+    }
+    if (-not (Test-SafeUpgradeTransactionRoot -Path ([string]$journal.transaction_root))) {
+        throw 'The upgrade journal points outside the temporary transaction area.'
+    }
+    return $journal
+}
+
+function Restore-IncompleteUpgrade {
+    param(
+        [Parameter(Mandatory = $true)]$Journal,
+        [Parameter(Mandatory = $true)][string]$PluginTarget,
+        [Parameter(Mandatory = $true)][string]$MarketplacePath,
+        [Parameter(Mandatory = $true)][string]$JournalPath
+    )
+
+    $transactionRoot = Get-FullPath ([string]$Journal.transaction_root)
+    $pluginBackup = Get-FullPath (Join-Path $transactionRoot 'plugin-backup')
+    $marketplaceBackup = Get-FullPath (Join-Path $transactionRoot 'marketplace.json')
+    $pluginExisted = [bool]$Journal.plugin_existed
+    $marketplaceExisted = [bool]$Journal.marketplace_existed
+    if ($pluginExisted -and -not (Test-Path -LiteralPath $pluginBackup -PathType Container)) {
+        throw 'The incomplete upgrade is missing its plugin backup; refusing a guessed rollback.'
+    }
+    if ($marketplaceExisted -and -not (Test-Path -LiteralPath $marketplaceBackup -PathType Leaf)) {
+        throw 'The incomplete upgrade is missing its marketplace backup; refusing a guessed rollback.'
+    }
+
+    if (Test-Path -LiteralPath $PluginTarget -PathType Container) {
+        Assert-ExistingPluginIsOurs -Path $PluginTarget
+        Remove-Item -LiteralPath $PluginTarget -Recurse -Force
+    }
+    if ($pluginExisted) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PluginTarget) | Out-Null
+        Copy-DirectoryContents -Source $pluginBackup -Destination $PluginTarget
+    }
+    if ($marketplaceExisted) {
+        Copy-Item -LiteralPath $marketplaceBackup -Destination $MarketplacePath -Force
+    }
+    else {
+        Remove-Item -LiteralPath $MarketplacePath -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $JournalPath -Force -ErrorAction SilentlyContinue
 }
 
 function Verify-Installation {
@@ -333,6 +467,7 @@ if ($marketplaceName -notmatch '^[A-Za-z0-9._-]+$') {
     throw "The personal marketplace has an unsupported name: $marketplaceName"
 }
 $pluginId = 'codex-auto-retry@' + $marketplaceName
+$upgradeJournalPath = Join-Path $runtimePath 'upgrade-journal.json'
 
 if ($DryRun) {
     Write-Step 'Dry run completed. No files or settings were changed.'
@@ -347,6 +482,46 @@ if ($DryRun) {
         CodexCli = $cli
     }
     return
+}
+
+New-Item -ItemType Directory -Force -Path $runtimePath | Out-Null
+$upgradeLock = $null
+try {
+    $upgradeLock = [System.IO.File]::Open(
+        (Join-Path $runtimePath '.upgrade.lock'),
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+}
+catch {
+    throw 'Another Codex Auto Retry upgrade or repair is already in progress.'
+}
+
+try {
+    $unfinished = Read-UpgradeJournal -Path $upgradeJournalPath
+    if ($unfinished) {
+        $phase = [string]$unfinished.phase
+        if ($phase -ne 'committed' -and (Test-SharedBackendInUse -RuntimePath $runtimePath) -and (Test-CodexDesktopRunning)) {
+            throw 'An interrupted upgrade is waiting for recovery. Close Codex completely before running the repair again.'
+        }
+        if ($phase -eq 'committed') {
+            Remove-Item -LiteralPath ([string]$unfinished.transaction_root) -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $upgradeJournalPath -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            Write-Step "Recovering interrupted upgrade transaction $([string]$unfinished.transaction_id)..."
+            Restore-IncompleteUpgrade -Journal $unfinished -PluginTarget $pluginTarget -MarketplacePath $marketplacePath -JournalPath $upgradeJournalPath
+        }
+    }
+
+    if ((Test-SharedBackendInUse -RuntimePath $runtimePath) -and (Test-CodexDesktopRunning)) {
+        throw 'Codex Desktop is using the shared backend. Close Codex completely before upgrading; no files or settings were changed.'
+    }
+}
+catch {
+    if ($upgradeLock) { $upgradeLock.Dispose(); $upgradeLock = $null }
+    throw
 }
 
 if (-not $SkipRuntimeInstall) {
@@ -372,6 +547,7 @@ $runtimeAttempted = $false
 $registered = $false
 $existingRuntimeWasRunning = $false
 $success = $false
+$journalCleared = $false
 
 $oldUserProfile = $env:USERPROFILE
 $oldHome = $env:HOME
@@ -385,11 +561,23 @@ try {
     if ($marketplaceExisted) {
         Copy-Item -LiteralPath $marketplacePath -Destination $marketplaceBackup -Force
     }
+	$journal = [pscustomobject][ordered]@{
+	    schema_version = 1
+	    transaction_id = [guid]::NewGuid().ToString('N')
+	    phase = 'prepared'
+	    transaction_root = $transactionRoot
+	    plugin_existed = $pluginExisted
+	    marketplace_existed = $marketplaceExisted
+	    created_at = [DateTime]::UtcNow.ToString('o')
+	}
+	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
 
     Write-Step 'Installing plugin files...'
     if ($pluginExisted) {
         $existingRuntimeWasRunning = Stop-RuntimeForUpgrade -RuntimePath $runtimePath
     }
+	$journal.phase = 'runtime_stopped'
+	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     New-Item -ItemType Directory -Force -Path $pluginParent | Out-Null
     if ($pluginExisted) {
         Remove-Item -LiteralPath $pluginTarget -Recurse -Force
@@ -405,6 +593,8 @@ try {
     }
     Set-InstalledMcpLauncher -PluginPath $pluginTarget -RuntimePath $runtimePath
     $pluginChanged = $true
+	$journal.phase = 'plugin_replaced'
+	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     Write-JsonAtomic -Path (Join-Path $pluginTarget '.codex-auto-retry-release.json') -Value ([pscustomobject][ordered]@{
         packageVersion = [string]$manifest.packageVersion
         pluginVersion = [string]$manifest.pluginVersion
@@ -414,6 +604,8 @@ try {
     Write-Step 'Registering the personal Codex plugin...'
     Write-JsonAtomic -Path $marketplacePath -Value $marketplace
     $marketplaceChanged = $true
+	$journal.phase = 'plugin_registered'
+	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
 
     $env:USERPROFILE = $profileRootPath
     $env:HOME = $profileRootPath
@@ -432,12 +624,16 @@ try {
         Write-Step 'Installing and starting the background watchdog...'
         $runtimeAttempted = $true
         [void](Install-Runtime -PluginPath $pluginTarget -EnableSharedAppServer:$EnableSharedAppServer)
+		$journal.phase = 'runtime_installed'
+		Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     }
 
     Write-Step 'Verifying the completed installation...'
     $baseVersion = ([string]$manifest.pluginVersion -split '\+', 2)[0]
     Verify-Installation -PluginPath $pluginTarget -RuntimePath $runtimePath -Cli $cli -PluginId $pluginId -ExpectedBaseVersion $baseVersion -VerifyPlugin (-not $SkipPluginRegistration) -VerifyRuntime (-not $SkipRuntimeInstall) -ExpectedSharedAppServer:$EnableSharedAppServer
     $success = $true
+	$journal.phase = 'committed'
+	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
 
     Write-Step 'Installation completed successfully.'
     if ($EnableSharedAppServer) {
@@ -494,6 +690,13 @@ catch {
             (Test-Path -LiteralPath (Join-Path $pluginTarget 'scripts\install.ps1') -PathType Leaf)) {
             [void](Install-Runtime -PluginPath $pluginTarget -EnableSharedAppServer:$EnableSharedAppServer)
         }
+		if ($success -eq $false -and (Test-Path -LiteralPath $upgradeJournalPath -PathType Leaf)) {
+			$rollbackJournal = Read-UpgradeJournal -Path $upgradeJournalPath
+			$rollbackJournal.phase = 'rolled_back'
+			Write-JsonAtomic -Path $upgradeJournalPath -Value $rollbackJournal
+			Remove-Item -LiteralPath $upgradeJournalPath -Force -ErrorAction SilentlyContinue
+			$journalCleared = $true
+		}
     }
     catch {
         Write-Warning 'Automatic rollback was incomplete. Existing retry data was not deleted.'
@@ -504,12 +707,19 @@ finally {
     $env:USERPROFILE = $oldUserProfile
     $env:HOME = $oldHome
     $env:LOCALAPPDATA = $oldLocalAppData
-    if (Test-Path -LiteralPath $transactionRoot -PathType Container) {
+    if (($success -or $journalCleared) -and (Test-Path -LiteralPath $transactionRoot -PathType Container)) {
         $tempRoot = (Get-FullPath ([System.IO.Path]::GetTempPath())).TrimEnd('\') + '\'
         $transactionFull = Get-FullPath $transactionRoot
         if ($transactionFull.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -LiteralPath $transactionFull -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+    if ($success) {
+        Remove-Item -LiteralPath $upgradeJournalPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($upgradeLock) {
+        $upgradeLock.Dispose()
+        $upgradeLock = $null
     }
     if (-not $success) {
         Write-Host 'See the error above. No retry configuration or task state was intentionally deleted.'

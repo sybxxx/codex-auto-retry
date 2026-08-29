@@ -212,8 +212,10 @@ hidden console instead of opening separate Windows Terminal windows. An upgrade
 from the older detached launch waits until Codex is fully closed, terminates only
 that owned app-server process tree, and starts the corrected server before the
 next launch. The Windows sign-in entry always starts the lightweight
-`supervise` command rather than the worker's old direct `run` command, so a
-worker exit cannot leave a published endpoint behind. Runtime state, heartbeat,
+`supervise` command rather than the worker's old direct `run` command. A worker
+restart adopts a healthy owned endpoint instead of deleting it under a live
+Codex process; an unhealthy or disabled endpoint is cleaned only after
+ownership checks and, when needed, after Codex closes. Runtime state, heartbeat,
 configuration, controls, and
 privacy-safe logs remain in the same local directory. Plugin management
 commands live in `skills/codex-auto-retry/SKILL.md`.
@@ -300,8 +302,10 @@ mutation and is never removed.
 
 The default loopback port is `49621`. Before Codex is started, the watchdog
 actually binds the port once to detect Windows-excluded ranges and occupied
-ports. The settings window reports those two cases separately and keeps the
-shared mode disabled when the check fails.
+ports. If the preferred port is occupied by an unknown or stale listener, the
+health check chooses and persists a nearby free loopback port instead of killing
+that process. The settings window reports the selected port and keeps the
+shared mode disabled only when no safe port can be found.
 
 An install or upgrade without `-EnableSharedAppServer` explicitly puts the
 runtime back into fail-open mode. It restores the recorded endpoint, removes
@@ -310,8 +314,9 @@ clears a legacy endpoint only when the old plugin state proves ownership;
 unrelated user values are preserved.
 
 If an explicitly enabled shared backend later fails during watchdog startup,
-the watchdog performs the same fail-open transition: it clears its owned
-endpoint, disables shared mode, and leaves Codex on its official backend.
+the watchdog persists the fail-open decision. It never kills a live shared
+server while Codex may still be using it; cleanup is retried by the worker after
+Codex closes, and the endpoint remains owned until that safe boundary.
 
 The shared launch mirrors the bundled Desktop `codex_app` MCP definition so the
 WebSocket app-server sees the same server shape as the official Desktop launch.

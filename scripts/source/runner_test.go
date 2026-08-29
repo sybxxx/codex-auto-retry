@@ -117,6 +117,12 @@ func TestControllerFailureReasonUsesSafeCodes(t *testing.T) {
 	if got := controllerFailureReason(DispatchResult{}, errSharedServerPortReserved); got != "shared_app_server_port_reserved" || !controllerFailureNeedsAction(got) {
 		t.Fatalf("reserved shared-server port was not exposed as an actionable reason: %s", got)
 	}
+	if got := controllerFailureReason(DispatchResult{}, errSharedServerMigrationDeferred); got != "shared_app_server_migration_deferred" || !controllerFailureNeedsAction(got) {
+		t.Fatalf("active Desktop migration deferral was not classified safely: %s", got)
+	}
+	if controllerFailureNeedsFailOpen("shared_app_server_migration_deferred") {
+		t.Fatal("active Desktop migration deferral would tear down the shared backend")
+	}
 	if got := localSettingsExitCode(errSharedServerPortReserved); got != localSettingsExitPortReserved {
 		t.Fatalf("reserved shared-server port did not get a distinct settings exit code: %d", got)
 	}

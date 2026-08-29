@@ -107,22 +107,16 @@ func main() {
 	}
 	manager := newSharedServerManager(config, dataDir, logger)
 	if !config.SharedAppServerEnabled {
-		// Fail-open startup also cleans an ownership record left by an older
-		// release, but never guesses at an unrecorded user endpoint here.
-		if _, cleanupErr := restoreOwnedSharedEnvironment(dataDir, manager.ownedLegacyEndpoints(context.Background())...); cleanupErr != nil {
-			logger.Printf("shared app-server cleanup failed category=environment")
-		}
-		if cleanupErr := manager.StopOwned(context.Background()); cleanupErr != nil {
-			logger.Printf("shared app-server cleanup failed category=process")
+		// Fail-open startup cleans only plugin-owned artifacts. If Codex is still
+		// using a live shared server, cleanup is deferred and retried by the
+		// worker after Desktop exits instead of tearing down its route here.
+		if cleanupErr := manager.CleanupIfUnused(context.Background()); cleanupErr != nil && !errors.Is(cleanupErr, errSharedServerMigrationDeferred) {
+			logger.Printf("shared app-server cleanup failed category=boundary")
 		}
 	}
-	if config.SharedAppServerEnabled {
-		detachCtx, detachCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if detachErr := detachOwnedSharedEnvironment(detachCtx, dataDir, config); detachErr != nil {
-			logger.Printf("shared app-server startup endpoint cleanup failed category=environment")
-		}
-		detachCancel()
-	}
+	// A healthy owned endpoint is intentionally left in place across worker
+	// restarts. Removing it first creates a needless disconnect window for the
+	// visible Codex Desktop; Prepare adopts or repairs it after the worker starts.
 	runner := newAppResumeRunner(config, dataDir, logger)
 	var prepareErr error
 	startupFailOpenReason := ""
@@ -173,6 +167,19 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	memoryTriggered := make(chan memorySample, 1)
+	memoryGuard := newProcessMemoryGuard(config.MemoryLimitMB, memoryCheckInterval, nil,
+		daemon.recordMemorySample,
+		func(sample memorySample) {
+			daemon.handleMemoryLimit(sample)
+			select {
+			case memoryTriggered <- sample:
+			default:
+			}
+			cancel()
+		},
+	)
+	go memoryGuard.Run(ctx)
 	trayDone := make(chan struct{})
 	if *noTrayFlag {
 		close(trayDone)
@@ -195,12 +202,12 @@ func main() {
 	if err != nil && err != errStopRequested {
 		logger.Printf("watchdog stopped category=runtime_error")
 	}
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if cleanupErr := cleanupSharedBackend(cleanupCtx, dataDir); cleanupErr != nil {
-		logger.Printf("shared app-server shutdown cleanup failed category=environment")
-	}
-	cleanupCancel()
 	_ = daemon.writeStatus(false)
+	select {
+	case sample := <-memoryTriggered:
+		showMemoryLimitAlert(sample, config.MemoryLimitMB)
+	default:
+	}
 	if *supervisedFlag && (err == nil || errors.Is(err, errStopRequested)) {
 		// A clean worker shutdown is intentional. Tell the supervisor not to
 		// bring it back; crashes and startup errors remain restartable.

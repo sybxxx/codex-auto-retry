@@ -41,7 +41,7 @@ Source code lives under `scripts/source`.
 | Module | Ownership |
 | --- | --- |
 | `main.go` | Process startup, supervised worker shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
-| `supervisor.go` | Stable sign-in supervisor, bounded worker restart backoff, intentional-stop marker handling, worker-exit shared-backend cleanup, and privacy-safe lifecycle logging. |
+| `supervisor.go` | Stable sign-in supervisor, bounded worker restart backoff, intentional-stop marker handling, shared-backend lifecycle ownership across worker restarts, and privacy-safe lifecycle logging. |
 | `daemon.go` | Scan loop, bounded parallel dispatch, generic controller lifecycle, acknowledgement timeouts, and status publication. |
 | `retry_state.go` | Generic retry transitions, dual attempt limits, visible-progress resets, startup reconciliation, later external-turn attribution, and management command application. |
 | `goal_recovery.go` | Goal lifecycle holds, native-turn adoption, stale-update protection, bounded post-limit goal blocking, and goal-specific controller reconciliation. |
@@ -59,7 +59,7 @@ Source code lives under `scripts/source`.
 | `app_server_rpc.go` | Loopback JSON-RPC WebSocket transport, initialization, request correlation, and fail-closed handling of interactive server requests. |
 | `shared_server_windows.go` | Starts and records the opt-in shared app-server in one hidden inherited console, applies the normalized bundled `codex_app` MCP override, validates loopback health and versioned process ownership, migrates stale launch/config state after Codex closes, and discovers the Codex CLI. |
 | `codex_app_mcp_windows.go` | Reads the bundled Desktop `codex_app` definition without modifying it, normalizes it into a TOML app-server override, and computes the migration hash. |
-| `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, process-boundary cleanup, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
+| `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, deferred cleanup while Desktop is live, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
 | `desktop_transport_windows.go` | Read-only detection of stopped, old Desktop-owned stdio, or shared-server Codex transport. |
 | `shared_controller.go` | Settings-preserving unloaded task and parent resume, live task/goal rechecks, deterministic parent notification, exact-child continuation, goal recovery/blocking, and silent normal continuation. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
@@ -140,7 +140,8 @@ removed renderer debugging channel with `shared_app_server_port` and a bounded
 `shared_app_server_enabled`, which defaults to false so Codex remains fail-open
 on its official backend. Version 8 moves the shared-server default port out of
 the Windows-excluded range and adds a bind preflight with distinct reserved and
-occupied-port diagnostics.
+occupied-port diagnostics. Version 9 adds a bounded private-memory guard for
+the watchdog.
 
 `control.json` stores the persistent pause switch separately from
 `config.json`. One-use files under `commands` request `retry_now`,

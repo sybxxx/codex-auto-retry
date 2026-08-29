@@ -237,7 +237,7 @@ function Stop-ManagedService {
     } while ((Get-Date) -lt $deadline)
     $remaining = @(Get-ManagerProcesses)
     if ($remaining.Count -gt 0) {
-        $remaining | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        throw 'The watchdog did not stop gracefully. No process was force-terminated; use the safe-disable action after Codex closes.'
     }
     return Get-ManagerState
 }

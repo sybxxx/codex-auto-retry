@@ -183,17 +183,21 @@ children without a console and Windows would create a separate visible Windows
 Terminal window for each one. State records the launch mode; an older detached
 server remains available while Codex is open, then the watchdog waits for the
 Desktop process to exit, terminates only that owned process tree, and replaces
-it with the hidden-console server.
+it with the hidden-console server. A healthy owned server is adopted across
+worker restarts.
 
 - The server listens only on `127.0.0.1`; `wss`, hostnames, credentials, paths,
   and a different port are rejected.
 - The default port is `49621`. A TCP4 bind preflight runs before the Codex
   process starts, classifying Windows-excluded ports separately from occupied
-  ports so management surfaces can show an actionable reason.
+  ports so management surfaces can show an actionable reason. If the preferred
+  port is occupied by an unknown or stale listener, a bounded scan chooses and
+  persists a nearby free loopback port; no unknown process is terminated.
 - An upgrade without explicit shared-mode opt-in disables the stored mode and
   restores only plugin-owned endpoint values before starting the watchdog.
-- If an enabled backend cannot prepare at startup, the watchdog clears its
-  owned endpoint and persists the fail-open mode with a diagnostic reason.
+- If an enabled backend cannot prepare at startup, the watchdog persists the
+  fail-open mode with a diagnostic reason. It defers terminating a live owned
+  server until Desktop closes and retries that cleanup from the worker.
 - The watchdog records the server PID, executable, endpoint, Codex home, and
   start time. It records a hash of the normalized bundled `codex_app` MCP
   definition as well, so an app update can trigger a controlled server
@@ -467,12 +471,13 @@ independent `scripts/safe-disable.ps1` restore only the endpoint recorded in
 data by default.
 
 The current-user Windows `Run` entry invokes `supervise`, not the worker's
-legacy direct `run` command. The supervisor and worker both remove their owned
-shared endpoint and stale state when the worker stops or cannot start. On a
-runtime shared-controller failure, the worker persists shared mode disabled
-before cleanup. A new worker also detaches any previous owned endpoint before
-publishing a replacement that has passed health checks. These lifecycle rules
-prevent a dead local port from being inherited by a later Codex startup.
+legacy direct `run` command. A worker restart preserves a healthy owned shared
+endpoint and adopts it. On a runtime shared-controller failure, the worker
+persists shared mode disabled before cleanup. If Desktop is still alive, the
+worker retains the owned route and retries cleanup on a later tick; once Desktop
+has closed, it restores the prior environment and removes the owned process and
+state. These lifecycle rules prevent both an active-route disconnect and a dead
+local port from being inherited by a later Codex startup.
 
 Before any release or direct runtime mutation, `path-safety.ps1` probes the
 intended `%LOCALAPPDATA%\CodexAutoRetry` directory. A packaged Codex tool
