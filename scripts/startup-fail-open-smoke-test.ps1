@@ -84,7 +84,7 @@ try {
     if ([bool]$storedConfig.shared_app_server_enabled) {
         throw 'A failed shared backend was left enabled during startup.'
     }
-    if ([string]$status.controller_state -ne 'shared_app_server_port_conflict') {
+    if ([string]$status.controller_state -ne 'codex_background_channel_unavailable') {
         throw "Unexpected startup fail-open reason: $([string]$status.controller_state)"
     }
     if (-not [string]::Equals([string]$afterEndpoint, [string]$beforeEndpoint, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -95,7 +95,7 @@ try {
         Status = 'passed'
         StartupHeartbeat = $true
         SharedModeDisabled = $true
-        ConflictReasonPublished = $true
+        FailOpenReasonPublished = $true
         EndpointRestored = $true
     }
 }

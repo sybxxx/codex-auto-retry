@@ -23,6 +23,7 @@ $statusPath = Join-Path $installDir 'status.json'
 $configPath = Join-Path $installDir 'config.json'
 $sharedStatePath = Join-Path $installDir 'shared-server.json'
 $runSubKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+. (Join-Path $PSScriptRoot 'startup-approval.ps1')
 
 function Open-RunKey {
     param([bool]$Writable)
@@ -57,6 +58,26 @@ function Test-OwnedStartupValue {
     return [string]::Equals($executable, $watchdog, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Restore-ManagedStartupValue {
+    param([AllowNull()][string]$Value)
+    $key = Open-RunKey -Writable $true
+    if ($null -eq $key) {
+        if ([string]::IsNullOrWhiteSpace($Value)) { return }
+        throw 'The current-user startup registry key could not be opened while restoring the previous value.'
+    }
+    try {
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            $key.DeleteValue($RunName, $false)
+        }
+        else {
+            $key.SetValue($RunName, $Value, [Microsoft.Win32.RegistryValueKind]::String)
+        }
+    }
+    finally {
+        $key.Close()
+    }
+}
+
 function Set-ManagedStartup {
     if (-not (Test-Path -LiteralPath $watchdog -PathType Leaf)) {
         throw "The watchdog executable is missing: $watchdog"
@@ -65,39 +86,112 @@ function Set-ManagedStartup {
     if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing)) {
         throw "The startup entry $RunName belongs to another command and was not changed."
     }
-    $key = Open-RunKey -Writable $true
-    if ($null -eq $key) {
-        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($runSubKey, $true)
-    }
-    if ($null -eq $key) { throw 'The current-user startup registry key could not be opened.' }
+    $oldApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
+    $desiredValue = ('"{0}" supervise' -f $watchdog)
+    [byte[]]$expectedApprovalBytes = @(Get-CodexAutoRetryStartupApprovalEnabledBytes -ExistingBytes $(if ($oldApproval.Present) { [byte[]]$oldApproval.Bytes } else { $null }))
     try {
-        $key.SetValue($RunName, ('"{0}" supervise' -f $watchdog), [Microsoft.Win32.RegistryValueKind]::String)
+        $key = Open-RunKey -Writable $true
+        if ($null -eq $key) {
+            $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($runSubKey, $true)
+        }
+        if ($null -eq $key) { throw 'The current-user startup registry key could not be opened.' }
+        try {
+            $key.SetValue($RunName, $desiredValue, [Microsoft.Win32.RegistryValueKind]::String)
+        }
+        finally {
+            $key.Close()
+        }
+        $null = Set-CodexAutoRetryStartupApprovalEnabled -RunName $RunName
+        $actual = Get-RunValue
+        if (-not (Test-OwnedStartupValue $actual) -or $actual -notmatch '(?i)\bsupervise\b') {
+            throw 'The startup entry could not be registered in supervised mode.'
+        }
     }
-    finally {
-        $key.Close()
-    }
-    $actual = Get-RunValue
-    if (-not (Test-OwnedStartupValue $actual) -or $actual -notmatch '(?i)\bsupervise\b') {
-        throw 'The startup entry could not be registered in supervised mode.'
+    catch {
+        try {
+            # Restore only while the registry still contains the value this
+            # operation wrote. A concurrent user or installer change is left
+            # untouched and reported through the original failure.
+            if ((Get-RunValue) -eq $desiredValue) {
+                $currentApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
+                $currentApprovalBytes = if ($currentApproval.Present) { [byte[]]$currentApproval.Bytes } else { $null }
+                $approvalWasOld = Test-CodexAutoRetryStartupApprovalBytes -Left $currentApprovalBytes -Right $(if ($oldApproval.Present) { [byte[]]$oldApproval.Bytes } else { $null })
+                $approvalWasWritten = Test-CodexAutoRetryStartupApprovalBytes -Left $currentApprovalBytes -Right $expectedApprovalBytes
+                if ($approvalWasOld -or $approvalWasWritten) {
+                    Restore-ManagedStartupValue -Value $existing
+                    if ($approvalWasWritten) {
+                        if ($oldApproval.Present) {
+                            Restore-CodexAutoRetryStartupApproval -RunName $RunName -Bytes ([byte[]]$oldApproval.Bytes)
+                        }
+                        else {
+                            $null = Remove-CodexAutoRetryStartupApproval -RunName $RunName
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            # Preserve the original failure. The next status/repair pass can
+            # report the remaining registry inconsistency without masking it.
+        }
+        throw
     }
     return $actual
 }
 
 function Remove-ManagedStartup {
     $existing = Get-RunValue
-    if ([string]::IsNullOrWhiteSpace($existing)) { return $false }
-    if (-not (Test-OwnedStartupValue $existing)) {
+    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing)) {
         throw "The startup entry $RunName belongs to another command and was not removed."
     }
-    $key = Open-RunKey -Writable $true
-    if ($null -ne $key) {
-        try { $key.DeleteValue($RunName, $false) }
-        finally { $key.Close() }
+    $oldApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
+    $removedRun = $false
+    try {
+        # Re-read immediately before deletion so a concurrent installer or
+        # user cannot replace the checked owned command with a foreign one.
+        $current = Get-RunValue
+        if ($current -ne $existing) {
+            throw "The startup entry $RunName changed while it was being removed."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($existing)) {
+            $key = Open-RunKey -Writable $true
+            if ($null -ne $key) {
+                try { $key.DeleteValue($RunName, $false); $removedRun = $true }
+                finally { $key.Close() }
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace((Get-RunValue))) {
+            throw 'The plugin startup entry is still present after removal.'
+        }
+        $removedApproval = Remove-CodexAutoRetryStartupApproval -RunName $RunName
+        return $removedRun -or $removedApproval
     }
-    if (-not [string]::IsNullOrWhiteSpace((Get-RunValue))) {
-        throw 'The plugin startup entry is still present after removal.'
+    catch {
+        try {
+            # Roll back only an unchanged post-delete state. Never overwrite a
+            # foreign command that appeared while the removal was in flight.
+            $currentRunAfterFailure = Get-RunValue
+            $currentApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
+            $currentApprovalBytes = if ($currentApproval.Present) { [byte[]]$currentApproval.Bytes } else { $null }
+            $approvalWasOld = Test-CodexAutoRetryStartupApprovalBytes -Left $currentApprovalBytes -Right $(if ($oldApproval.Present) { [byte[]]$oldApproval.Bytes } else { $null })
+            $approvalWasRemoved = -not $currentApproval.Present
+            $runWasRemoved = [string]::IsNullOrWhiteSpace($currentRunAfterFailure)
+            $runWasUnchanged = $currentRunAfterFailure -eq $existing
+            if (($runWasRemoved -or $runWasUnchanged) -and ($approvalWasOld -or $approvalWasRemoved)) {
+                if ($runWasRemoved) {
+                    Restore-ManagedStartupValue -Value $existing
+                }
+                if ($approvalWasRemoved -and $oldApproval.Present) {
+                    Restore-CodexAutoRetryStartupApproval -RunName $RunName -Bytes ([byte[]]$oldApproval.Bytes)
+                }
+            }
+        }
+        catch {
+            # Preserve the original failure and leave status visible for a
+            # subsequent explicit repair.
+        }
+        throw
     }
-    return $true
 }
 
 function Get-ManagerProcesses {
@@ -150,6 +244,7 @@ function Get-ManagerState {
     }
     $serviceRunning = $null -ne $status -and [bool]$status.running -and $heartbeatFresh -and $processes.Count -gt 0
     $startupEntry = Get-RunValue
+    $startupApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
     $startupMode = if ([string]::IsNullOrWhiteSpace($startupEntry)) {
         'missing'
     }
@@ -192,6 +287,7 @@ function Get-ManagerState {
         StartupMode = $startupMode
         StartupEntry = if ([string]::IsNullOrWhiteSpace($startupEntry)) { $null } else { $startupEntry }
         StartupOwned = Test-OwnedStartupValue $startupEntry
+        StartupApproved = $startupApproval.Status
         SharedModeEnabled = if ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
         SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($endpoint)
         SharedServerState = $sharedStateStatus

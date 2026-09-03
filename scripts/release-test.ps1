@@ -52,6 +52,7 @@ try {
         'payload\codex-auto-retry\.mcp.json',
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
+        'payload\codex-auto-retry\scripts\startup-approval.ps1',
         'payload\codex-auto-retry\scripts\path-safety.ps1',
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
@@ -123,6 +124,7 @@ try {
     foreach ($relative in @(
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\install.ps1',
+        'payload\codex-auto-retry\scripts\startup-approval.ps1',
         'payload\codex-auto-retry\scripts\path-safety.ps1',
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
@@ -172,14 +174,31 @@ try {
         (Join-Path $root 'payload\codex-auto-retry\scripts\install.ps1'),
         [System.Text.UTF8Encoding]::new($false)
     )
+    $startupApprovalSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\startup-approval.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
     if (-not $installerSource.Contains('Set-ConfigSharedMode ([bool]$EnableSharedAppServer)') -or
         -not $installerSource.Contains('Assert-CodexAutoRetryHostPath') -or
         -not $installerSource.Contains('-WorkingDirectory $installDir') -or
         -not $installerSource.Contains('-LegacyOwnedEndpoint') -or
         -not $installerSource.Contains('Set-SupervisedStartupEntry') -or
         -not $installerSource.Contains('Test-OwnedStartupValue') -or
-        -not $installerSource.Contains("ArgumentList @('supervise')")) {
+        -not $installerSource.Contains("ArgumentList @('supervise')") -or
+        -not $startupApprovalSource.Contains('Open-CodexAutoRetryRunKey')) {
         throw 'Installer does not enforce fail-open upgrades and supervised startup migration.'
+    }
+    foreach ($relative in @(
+        'payload\codex-auto-retry\scripts\install.ps1',
+        'payload\codex-auto-retry\scripts\safe-disable.ps1',
+        'payload\codex-auto-retry\scripts\uninstall.ps1',
+        'payload\codex-auto-retry\scripts\safe-disable-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\startup-manager-smoke-test.ps1'
+    )) {
+        $source = [System.IO.File]::ReadAllText((Join-Path $root $relative), [System.Text.UTF8Encoding]::new($false))
+        if ($source -match '(?im)New-Item\s+-Path[^\r\n]*(?:CurrentVersion\\Run|\$runKey)') {
+            throw "The release contains an unsafe whole-key Run registry write: $relative"
+        }
     }
     $environmentSource = [System.IO.File]::ReadAllText(
         (Join-Path $root 'payload\codex-auto-retry\scripts\environment.ps1'),
@@ -216,6 +235,13 @@ try {
     )
     if (-not $releaseUninstallSource.Contains('$startupProperty = Get-ItemProperty')) {
         throw 'Release uninstaller does not handle a missing startup value safely.'
+    }
+    if (-not $releaseUninstallSource.Contains('function Remove-ReleaseStartupApproval') -or
+        -not $releaseUninstallSource.Contains('function Test-ReleaseStartupApprovalPresent') -or
+        -not $releaseUninstallSource.Contains('$startupApprovedRunSubKey') -or
+        -not $releaseUninstallSource.Contains('OpenSubKey($startupApprovedRunSubKey, $true)') -or
+        -not $releaseUninstallSource.Contains('Test-ReleaseStartupApprovalPresent -RunName')) {
+        throw 'Release uninstaller does not independently remove and verify StartupApproved state.'
     }
     $safeDisableSource = [System.IO.File]::ReadAllText(
         (Join-Path $root 'payload\codex-auto-retry\scripts\safe-disable.ps1'),

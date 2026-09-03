@@ -65,6 +65,14 @@ always migrates the current-user `Run` entry to `"...\\codex-auto-retry.exe"
 supervise` and verifies that migration. This replaces the older direct `run`
 entry that could exit without a stable cleanup owner.
 
+Windows stores startup approval separately from the `Run` command. The
+installer and startup manager update the owned `StartupApproved\\Run` marker
+at the same boundary and report `enabled`, `disabled`, or `unknown`; disable,
+safe-disable, uninstall, and rollback remove or restore only that matching
+marker. A durable `shared-fail-open.json` marker covers an interrupted startup
+transition so a later worker cannot recreate a shared endpoint from an old
+enabled configuration before cleanup is complete.
+
 The worker and supervisor share the same endpoint ownership record across
 restarts. A new worker adopts a healthy owned server instead of creating a
 disconnect window. A runtime shared-backend failure persists
@@ -113,13 +121,26 @@ The release also includes `启动管理器.cmd`, `startup-manager.vbs`, and
 `startup-manager.ps1`. The command file hands off to a detached Windows Script
 Host launcher so Explorer double-clicks do not keep a console window in front
 of the graphical manager. It shows
-the exact current-user startup command, whether it is the supervised entry, the
+the exact current-user startup command, whether it is the supervised entry and
+whether its matching Windows `StartupApproved\Run` marker is enabled, disabled, or unknown, the
 verified watchdog PID/heartbeat, shared mode, endpoint presence, and shared
 server state. It can enable or disable only the plugin-owned startup value,
 start or stop only the plugin executable, invoke safe-disable, or perform the
 complete release uninstallation. The default uninstall keeps retry data;
 deleting runtime data requires a separate confirmation in the graphical
 manager or `-RemoveData -NoPrompt` on an explicitly invoked command.
+
+The release uninstaller removes and verifies both the `Run\CodexAutoRetry`
+value and its matching `StartupApproved\Run` marker through the Windows
+Registry API. This remains effective for an older or partially extracted
+payload even when the installed helper script is unavailable.
+
+When the endpoint is still present but neither the shared-server state nor its
+ownership backup can be verified, startup fails closed with an explicit
+ownership-unknown status. The worker preserves the endpoint rather than risk
+deleting a value owned by another tool, and it does not report a successful
+return to the official Codex backend. A user must remove or restore that value
+deliberately before enabling shared mode again.
 
 All status consumers verify both PID/path and heartbeat age. A stale status file
 is therefore shown as `backend service not running`, even when it still

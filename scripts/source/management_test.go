@@ -48,6 +48,19 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	}
 }
 
+func TestManagementSnapshotReportsStartupApprovalState(t *testing.T) {
+	service := newManagementService(t.TempDir())
+	snapshot, err := service.snapshot(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch snapshot.StartupApproved {
+	case "enabled", "disabled", "unknown":
+	default:
+		t.Fatalf("unexpected startup approval state: %q", snapshot.StartupApproved)
+	}
+}
+
 func TestManagementShowsStoppedRetryAndQueuesRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	service := newManagementService(dataDir)

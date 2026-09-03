@@ -28,6 +28,8 @@ func TestValidSharedServerEndpointAcceptsOnlyExpectedLoopbackPort(t *testing.T) 
 		{endpoint: fmt.Sprintf("ws://localhost:%d", port), port: port, valid: false},
 		{endpoint: fmt.Sprintf("wss://127.0.0.1:%d", port), port: port, valid: false},
 		{endpoint: fmt.Sprintf("ws://127.0.0.1:%d", port+1), port: port, valid: false},
+		{endpoint: "ws://127.0.0.1:0", port: 0, valid: false},
+		{endpoint: "ws://127.0.0.1:65536", port: 65536, valid: false},
 		{endpoint: fmt.Sprintf("ws://user@127.0.0.1:%d", port), port: port, valid: false},
 		{endpoint: fmt.Sprintf("ws://127.0.0.1:%d/path", port), port: port, valid: false},
 	} {
@@ -294,6 +296,28 @@ func TestSharedServerStateMarksHiddenInheritedConsole(t *testing.T) {
 	}
 }
 
+func TestSharedServerProcessCreationTimePreventsPIDReuse(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	if !processCreationTimeMatches(now, now.Add(5*time.Second).Format(time.RFC3339Nano)) {
+		t.Fatal("a process created within the ownership tolerance was rejected")
+	}
+	if !processCreationTimeMatches(now, now.Add(-5*time.Second).Format(time.RFC3339Nano)) {
+		t.Fatal("a process created within the negative ownership tolerance was rejected")
+	}
+	for _, creation := range []string{
+		now.Add(3 * time.Minute).Format(time.RFC3339Nano),
+		now.Add(-3 * time.Minute).Format(time.RFC3339Nano),
+		"not-a-timestamp",
+	} {
+		if processCreationTimeMatches(now, creation) {
+			t.Fatalf("PID reuse candidate was accepted: %q", creation)
+		}
+	}
+	if processCreationTimeMatches(time.Time{}, now.Format(time.RFC3339Nano)) {
+		t.Fatal("legacy state without a creation timestamp was treated as owned")
+	}
+}
+
 func TestSharedServerAdoptsStateFromOlderPluginRelease(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
@@ -358,6 +382,34 @@ func TestStopOwnedRemovesStaleStateAfterOwnedProcessExits(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale owned state was not removed: %v", err)
+	}
+}
+
+func TestStopOwnedRefusesLiveLegacyStateWithoutCreationTime(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := newSharedServerManager(defaultConfig(), dataDir, nil)
+	manager.desktopRunning = func() bool { return false }
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dataDir, "shared-server.json")
+	if err := writeJSONAtomic(statePath, sharedServerState{
+		PID:            os.Getpid(),
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StopOwned(context.Background()); !errors.Is(err, errSharedServerOwnershipUnknown) {
+		t.Fatalf("live legacy state was not held for manual ownership verification: %v", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("unknown live state was removed instead of remaining visible: %v", err)
 	}
 }
 
@@ -583,5 +635,339 @@ func TestCleanupSharedBackendRestoresEndpointWhenOnlyBackupExists(t *testing.T) 
 	value, stillPresent, err := readUserEnvironment(sharedAppServerEnvironmentName)
 	if err != nil || stillPresent || value != "" {
 		t.Fatalf("backup-only cleanup left endpoint installed: value=%q present=%v err=%v", value, stillPresent, err)
+	}
+}
+
+func TestStartupSharedServerStateFailsOpenForDeadOwnedProcess(t *testing.T) {
+	previousRunning := startupSharedServerProcessIsRunning
+	previousOwnership := startupSharedServerOwnershipProbe
+	previousProbe := startupSharedServerEndpointProbe
+	startupSharedServerProcessIsRunning = func(int) bool { return false }
+	startupSharedServerOwnershipProbe = func(context.Context, *sharedServerManager, sharedServerState) bool { return false }
+	startupSharedServerEndpointProbe = func(context.Context, string) error { return nil }
+	t.Cleanup(func() {
+		startupSharedServerProcessIsRunning = previousRunning
+		startupSharedServerOwnershipProbe = previousOwnership
+		startupSharedServerEndpointProbe = previousProbe
+	})
+
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	configPath := filepath.Join(dataDir, "config.json")
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	manager := newSharedServerManager(config, dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dataDir, "shared-server.json")
+	if err := writeJSONAtomic(statePath, sharedServerState{
+		PID:            4_000_000,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := prepareSharedBackendAtStartup(context.Background(), configPath, dataDir, config)
+	if result.Reason != "codex_background_channel_unavailable" || !result.CanContinue || result.Config.SharedAppServerEnabled {
+		t.Fatalf("startup did not fail open through the main startup gate: %+v", result)
+	}
+	if result.CleanupErr != nil {
+		t.Fatalf("startup fail-open cleanup failed: %v", result.CleanupErr)
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SharedAppServerEnabled {
+		t.Fatal("startup fail-open did not persist shared mode disabled")
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dead owned state was not removed: %v", err)
+	}
+}
+
+func TestStartupSharedServerStateFailsOpenForMissingOwnedState(t *testing.T) {
+	previousRunning := startupSharedServerProcessIsRunning
+	previousOwnership := startupSharedServerOwnershipProbe
+	previousProbe := startupSharedServerEndpointProbe
+	startupSharedServerProcessIsRunning = func(int) bool { return false }
+	startupSharedServerOwnershipProbe = func(context.Context, *sharedServerManager, sharedServerState) bool { return false }
+	startupSharedServerEndpointProbe = func(context.Context, string) error { return nil }
+	t.Cleanup(func() {
+		startupSharedServerProcessIsRunning = previousRunning
+		startupSharedServerOwnershipProbe = previousOwnership
+		startupSharedServerEndpointProbe = previousProbe
+	})
+
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	configPath := filepath.Join(dataDir, "config.json")
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	previous, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restoreUserEnvironment(sharedAppServerEnvironmentName, previous, present) })
+	if err := restoreUserEnvironment(sharedAppServerEnvironmentName, "", false); err != nil {
+		t.Fatal(err)
+	}
+	manager := newSharedServerManager(config, dataDir, nil)
+	if _, err := setOwnedSharedEnvironment(dataDir, manager.Endpoint()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.checkSharedServerStartupState(context.Background()); !errors.Is(err, errSharedServerUnavailable) {
+		t.Fatalf("missing owned state was not rejected while its endpoint backup remained: %v", err)
+	}
+	if _, err := failOpenSharedAppServer(context.Background(), configPath, dataDir, config); err != nil {
+		t.Fatalf("missing-state fail-open failed: %v", err)
+	}
+	value, stillPresent, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil || stillPresent || value != "" {
+		t.Fatalf("plugin endpoint was not cleared after missing-state fail-open: value=%q present=%v err=%v", value, stillPresent, err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "environment-backup.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("environment ownership backup was not consumed: %v", err)
+	}
+}
+
+func TestStartupFailOpenStopsWhenEndpointOwnershipIsUnknown(t *testing.T) {
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	configPath := filepath.Join(dataDir, "config.json")
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	previous, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restoreUserEnvironment(sharedAppServerEnvironmentName, previous, present) })
+	unknownEndpoint := "ws://127.0.0.1:49621"
+	if err := writeUserEnvironment(sharedAppServerEnvironmentName, unknownEndpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	result := completeStartupFailOpen(context.Background(), configPath, dataDir, config)
+	if result.CanContinue || !errors.Is(result.CleanupErr, errSharedAppServerEnvironmentConflict) {
+		t.Fatalf("startup continued despite an endpoint with unknown ownership: %+v", result)
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SharedAppServerEnabled {
+		t.Fatal("fail-open did not persist shared mode disabled before stopping")
+	}
+	value, stillPresent, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil || !stillPresent || value != unknownEndpoint {
+		t.Fatalf("unknown endpoint was overwritten instead of preserved: value=%q present=%v err=%v", value, stillPresent, err)
+	}
+}
+
+func TestStartupAllowsFirstEnablementWhenStateAndEndpointAreMissing(t *testing.T) {
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	configPath := filepath.Join(dataDir, "config.json")
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+
+	result := prepareSharedBackendAtStartup(context.Background(), configPath, dataDir, config)
+	if result.Reason != "" || !result.CanContinue || !result.Config.SharedAppServerEnabled {
+		t.Fatalf("first enablement without stale endpoint evidence was not allowed: %+v", result)
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.SharedAppServerEnabled {
+		t.Fatal("first enablement unexpectedly changed the shared-mode preference")
+	}
+}
+
+func TestStartupSharedServerStateKeepsHealthyOwnedBackendForAdoption(t *testing.T) {
+	previousRunning := startupSharedServerProcessIsRunning
+	previousOwnership := startupSharedServerOwnershipProbe
+	previousProbe := startupSharedServerEndpointProbe
+	startupSharedServerProcessIsRunning = func(pid int) bool { return pid == 42 }
+	startupSharedServerOwnershipProbe = func(_ context.Context, _ *sharedServerManager, state sharedServerState) bool { return state.PID == 42 }
+	startupSharedServerEndpointProbe = func(_ context.Context, endpoint string) error {
+		if endpoint == "" {
+			return errors.New("missing endpoint")
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		startupSharedServerProcessIsRunning = previousRunning
+		startupSharedServerOwnershipProbe = previousOwnership
+		startupSharedServerEndpointProbe = previousProbe
+	})
+
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	manager := newSharedServerManager(config, dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dataDir, "shared-server.json")
+	state := sharedServerState{
+		PID:            42,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}
+	if err := writeJSONAtomic(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.checkSharedServerStartupState(context.Background()); err != nil {
+		t.Fatalf("healthy owned backend was rejected before adoption: %v", err)
+	}
+	var retained sharedServerState
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &retained); err != nil {
+		t.Fatal(err)
+	}
+	if retained.PID != state.PID || retained.Endpoint != state.Endpoint {
+		t.Fatalf("healthy owned state changed during startup check: %+v", retained)
+	}
+}
+
+func TestStartupSharedServerStateFailsOpenWhenOwnedEndpointStopsListening(t *testing.T) {
+	previousRunning := startupSharedServerProcessIsRunning
+	previousOwnership := startupSharedServerOwnershipProbe
+	previousProbe := startupSharedServerEndpointProbe
+	startupSharedServerProcessIsRunning = func(pid int) bool { return pid == 42 }
+	startupSharedServerOwnershipProbe = func(_ context.Context, _ *sharedServerManager, state sharedServerState) bool { return state.PID == 42 }
+	startupSharedServerEndpointProbe = func(context.Context, string) error {
+		return errors.New("endpoint is not listening")
+	}
+	t.Cleanup(func() {
+		startupSharedServerProcessIsRunning = previousRunning
+		startupSharedServerOwnershipProbe = previousOwnership
+		startupSharedServerEndpointProbe = previousProbe
+	})
+
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	manager := newSharedServerManager(config, dataDir, nil)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(filepath.Join(dataDir, "shared-server.json"), sharedServerState{
+		PID:            42,
+		Endpoint:       manager.Endpoint(),
+		CodexHome:      manager.codexHome,
+		Executable:     executable,
+		ExecutableHash: executableHash(executable),
+		Owner:          sharedServerOwner,
+		Version:        appVersion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.checkSharedServerStartupState(context.Background()); !errors.Is(err, errSharedServerUnavailable) {
+		t.Fatalf("unresponsive owned endpoint was not rejected before Ensure: %v", err)
+	}
+}
+
+func TestStartupFailOpenStopsBeforeRecoveryWhenConfigCannotBePersisted(t *testing.T) {
+	previousConfigWriter := writeSharedFailOpenConfig
+	writeSharedFailOpenConfig = func(string, any) error { return errors.New("config is locked") }
+	t.Cleanup(func() { writeSharedFailOpenConfig = previousConfigWriter })
+
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	configPath := filepath.Join(dataDir, "config.json")
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	result := completeStartupFailOpen(context.Background(), configPath, dataDir, config)
+	if result.CanContinue {
+		t.Fatal("startup continued after the disabled preference could not be persisted")
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.SharedAppServerEnabled {
+		t.Fatal("test did not preserve the enabled setting after the simulated write failure")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, sharedFailOpenMarkerName)); err != nil {
+		t.Fatalf("incomplete fail-open did not retain its recovery marker: %v", err)
+	}
+}
+
+func TestStartupFailOpenContinuesWithOfficialBackendWhenMarkerWriteFails(t *testing.T) {
+	previousMarkerWriter := writeSharedFailOpenMarker
+	writeSharedFailOpenMarker = func(string, any) error { return errors.New("marker is locked") }
+	t.Cleanup(func() { writeSharedFailOpenMarker = previousMarkerWriter })
+
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	configPath := filepath.Join(dataDir, "config.json")
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	result := completeStartupFailOpen(context.Background(), configPath, dataDir, config)
+	if !result.CanContinue || result.CleanupErr == nil {
+		t.Fatalf("marker failure did not preserve official-backend startup: %+v", result)
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SharedAppServerEnabled {
+		t.Fatal("marker failure prevented the disabled preference from being persisted")
+	}
+}
+
+func TestStartupFailOpenContinuesAndDefersCleanupWhenEnvironmentRestoreFails(t *testing.T) {
+	previousRestore := restoreSharedEnvironmentForFailOpen
+	restoreSharedEnvironmentForFailOpen = func(string, ...string) (sharedEnvironmentResult, error) {
+		return sharedEnvironmentResult{}, errors.New("environment restore failed")
+	}
+	t.Cleanup(func() { restoreSharedEnvironmentForFailOpen = previousRestore })
+
+	dataDir := t.TempDir()
+	config := defaultConfig()
+	config.SharedAppServerEnabled = true
+	configPath := filepath.Join(dataDir, "config.json")
+	if err := writeJSONAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	result := completeStartupFailOpen(context.Background(), configPath, dataDir, config)
+	if !result.CanContinue || result.CleanupErr == nil {
+		t.Fatalf("environment cleanup failure did not become deferred cleanup: %+v", result)
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SharedAppServerEnabled {
+		t.Fatal("environment cleanup failure prevented the disabled preference from being persisted")
 	}
 }

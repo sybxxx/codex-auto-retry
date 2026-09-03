@@ -266,6 +266,8 @@ func controllerFailureReason(result DispatchResult, err error) string {
 		return "shared_app_server_port_reserved"
 	case errors.Is(err, errSharedServerPortConflict):
 		return "shared_app_server_port_conflict"
+	case errors.Is(err, errSharedServerOwnershipUnknown):
+		return "shared_app_server_ownership_unknown"
 	case errors.Is(err, errSharedServerMigrationDeferred):
 		return "shared_app_server_migration_deferred"
 	case errors.Is(err, errSharedAppServerEnvironmentConflict):

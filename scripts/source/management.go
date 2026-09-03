@@ -56,6 +56,7 @@ type ManagementSnapshot struct {
 	MemoryGuardTriggered   bool           `json:"memory_guard_triggered" jsonschema:"whether the memory guard stopped the service"`
 	SharedAppServerPort    int            `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
 	SharedAppServerEnabled bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
+	StartupApproved        string         `json:"startup_approved" jsonschema:"Windows sign-in approval state for the CodexAutoRetry startup entry"`
 	Now                    string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
 	LastScanAt             string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
 	PendingRetries         int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
@@ -154,6 +155,7 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		MemoryLimitMB:          config.MemoryLimitMB,
 		SharedAppServerPort:    config.SharedAppServerPort,
 		SharedAppServerEnabled: config.SharedAppServerEnabled,
+		StartupApproved:        readStartupApprovalStatus(),
 		Now:                    now.Format(time.RFC3339Nano),
 		PendingRetries:         pending,
 		ActiveRetries:          active,

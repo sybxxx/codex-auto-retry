@@ -423,6 +423,14 @@ function Verify-Installation {
             $runValue -notmatch '(?i)\bsupervise\b') {
             throw 'The current-user startup entry was not registered in supervised mode.'
         }
+        $approvalScript = Join-Path $PluginPath 'scripts\startup-approval.ps1'
+        if (-not (Test-Path -LiteralPath $approvalScript -PathType Leaf)) {
+            throw 'The installed plugin is missing its StartupApproved verification helper.'
+        }
+        . $approvalScript
+        if ((Get-CodexAutoRetryStartupApproval -RunName 'CodexAutoRetry').Status -ne 'enabled') {
+            throw 'The current-user startup approval was not enabled.'
+        }
     }
 }
 

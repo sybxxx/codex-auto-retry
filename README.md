@@ -196,7 +196,10 @@ and state by default.
 Windows Script Host launcher, so double-clicking it does not leave a console
 window in front of the manager. It displays the exact
 startup command, watchdog process and heartbeat, shared-backend state, and
-endpoint status. It can enable/disable startup, start/stop the service, safely
+endpoint status, including the separate Windows `StartupApproved` state. The
+embedded Codex management panel reports the same sign-in approval state, so a
+present `Run` command cannot be mistaken for a startup entry that Windows has
+silently disabled. It can enable/disable startup, start/stop the service, safely
 disable the shared backend, or uninstall the integration. `安全停用.cmd` is a
 one-click break-glass action that disables shared mode and restores the official
 Codex backend. These tools do not require the Codex management panel to be open.
@@ -233,6 +236,22 @@ endpoint is missing, the watchdog restores it only after re-validating the
 plugin-owned server and broadcasts the Windows environment change. A different
 user value is never overwritten; shared mode fails open with an explicit
 environment-conflict status instead of repeatedly asking for a restart.
+
+At process startup, the worker checks the recorded shared-server state, live
+process identity, creation time, and WebSocket endpoint before it can adopt or
+launch a backend. If a reboot or interrupted shutdown left shared mode enabled
+but the owned backend is missing or dead, it persists a fail-open transition,
+restores only the plugin-owned endpoint, and refuses to create a replacement
+backend during that ambiguous startup. The only exception is first-time shared
+mode setup when there is no state, endpoint, or ownership backup yet. A
+`shared-fail-open.json` marker makes the transition recoverable on the next
+start if the previous write was interrupted.
+
+If both ownership records are missing or unreadable while a user endpoint is
+still present, the worker fails closed and reports that endpoint ownership is
+unknown. It does not delete a value that might belong to another tool or claim
+that the official backend is active; clear the value deliberately before
+starting shared mode again.
 
 After installing or updating the plugin, open a new Codex task so the updated
 MCP tools and embedded panel are discovered. The background watchdog itself is

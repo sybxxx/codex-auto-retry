@@ -22,13 +22,15 @@ import (
 )
 
 const (
-	sharedServerLaunchMode = "hidden_inherited_console_v1"
+	sharedServerLaunchMode            = "hidden_inherited_console_v1"
+	sharedServerProcessStartTolerance = 15 * time.Second
 )
 
 var desktopRunningProbe = codexDesktopRunning
 
 var (
 	errSharedServerUnavailable       = errors.New("shared Codex app-server is unavailable")
+	errSharedServerOwnershipUnknown  = errors.New("shared Codex app-server ownership could not be verified")
 	errSharedServerPortConflict      = errors.New("shared Codex app-server port is occupied")
 	errSharedServerPortReserved      = errors.New("shared Codex app-server port is reserved by Windows")
 	errSharedServerMigrationDeferred = errors.New("shared Codex app-server migration is waiting for Codex to close")
@@ -496,7 +498,7 @@ func (m *sharedServerManager) ownsProcess(ctx context.Context, state sharedServe
 	command.Stdin = strings.NewReader(powerShellScriptInput(fmt.Sprintf(`
 $process = Get-CimInstance Win32_Process -Filter "ProcessId = %d" -ErrorAction Stop
 if ($process) {
-  [Console]::Out.Write(($process | Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress))
+  [Console]::Out.Write(($process | Select-Object ExecutablePath,CommandLine,@{Name='CreationDate';Expression={ if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { '' } }} | ConvertTo-Json -Compress))
 }
 `, state.PID)))
 	command.Stderr = nil
@@ -508,13 +510,34 @@ if ($process) {
 	var process struct {
 		ExecutablePath string `json:"ExecutablePath"`
 		CommandLine    string `json:"CommandLine"`
+		CreationDate   string `json:"CreationDate"`
 	}
 	if err := json.Unmarshal(data, &process); err != nil {
 		return false
 	}
-	return strings.EqualFold(filepath.Clean(process.ExecutablePath), filepath.Clean(state.Executable)) &&
+	return processCreationTimeMatches(state.StartedAt, process.CreationDate) &&
+		strings.EqualFold(filepath.Clean(process.ExecutablePath), filepath.Clean(state.Executable)) &&
 		strings.Contains(strings.ToLower(process.CommandLine), "app-server") &&
 		strings.Contains(strings.ToLower(process.CommandLine), strings.ToLower(state.Endpoint))
+}
+
+// processCreationTimeMatches closes the PID-reuse window. A state record from
+// an older release may not contain StartedAt; treating that as unowned is
+// deliberately conservative because an identical Codex executable and
+// command line can be started independently by the user.
+func processCreationTimeMatches(startedAt time.Time, creationDate string) bool {
+	if startedAt.IsZero() || strings.TrimSpace(creationDate) == "" {
+		return false
+	}
+	created, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(creationDate))
+	if err != nil {
+		return false
+	}
+	delta := created.Sub(startedAt.UTC())
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= sharedServerProcessStartTolerance
 }
 
 func (m *sharedServerManager) probe(ctx context.Context) error {
@@ -655,6 +678,9 @@ func replaceEnvironmentValue(environment []string, key, value string) []string {
 }
 
 func validSharedServerEndpoint(raw string, expectedPort int) bool {
+	if expectedPort < 1024 || expectedPort > 65535 {
+		return false
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "ws" || parsed.User != nil || parsed.Path != "" {
 		return false

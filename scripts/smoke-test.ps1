@@ -3,6 +3,9 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
+$startupApprovalResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'startup-approval-smoke-test.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Startup approval smoke test failed.' }
+
 $startupResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'startup-fail-open-smoke-test.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Startup fail-open smoke test failed.' }
 
@@ -20,6 +23,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Supervisor smoke test failed.' }
 
 [pscustomobject]@{
     Status = 'passed'
+    StartupApproval = ($startupApprovalResult -join [Environment]::NewLine)
     StartupFailOpen = ($startupResult -join [Environment]::NewLine)
     SharedAppServer = ($sharedResult -join [Environment]::NewLine)
     EnvironmentOwnership = ($environmentResult -join [Environment]::NewLine)

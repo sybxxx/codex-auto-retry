@@ -19,6 +19,67 @@ type localSettingsPayload struct {
 	SharedAppServerEnabled *bool `json:"shared_app_server_enabled,omitempty"`
 }
 
+// startupFailOpenResult makes the process-boundary decision explicit. A
+// persisted disabled setting is sufficient to keep the worker on Codex's
+// official backend while cleanup is retried; if that setting cannot be read
+// back, the worker must stop before constructing a recovery controller.
+type startupFailOpenResult struct {
+	Config      Config
+	Reason      string
+	CleanupErr  error
+	CanContinue bool
+}
+
+func completeStartupFailOpen(ctx context.Context, configPath, dataDir string, config Config) startupFailOpenResult {
+	result := startupFailOpenResult{Config: config}
+	updated, failOpenErr := failOpenSharedAppServer(ctx, configPath, dataDir, config)
+	result.Config = updated
+	if failOpenErr == nil {
+		result.CanContinue = true
+		return result
+	}
+	if errors.Is(failOpenErr, errSharedAppServerEnvironmentConflict) {
+		// The endpoint is still present but its ownership cannot be proven. Do
+		// not continue and report a false official-backend recovery; a manual
+		// cleanup decision is required before the worker can safely proceed.
+		result.CleanupErr = failOpenErr
+		return result
+	}
+	persisted, readErr := loadOrCreateConfig(configPath)
+	if readErr != nil || persisted.SharedAppServerEnabled {
+		result.CleanupErr = errors.Join(failOpenErr, readErr)
+		return result
+	}
+	// The safety preference is durable. Cleanup failures are recoverable by the
+	// disabled-mode reconciler and must not prevent official-backend operation.
+	result.Config = persisted
+	result.CleanupErr = failOpenErr
+	result.CanContinue = true
+	return result
+}
+
+// prepareSharedBackendAtStartup is the single startup gate before the
+// controller can call Ensure. A failed owned backend is disabled first;
+// first-time enablement with no stale endpoint evidence remains eligible for
+// normal preparation.
+func prepareSharedBackendAtStartup(ctx context.Context, configPath, dataDir string, config Config) startupFailOpenResult {
+	result := startupFailOpenResult{Config: config, CanContinue: true}
+	if !config.SharedAppServerEnabled {
+		return result
+	}
+	manager := newSharedServerManager(config, dataDir, nil)
+	if err := manager.checkSharedServerStartupState(ctx); err == nil {
+		return result
+	} else {
+		result.Reason = controllerFailureReason(DispatchResult{}, err)
+	}
+	failOpenResult := completeStartupFailOpen(ctx, configPath, dataDir, config)
+	result.Config = failOpenResult.Config
+	result.CleanupErr = failOpenResult.CleanupErr
+	result.CanContinue = failOpenResult.CanContinue
+	return result
+}
+
 const (
 	localSettingsExitFailure      = 1
 	localSettingsExitPortReserved = 2
@@ -105,6 +166,26 @@ func main() {
 		cleanupCancel()
 		return
 	}
+	// A previous fail-open may have been interrupted while config.json was
+	// locked. Resolve that durable marker before any readiness or Ensure call so
+	// an old enabled setting can never recreate a dead endpoint on this startup.
+	startupFailOpenReason := ""
+	if _, markerErr := os.Stat(filepath.Join(dataDir, sharedFailOpenMarkerName)); markerErr == nil {
+		startupFailOpenReason = "shared_app_server_startup_recovery"
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		failOpenResult := completeStartupFailOpen(cleanupCtx, configPath, dataDir, config)
+		cleanupCancel()
+		config = failOpenResult.Config
+		if !failOpenResult.CanContinue {
+			logger.Printf("shared app-server startup fail-open remains incomplete category=%s", startupFailOpenReason)
+			return
+		}
+		if failOpenResult.CleanupErr != nil {
+			logger.Printf("shared app-server startup cleanup remains deferred category=%s", startupFailOpenReason)
+		} else {
+			_ = os.Remove(filepath.Join(dataDir, sharedFailOpenMarkerName))
+		}
+	}
 	manager := newSharedServerManager(config, dataDir, logger)
 	if !config.SharedAppServerEnabled {
 		// Fail-open startup cleans only plugin-owned artifacts. If Codex is still
@@ -117,9 +198,25 @@ func main() {
 	// A healthy owned endpoint is intentionally left in place across worker
 	// restarts. Removing it first creates a needless disconnect window for the
 	// visible Codex Desktop; Prepare adopts or repairs it after the worker starts.
-	runner := newAppResumeRunner(config, dataDir, logger)
 	var prepareErr error
-	startupFailOpenReason := ""
+	if config.SharedAppServerEnabled {
+		startupCtx, startupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		startupResult := prepareSharedBackendAtStartup(startupCtx, configPath, dataDir, config)
+		startupCancel()
+		if startupResult.Reason != "" {
+			startupFailOpenReason = startupResult.Reason
+			config = startupResult.Config
+			if !startupResult.CanContinue {
+				logger.Printf("shared app-server startup fail-open remains incomplete category=%s", startupFailOpenReason)
+				return
+			}
+			if startupResult.CleanupErr != nil {
+				logger.Printf("shared app-server startup fail-open cleanup failed category=%s", startupFailOpenReason)
+			}
+			logger.Printf("shared app-server disabled after startup health failure category=%s", startupFailOpenReason)
+		}
+	}
+	runner := newAppResumeRunner(config, dataDir, logger)
 	if config.SharedAppServerEnabled || len(discoverSessionRoots(config)) > 0 {
 		prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		prepareErr = runner.Prepare(prepareCtx)
@@ -127,19 +224,17 @@ func main() {
 	}
 	prepareReason := controllerFailureReason(DispatchResult{}, prepareErr)
 	if config.SharedAppServerEnabled && prepareErr != nil && controllerFailureNeedsFailOpen(prepareReason) {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if cleanupErr := disableSharedAppServer(cleanupCtx, dataDir, config); cleanupErr != nil {
-			logger.Printf("shared app-server fail-open cleanup failed category=%s", prepareReason)
-		}
-		cleanupCancel()
 		startupFailOpenReason = prepareReason
-		config.SharedAppServerEnabled = false
-		if writeErr := config.validate(); writeErr == nil {
-			if writeErr = writeJSONAtomic(configPath, config); writeErr != nil {
-				logger.Printf("shared app-server fail-open setting was not persisted category=config")
-			}
-		} else {
-			logger.Printf("shared app-server fail-open setting was invalid category=config")
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		failOpenResult := completeStartupFailOpen(cleanupCtx, configPath, dataDir, config)
+		cleanupCancel()
+		config = failOpenResult.Config
+		if !failOpenResult.CanContinue {
+			logger.Printf("shared app-server fail-open remains incomplete category=%s", prepareReason)
+			return
+		}
+		if failOpenResult.CleanupErr != nil {
+			logger.Printf("shared app-server fail-open cleanup failed category=%s", prepareReason)
 		}
 		logger.Printf("shared app-server disabled after startup failure category=%s", prepareReason)
 	}

@@ -120,10 +120,19 @@ h2 {
 .service-line,
 .section-heading p,
 .setting-copy span,
+.setting-copy small,
 .scan-time {
   color: var(--panel-muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.setting-copy small[data-state="disabled"] {
+  color: var(--panel-danger);
+}
+
+.setting-copy small[data-state="unknown"] {
+  color: var(--panel-warning);
 }
 
 .service-line {
@@ -548,6 +557,11 @@ textarea:focus-visible,
 }
 
 .setting-copy span {
+  display: block;
+  margin-top: 2px;
+}
+
+.setting-copy small {
   display: block;
   margin-top: 2px;
 }

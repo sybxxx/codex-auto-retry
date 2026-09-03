@@ -8,6 +8,7 @@ $statusPath = Join-Path $installDir 'status.json'
 $configPath = Join-Path $installDir 'config.json'
 $sharedStatePath = Join-Path $installDir 'shared-server.json'
 . (Join-Path $PSScriptRoot 'path-safety.ps1')
+. (Join-Path $PSScriptRoot 'startup-approval.ps1')
 $redirectedPath = Get-CodexAutoRetryRedirectedPath -Path $installDir
 $runtimePathRedirected = -not [string]::IsNullOrWhiteSpace([string]$redirectedPath)
 
@@ -65,6 +66,7 @@ if (Test-Path -LiteralPath $configPath) {
 $runProperty = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
 $runValue = if ($null -eq $runProperty) { '' } else { [string]$runProperty.CodexAutoRetry }
 $startupMode = if ([string]::IsNullOrWhiteSpace($runValue)) { 'missing' } elseif ($runValue -match '(?i)\bsupervise\b') { 'supervise' } elseif ($runValue -match '(?i)\brun\b') { 'run' } else { 'unknown' }
+$startupApproval = Get-CodexAutoRetryStartupApproval -RunName 'CodexAutoRetry'
 $userEndpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')
 $sharedState = $null
 if (Test-Path -LiteralPath $sharedStatePath) {
@@ -102,6 +104,7 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     SharedAppServerEnabled = if ($runtimePathRedirected) { $false } elseif ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
     StartupMode = $startupMode
     StartupEntry = if ([string]::IsNullOrWhiteSpace($runValue)) { $null } else { $runValue }
+    StartupApproved = $startupApproval.Status
     SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($userEndpoint)
     SharedServerState = $sharedStateStatus
     CodexRestartRequired = if ($runtimePathRedirected) { $false } elseif ($status) { [string]$status.controller_state -eq 'codex_restart_required' } else { $false }

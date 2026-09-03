@@ -110,6 +110,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 Report whether the process is running, its version and PID, pause state, MCP
 server installation, startup mode, endpoint presence, shared-server state, the
 last scan time, pending and active retry counts, and the privacy-safe log path.
+Also report the separate `StartupApproved` state (`enabled`, `disabled`, or
+`unknown`); a `supervise` Run value with `StartupApproved=disabled` will not
+start at sign-in. Treat that combination as a startup configuration defect,
+not as a healthy running service.
 Do not read Codex conversation content while checking status. Treat
 `StartupMode=run` as an old entry that should be repaired by the installer.
 Treat `RuntimePathRedirected=true` or
@@ -165,6 +169,18 @@ after Codex fully exits, and the installer verifies the watchdog heartbeat.
 Restart Codex once only after enabling the optional shared mode or changing its
 launch mode; then open a new task so Codex discovers the updated MCP tools and
 panel.
+
+At startup, shared mode validates the recorded owned process and endpoint
+before `Ensure` can adopt or launch anything. Missing or dead owned state while
+the old shared preference is enabled triggers a durable fail-open transition:
+the preference is disabled and the plugin-owned endpoint is restored before
+the worker continues. First-time setup is the only missing-state exception and
+requires no endpoint or ownership backup. An interrupted transition is retried
+from `shared-fail-open.json` on the next start.
+If the endpoint remains present but its ownership records are missing or
+unreadable, startup stops with an ownership-unknown status instead of deleting
+a value that may belong to another tool or claiming that the official backend
+is active; clear the value deliberately before re-enabling shared mode.
 
 ## Startup Manager And Remove
 

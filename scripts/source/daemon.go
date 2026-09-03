@@ -649,7 +649,7 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 
 func controllerFailureNeedsAction(reason string) bool {
 	switch reason {
-	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_disabled", "shared_app_server_config_invalid", "shared_app_server_migration_deferred":
+	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_ownership_unknown", "shared_app_server_disabled", "shared_app_server_config_invalid", "shared_app_server_migration_deferred":
 		return true
 	default:
 		return false
@@ -658,7 +658,7 @@ func controllerFailureNeedsAction(reason string) bool {
 
 func controllerFailureNeedsFailOpen(reason string) bool {
 	switch reason {
-	case "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict",
+	case "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_ownership_unknown",
 		"shared_app_server_config_invalid", "codex_background_channel_unavailable", "codex_background_dispatch_failed",
 		"controller_timeout", "controller_invalid_result", "controller_unavailable":
 		return true

@@ -16,5 +16,6 @@ if (-not $status.Installed -or -not $status.ProcessRunning -or $status.Heartbeat
     HeartbeatFresh = $true
     Version = [string]$status.Version
     StartupMode = [string]$status.StartupMode
+    StartupApproved = [string]$status.StartupApproved
     SharedEndpointConfigured = [bool]$status.SharedEndpointConfigured
 }

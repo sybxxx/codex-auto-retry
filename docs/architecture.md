@@ -479,6 +479,19 @@ has closed, it restores the prior environment and removes the owned process and
 state. These lifecycle rules prevent both an active-route disconnect and a dead
 local port from being inherited by a later Codex startup.
 
+The startup boundary also validates the separate Windows
+`StartupApproved\\Run\\CodexAutoRetry` value. Installation and explicit
+startup enablement update both registry surfaces, while status and the manager
+distinguish a present `Run` value from an approval that Windows has disabled.
+The embedded management snapshot and panel expose the same approval state so
+the Codex UI cannot report a healthy sign-in path from the `Run` value alone.
+When shared mode is enabled, startup first validates the existing owned state,
+live process identity, creation time, and WebSocket endpoint. A stale or
+missing owned backend is handled by a durable fail-open marker and a persisted
+disabled preference before cleanup; `Ensure` is not allowed to create a new
+backend in the same ambiguous boundary. A missing state is allowed only for
+first-time setup when neither an endpoint nor an ownership backup exists.
+
 Before any release or direct runtime mutation, `path-safety.ps1` probes the
 intended `%LOCALAPPDATA%\CodexAutoRetry` directory. A packaged Codex tool
 process can see a path that Windows has redirected into the package

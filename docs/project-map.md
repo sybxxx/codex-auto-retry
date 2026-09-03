@@ -8,13 +8,14 @@
 | `.gitignore`, `.gitattributes` | Keep local runtime state out of public source and make cross-platform line endings deterministic. |
 | `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
-| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services, startup mode, endpoint presence, and shared-server state without inspecting conversation content. |
-| `scripts/startup-manager.ps1` | Provides a standalone status/start/stop/enable/disable/safe-disable/uninstall manager with ownership checks and a graphical Windows Forms view. |
-| `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, migrates the per-user startup entry to supervised mode, and rolls back on failure. |
+| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services, startup mode, StartupApproved state, endpoint presence, and shared-server state without inspecting conversation content. |
+| `scripts/startup-manager.ps1` | Provides a standalone status/start/stop/enable/disable/safe-disable/uninstall manager with ownership checks, synchronized StartupApproved state, and a graphical Windows Forms view. |
+| `scripts/startup-approval.ps1` | Uses the Windows current-user Registry API to classify and update only the plugin's `StartupApproved\Run\CodexAutoRetry` marker while preserving other startup values. |
+| `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, migrates the per-user startup entry and approval to supervised/enabled state, and rolls both back on failure. |
 | `scripts/path-safety.ps1` | Detects Windows package redirection or directory links before runtime installation can be mistaken for a host installation. |
 | `scripts/path-safety-smoke-test.ps1` | Verifies ordinary paths, missing-path probe cleanup, redirected-path rejection, and non-destructive failure. |
-| `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration, and optionally preserves runtime data. |
-| `scripts/safe-disable.ps1` | Independent break-glass cleanup for plugin-owned processes, startup, and endpoint; persists shared mode disabled and never removes chat data or user-owned `CODEX_API_KEY`. |
+| `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration and its matching approval marker, and optionally preserves runtime data. |
+| `scripts/safe-disable.ps1` | Independent break-glass cleanup for plugin-owned processes, startup and its matching approval marker, and endpoint; persists shared mode disabled and never removes chat data or user-owned `CODEX_API_KEY`. |
 | `docs/shared-backend-safety.md` | Operational contract for fail-open startup, supervised migration, opt-in shared mode, transactional rollback, emergency disable, and stale-backend diagnostics. |
 | `scripts/environment.ps1` | Shared current-user environment ownership, explicit registry-value removal, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
 | `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds both Windows executables with the GUI subsystem. |
@@ -47,7 +48,7 @@ Source code lives under `scripts/source`.
 | `goal_recovery.go` | Goal lifecycle holds, native-turn adoption, stale-update protection, bounded post-limit goal blocking, and goal-specific controller reconciliation. |
 | `subagent_recovery.go` | Durable acknowledgement of deterministic parent recovery events for the exact existing child. |
 | `control.go` | Persistent pause state and atomic retry-now/cancel/restart command files shared with management surfaces. |
-| `management.go` | Privacy-bounded queue snapshots, process-backed heartbeat freshness, settings updates, and management command submission. |
+| `management.go` | Privacy-bounded queue snapshots, process-backed heartbeat freshness, Windows StartupApproved status, settings updates, and management command submission. |
 | `mcp_server.go` | Official Go MCP SDK wiring, management tools, and the embedded MCP App resource. |
 | `tray_windows.go` | Native notification-area icon, live tooltip/countdown, menu controls, and graphical settings-process lifecycle. |
 | `process_windows.go` | Windows process-liveness verification, Codex Desktop detection, hidden inherited-console attributes, and owned process-tree cleanup. |
@@ -60,6 +61,7 @@ Source code lives under `scripts/source`.
 | `shared_server_windows.go` | Starts and records the opt-in shared app-server in one hidden inherited console, applies the normalized bundled `codex_app` MCP override, validates loopback health and versioned process ownership, migrates stale launch/config state after Codex closes, and discovers the Codex CLI. |
 | `codex_app_mcp_windows.go` | Reads the bundled Desktop `codex_app` definition without modifying it, normalizes it into a TOML app-server override, and computes the migration hash. |
 | `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, deferred cleanup while Desktop is live, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
+| `startup_approval_windows.go`, `startup_approval_nonwindows.go` | Read the independent Windows sign-in approval state for the management snapshot without mutating startup configuration. |
 | `desktop_transport_windows.go` | Read-only detection of stopped, old Desktop-owned stdio, or shared-server Codex transport. |
 | `shared_controller.go` | Settings-preserving unloaded task and parent resume, live task/goal rechecks, deterministic parent notification, exact-child continuation, goal recovery/blocking, and silent normal continuation. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
@@ -77,7 +79,8 @@ The panel source lives under `scripts/source/ui`. It uses the official MCP Apps
 client, a small vanilla TypeScript view, and Lucide icons. Vite produces one
 self-contained `dist/panel.html`; `mcp_server.go` embeds that file into the MCP
 executable, so the installed panel performs no network requests and needs no
-Node.js runtime.
+Node.js runtime. Its status view includes the Windows `StartupApproved` state
+returned by `ManagementSnapshot`.
 
 ## Runtime Locations
 
@@ -87,6 +90,7 @@ Node.js runtime.
 | `%USERPROFILE%\.codex\plugins\cache\personal\codex-auto-retry` | Codex's installed plugin cache. |
 | `%LOCALAPPDATA%\CodexAutoRetry` | Supervisor/worker and MCP executables, configuration, controls, commands, state, heartbeat, shared-server ownership, environment backup, locks, stop signals, and logs. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Current-user startup entry named `CodexAutoRetry`. |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` | Windows sign-in approval marker for `CodexAutoRetry`, read and updated independently from the `Run` command. |
 | `HKCU\Environment\CODEX_APP_SERVER_WS_URL` | Optional loopback WebSocket endpoint; written only after explicit shared-mode health checks, with ownership backup and safe restoration. |
 
 ## Release Layout

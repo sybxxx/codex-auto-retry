@@ -20,6 +20,7 @@ $runName = 'CodexAutoRetry'
 $environmentName = 'CODEX_APP_SERVER_WS_URL'
 . (Join-Path $PSScriptRoot 'environment.ps1')
 . (Join-Path $PSScriptRoot 'path-safety.ps1')
+. (Join-Path $PSScriptRoot 'startup-approval.ps1')
 [void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
 function Get-RunValue {
@@ -48,13 +49,16 @@ function Set-SupervisedStartupEntry {
     if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing)) {
         throw 'The current-user startup entry belongs to another command and was not overwritten.'
     }
-    New-Item -Path $runKey -Force | Out-Null
-    Set-ItemProperty -Path $runKey -Name $runName -Value ('"{0}" supervise' -f $watchdogTarget)
+    $runRegistryKey = Open-CodexAutoRetryRunKey -Writable $true
+    if ($null -eq $runRegistryKey) { throw 'The current-user startup registry key could not be opened.' }
+    try { $runRegistryKey.SetValue($runName, ('"{0}" supervise' -f $watchdogTarget), [Microsoft.Win32.RegistryValueKind]::String) }
+    finally { $runRegistryKey.Close() }
     $value = Get-RunValue
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch '(?i)\bsupervise\b' -or
         $value -notmatch [regex]::Escape($watchdogTarget)) {
         throw 'The current-user startup entry was not migrated to supervised mode.'
     }
+    $null = Set-CodexAutoRetryStartupApprovalEnabled -RunName $runName
 }
 
 function Stop-OwnedProcessPath {
@@ -190,12 +194,31 @@ function Recover-IncompleteInstall {
         if (Test-Path -LiteralPath $backup -PathType Leaf) { Copy-Item -LiteralPath $backup -Destination $target -Force }
         elseif (-not $wasPresent) { Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }
     }
-    if ([bool]$journal.run_present) {
-        New-Item -Path $runKey -Force | Out-Null
-        Set-ItemProperty -Path $runKey -Name $runName -Value ([string]$journal.run_value)
+    # An interrupted transaction may be resumed after the user has changed the
+    # startup entry. Restore only an empty or plugin-owned value; preserve a
+    # foreign command instead of replacing it during automatic recovery.
+    $currentRunValue = Get-RunValue
+    if ([string]::IsNullOrWhiteSpace($currentRunValue) -or (Test-OwnedStartupValue $currentRunValue)) {
+        if ([bool]$journal.run_present) {
+            $runRegistryKey = Open-CodexAutoRetryRunKey -Writable $true
+            if ($null -eq $runRegistryKey) { throw 'The current-user startup registry key could not be opened while restoring the previous value.' }
+            try { $runRegistryKey.SetValue($runName, [string]$journal.run_value, [Microsoft.Win32.RegistryValueKind]::String) }
+            finally { $runRegistryKey.Close() }
+        }
+        else {
+            Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
+        }
+        if ($journal.PSObject.Properties['startup_approval_present']) {
+            if ([bool]$journal.startup_approval_present) {
+                Restore-CodexAutoRetryStartupApproval -RunName $runName -Bytes ([Convert]::FromBase64String([string]$journal.startup_approval_value))
+            }
+            else {
+                $null = Remove-CodexAutoRetryStartupApproval -RunName $runName
+            }
+        }
     }
     else {
-        Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
+        Write-Warning 'The startup entry changed during interrupted-install recovery; the foreign value was preserved.'
     }
     if ([bool]$journal.environment_present) {
         [Environment]::SetEnvironmentVariable($environmentName, [string]$journal.environment_value, 'User')
@@ -280,6 +303,7 @@ $backupRoot = Join-Path $transactionRoot 'previous'
 $environmentBackupPath = Join-Path $installDir 'environment-backup.json'
 $sharedStatePath = Join-Path $installDir 'shared-server.json'
 $oldRunValue = $null
+$oldStartupApproval = $null
 $oldConfigBytes = $null
 $oldWatchdog = $false
 $oldMcp = $false
@@ -291,6 +315,7 @@ $oldEnvironmentBackupExisted = $false
 $oldSharedStateBytes = $null
 $oldSharedStateExisted = $false
 $legacyOwnedEndpoint = $null
+$desiredRunValue = '"{0}" supervise' -f $watchdogTarget
 $environmentChanged = $false
 $startedProcess = $null
 $installationSucceeded = $false
@@ -299,6 +324,7 @@ $journalCleared = $false
 try {
     New-Item -ItemType Directory -Force -Path $installDir, $backupRoot | Out-Null
     $oldRunValue = Get-RunValue
+    $oldStartupApproval = Get-CodexAutoRetryStartupApproval -RunName $runName
     $oldEnvironment = [Environment]::GetEnvironmentVariable($environmentName, 'User')
     $oldEnvironmentPresent = $null -ne $oldEnvironment
     $oldEnvironmentBackupExisted = Test-Path -LiteralPath $environmentBackupPath -PathType Leaf
@@ -359,7 +385,9 @@ try {
 		transaction_root = $transactionRoot
 		files = [pscustomobject]$runtimeBackupFiles
 		run_present = -not [string]::IsNullOrWhiteSpace([string]$oldRunValue)
-		run_value = [string]$oldRunValue
+        run_value = [string]$oldRunValue
+        startup_approval_present = [bool]$oldStartupApproval.Present
+        startup_approval_value = if ($oldStartupApproval.Present) { [Convert]::ToBase64String([byte[]]$oldStartupApproval.Bytes) } else { '' }
 		environment_present = $oldEnvironmentPresent
 		environment_value = if ($oldEnvironmentPresent) { [string]$oldEnvironment } else { '' }
 		shared_enabled = if ($existingConfig) { [bool]$existingConfig.shared_app_server_enabled } else { $false }
@@ -438,8 +466,38 @@ catch {
         if ($environmentChanged) { $null = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir }
         if ($oldEnvironmentPresent) { [Environment]::SetEnvironmentVariable($environmentName, $oldEnvironment, 'User') }
         else { Remove-CodexAutoRetryUserEnvironmentValue -Name $environmentName }
-        if ($oldRunValue) { New-Item -Path $runKey -Force | Out-Null; Set-ItemProperty -Path $runKey -Name $runName -Value $oldRunValue }
-        else { Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue }
+        # Restore startup state only when the entry still contains the value
+        # written by this transaction. A concurrent user or installer change
+        # is preserved instead of being overwritten during rollback.
+        $currentRunAfterFailure = Get-RunValue
+        if ($currentRunAfterFailure -eq $desiredRunValue) {
+            $currentApprovalAfterFailure = Get-CodexAutoRetryStartupApproval -RunName $runName
+            [byte[]]$expectedApprovalBytes = @(Get-CodexAutoRetryStartupApprovalEnabledBytes -ExistingBytes $(if ($oldStartupApproval -and $oldStartupApproval.Present) { [byte[]]$oldStartupApproval.Bytes } else { $null }))
+            $currentApprovalBytes = if ($currentApprovalAfterFailure.Present) { [byte[]]$currentApprovalAfterFailure.Bytes } else { $null }
+            $oldApprovalBytes = if ($oldStartupApproval -and $oldStartupApproval.Present) { [byte[]]$oldStartupApproval.Bytes } else { $null }
+            $approvalWasOld = Test-CodexAutoRetryStartupApprovalBytes -Left $currentApprovalBytes -Right $oldApprovalBytes
+            $approvalWasWritten = Test-CodexAutoRetryStartupApprovalBytes -Left $currentApprovalBytes -Right $expectedApprovalBytes
+            if ($approvalWasOld -or $approvalWasWritten) {
+                if ($oldRunValue) {
+                    $runRegistryKey = Open-CodexAutoRetryRunKey -Writable $true
+                    if ($null -eq $runRegistryKey) { throw 'The current-user startup registry key could not be opened while restoring the previous value.' }
+                    try { $runRegistryKey.SetValue($runName, $oldRunValue, [Microsoft.Win32.RegistryValueKind]::String) }
+                    finally { $runRegistryKey.Close() }
+                }
+                else { Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue }
+                if ($approvalWasWritten) {
+                    if ($oldStartupApproval -and $oldStartupApproval.Present) {
+                        Restore-CodexAutoRetryStartupApproval -RunName $runName -Bytes ([byte[]]$oldStartupApproval.Bytes)
+                    }
+                    else {
+                        $null = Remove-CodexAutoRetryStartupApproval -RunName $runName
+                    }
+                }
+            }
+        }
+        elseif ($currentRunAfterFailure -ne $oldRunValue) {
+            Write-Warning 'Startup entry changed during rollback; the concurrent value was preserved.'
+        }
         foreach ($pair in @(
             @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe'), $oldWatchdog),
             @($mcpTarget, (Join-Path $backupRoot 'codex-auto-retry-mcp.exe'), $oldMcp),

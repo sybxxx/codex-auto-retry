@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -21,6 +22,7 @@ import (
 const (
 	sharedAppServerEnvironmentName = "CODEX_APP_SERVER_WS_URL"
 	sharedServerOwner              = "codex-auto-retry"
+	sharedFailOpenMarkerName       = "shared-fail-open.json"
 )
 
 type sharedEnvironmentBackup struct {
@@ -36,6 +38,94 @@ type sharedEnvironmentResult struct {
 	Changed       bool
 	Restored      bool
 	ChangedByUser bool
+}
+
+// These probes are variables so the startup boundary can be tested without
+// launching Codex or depending on a particular PID in the test process.
+var startupSharedServerProcessIsRunning = processIsRunning
+var startupSharedServerOwnershipProbe = func(ctx context.Context, manager *sharedServerManager, state sharedServerState) bool {
+	return manager.ownsProcess(ctx, state)
+}
+var startupSharedServerEndpointProbe = func(ctx context.Context, endpoint string) error {
+	manager := &sharedServerManager{endpoint: endpoint}
+	return manager.probe(ctx)
+}
+var writeSharedFailOpenMarker = func(path string, value any) error { return writeJSONAtomic(path, value) }
+var writeSharedFailOpenConfig = func(path string, value any) error { return writeJSONAtomic(path, value) }
+var restoreSharedEnvironmentForFailOpen = restoreOwnedSharedEnvironment
+var stopSharedServerForFailOpen = func(ctx context.Context, dataDir string, config Config) error {
+	return newSharedServerManager(config, dataDir, nil).StopOwned(ctx)
+}
+
+// checkSharedServerStartupState is deliberately read-only. Ensure may start a
+// new server when its old state is stale, but startup must first decide whether
+// that state is a failed plugin-owned backend and fail open before doing so.
+// Missing state is allowed only when there is no endpoint or ownership backup
+// to clean up. That is the first-enable path used by the installer; a stale
+// endpoint or backup turns the same missing-state condition into fail-open.
+func (m *sharedServerManager) checkSharedServerStartupState(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	state, err := m.readState()
+	if errors.Is(err, os.ErrNotExist) {
+		if m.ownedEnvironmentBackupMatchesCurrent() {
+			return fmt.Errorf("%w: owned shared-server state is missing", errSharedServerUnavailable)
+		}
+		if present, presentErr := m.nonemptySharedEnvironmentPresent(); presentErr != nil {
+			return fmt.Errorf("%w: shared-server environment could not be checked", errSharedServerUnavailable)
+		} else if present {
+			return fmt.Errorf("%w: shared-server environment has no owned state", errSharedAppServerEnvironmentConflict)
+		}
+		return nil
+	}
+	if err != nil {
+		// An unreadable state file is not enough proof to terminate a process. A
+		// matching environment backup still proves the endpoint was published by
+		// this plugin, so cleanup can consume that backup. Even without that
+		// proof, startup must fail open rather than let Ensure publish a second
+		// endpoint beside an unreadable ownership record.
+		if m.ownedEnvironmentBackupMatchesCurrent() {
+			return fmt.Errorf("%w: owned shared-server state is unreadable", errSharedServerUnavailable)
+		}
+		if present, presentErr := m.nonemptySharedEnvironmentPresent(); presentErr != nil {
+			return fmt.Errorf("%w: shared-server environment could not be checked", errSharedServerUnavailable)
+		} else if present {
+			return fmt.Errorf("%w: shared-server environment has no owned state", errSharedAppServerEnvironmentConflict)
+		}
+		return fmt.Errorf("%w: shared-server state is unreadable", errSharedServerUnavailable)
+	}
+	if !m.sharedServerStateOwnedForCleanup(state) {
+		if present, presentErr := m.nonemptySharedEnvironmentPresent(); presentErr != nil {
+			return fmt.Errorf("%w: shared-server environment could not be checked", errSharedServerUnavailable)
+		} else if present {
+			return fmt.Errorf("%w: shared-server environment has no owned state", errSharedAppServerEnvironmentConflict)
+		}
+		return fmt.Errorf("%w: shared-server state is not owned by this plugin", errSharedServerUnavailable)
+	}
+	if !startupSharedServerProcessIsRunning(state.PID) {
+		return fmt.Errorf("%w: owned shared-server process is not running", errSharedServerUnavailable)
+	}
+	if !startupSharedServerOwnershipProbe(ctx, m, state) {
+		return fmt.Errorf("%w: shared-server process ownership could not be verified", errSharedServerUnavailable)
+	}
+	if !validSharedServerEndpoint(state.Endpoint, endpointPort(state.Endpoint)) {
+		return fmt.Errorf("%w: owned shared-server endpoint is invalid", errSharedServerUnavailable)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := startupSharedServerEndpointProbe(probeCtx, state.Endpoint); err != nil {
+		return fmt.Errorf("%w: owned shared-server endpoint is not listening", errSharedServerUnavailable)
+	}
+	return nil
+}
+
+func (m *sharedServerManager) nonemptySharedEnvironmentPresent() (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	value, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	return present && strings.TrimSpace(value) != "", err
 }
 
 func enableSharedAppServer(ctx context.Context, dataDir string, config Config) (Config, error) {
@@ -110,6 +200,58 @@ func cleanupSharedServer(manager *sharedServerManager) {
 func disableSharedAppServer(ctx context.Context, dataDir string, config Config) error {
 	manager := newSharedServerManager(config, dataDir, nil)
 	return manager.CleanupIfUnused(ctx)
+}
+
+// failOpenSharedAppServer persists the disabled preference before cleanup. It
+// restores the plugin-owned environment even when Desktop is still running;
+// an already-running process has its environment snapshot, while future Codex
+// launches must not inherit a dead loopback endpoint. StopOwned still defers
+// terminating a live process while Desktop may be using it.
+func failOpenSharedAppServer(ctx context.Context, configPath, dataDir string, config Config) (Config, error) {
+	config.SharedAppServerEnabled = false
+	if err := config.validate(); err != nil {
+		return config, err
+	}
+	// Record the safety transition before mutating the durable preference. If
+	// the process is interrupted while config.json is locked, the next worker
+	// retries fail-open instead of treating the old enabled setting as fresh.
+	markerPath := filepath.Join(dataDir, sharedFailOpenMarkerName)
+	marker := map[string]any{
+		"schema_version": 1,
+		"reason":         "shared_app_server_startup_fail_open",
+		"created_at":     time.Now().UTC(),
+	}
+	markerErr := writeSharedFailOpenMarker(markerPath, marker)
+	persistErr := writeSharedFailOpenConfig(configPath, config)
+	cleanupErr := failOpenSharedBackendCleanup(ctx, dataDir, config)
+	if markerErr == nil && persistErr == nil && cleanupErr == nil {
+		// Once the disabled preference is durable, a cleanup-only error (for
+		// example a live Desktop connection) can be retried by the normal worker
+		// boundary and does not need to hold the startup marker open.
+		_ = os.Remove(markerPath)
+	}
+	return config, errors.Join(markerErr, persistErr, cleanupErr)
+}
+
+func failOpenSharedBackendCleanup(ctx context.Context, dataDir string, config Config) error {
+	manager := newSharedServerManager(config, dataDir, nil)
+	ownedEvidence := manager.hasOwnedCleanupArtifacts()
+	environmentResult, environmentErr := restoreSharedEnvironmentForFailOpen(dataDir, manager.ownedLegacyEndpoints(ctx)...)
+	if present, presentErr := manager.nonemptySharedEnvironmentPresent(); presentErr != nil {
+		// An inability to read the environment is itself a fail-closed result;
+		// the caller must not continue while it cannot prove the dead endpoint is
+		// gone.
+		environmentErr = errors.Join(environmentErr, fmt.Errorf("%w: shared endpoint ownership could not be checked: %v", errSharedAppServerEnvironmentConflict, presentErr))
+	} else if present && (environmentErr != nil || !ownedEvidence ||
+		(!environmentResult.Restored && !environmentResult.ChangedByUser)) {
+		// An enabled shared preference plus a non-empty endpoint is not enough to
+		// prove that this plugin owns the value. Keep a user-owned endpoint
+		// untouched, but do not let the worker claim that Codex has safely
+		// returned to its official backend while the value is still present.
+		environmentErr = errors.Join(environmentErr, fmt.Errorf("%w: shared endpoint ownership is unknown", errSharedAppServerEnvironmentConflict))
+	}
+	processErr := stopSharedServerForFailOpen(ctx, dataDir, config)
+	return errors.Join(environmentErr, processErr)
 }
 
 // cleanupSharedBackend is used at process boundaries and by the worker's
@@ -276,9 +418,15 @@ func (m *sharedServerManager) StopOwned(ctx context.Context) error {
 	if processIsRunning(state.PID) {
 		// A live PID must still prove ownership before it can be terminated. A
 		// dead PID, however, cannot be confused with another process and its
-		// stale state file is safe to remove.
+		// stale state file is safe to remove. Older state records without a
+		// creation timestamp are explicitly unknown rather than silently treated
+		// as cleaned; this prevents an unrelated PID from being terminated while
+		// keeping the unresolved state visible for a deliberate repair.
+		if state.StartedAt.IsZero() {
+			return errSharedServerOwnershipUnknown
+		}
 		if !m.ownsProcess(ctx, state) {
-			return nil
+			return errSharedServerOwnershipUnknown
 		}
 		if err := terminateProcessTree(ctx, state.PID); err != nil {
 			return err

@@ -51,6 +51,7 @@ type ManagementSnapshot = {
   heartbeat_stale: boolean;
   paused: boolean;
   shared_app_server_enabled: boolean;
+  startup_approved: "enabled" | "disabled" | "unknown";
   retry_prompt: string;
   max_recovery_attempts: number;
   max_consecutive_retries: number;
@@ -98,6 +99,7 @@ const elements = {
   sharedAppServerToggle: required<HTMLInputElement>("shared-app-server-toggle"),
   sharedAppServerDescription: required<HTMLElement>("shared-app-server-description"),
   sharedAppServerPort: required<HTMLElement>("shared-app-server-port"),
+  startupApprovalStatus: required<HTMLElement>("startup-approval-status"),
   pauseDescription: required<HTMLElement>("pause-description"),
   retryPrompt: required<HTMLTextAreaElement>("retry-prompt"),
   promptCount: required<HTMLElement>("prompt-count"),
@@ -188,6 +190,13 @@ function render(next: ManagementSnapshot): void {
     ? `正在使用插件拥有且已通过健康检查的后台（端口 ${next.shared_app_server_port}）`
     : "默认关闭，不影响 Codex 官方后台";
   elements.sharedAppServerPort.textContent = next.shared_app_server_port > 0 ? `端口 ${next.shared_app_server_port}` : "";
+  const startupApprovalLabels: Record<ManagementSnapshot["startup_approved"], string> = {
+    enabled: "Windows 登录启动：已启用",
+    disabled: "Windows 登录启动：已禁用",
+    unknown: "Windows 登录启动：状态未知",
+  };
+  elements.startupApprovalStatus.textContent = startupApprovalLabels[next.startup_approved] ?? startupApprovalLabels.unknown;
+  elements.startupApprovalStatus.dataset.state = next.startup_approved;
   updatePromptState();
   renderService(next);
   renderMetrics(next);
@@ -233,6 +242,10 @@ function renderService(next: ManagementSnapshot): void {
   } else if (next.running && next.controller_state === "shared_app_server_environment_conflict") {
     label = "共享后台环境冲突";
     detail = "检测到 CODEX_APP_SERVER_WS_URL 已指向其他地址，插件未覆盖；请清理冲突值后再启用共享后台";
+    dot.classList.add("status-dot-danger");
+  } else if (next.running && next.controller_state === "shared_app_server_ownership_unknown") {
+    label = "共享后台归属未知";
+    detail = "插件无法确认后台进程归属，已停止自动清理；请先关闭 Codex 并人工核对后再恢复共享后台";
     dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state === "shared_app_server_config_invalid") {
     label = "共享后台配置不兼容";
@@ -473,6 +486,9 @@ function stopReasonLabel(retry: ManagedRetry): string {
   if (retry.stop_reason === "shared_app_server_environment_conflict") {
     return "共享后台环境变量已被其他值占用";
   }
+  if (retry.stop_reason === "shared_app_server_ownership_unknown") {
+    return "共享后台归属无法确认，需人工清理";
+  }
   if (retry.stop_reason === "shared_app_server_config_invalid") {
     return "共享后台配置与当前 Codex 不兼容，已自动切回官方后台";
   }
@@ -510,6 +526,8 @@ function stoppedStateLabel(retry: ManagedRetry): string {
       return "端口被 Windows 保留";
     case "shared_app_server_environment_conflict":
       return "共享后台环境冲突";
+    case "shared_app_server_ownership_unknown":
+      return "共享后台归属未知";
     case "shared_app_server_migration_deferred":
       return "等待 Codex 关闭";
     default:
@@ -526,6 +544,7 @@ function controllerStateLabel(value: string): string {
     shared_app_server_port_conflict: "共享端口被占用",
     shared_app_server_port_reserved: "共享端口被 Windows 保留",
     shared_app_server_environment_conflict: "CODEX_APP_SERVER_WS_URL 已被其他值占用",
+    shared_app_server_ownership_unknown: "共享后台归属无法确认，需人工清理",
     shared_app_server_migration_deferred: "等待 Codex 关闭后完成后台迁移",
     shared_app_server_config_invalid: "共享后台配置与当前 Codex 不兼容，已切回官方后台",
     codex_background_channel_unavailable: "共享通道不可用",
@@ -754,6 +773,7 @@ function previewSnapshot(): ManagementSnapshot {
     heartbeat_stale: false,
     paused: false,
     shared_app_server_enabled: false,
+    startup_approved: "enabled",
     shared_app_server_port: 49621,
     retry_prompt: "继续",
     max_recovery_attempts: 15,

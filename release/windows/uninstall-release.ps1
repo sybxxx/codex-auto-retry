@@ -46,6 +46,40 @@ $pluginParent = Resolve-SafeChildPath -BasePath $profileRootPath -ChildPath 'plu
 $pluginTarget = Resolve-SafeChildPath -BasePath $pluginParent -ChildPath 'codex-auto-retry'
 $marketplacePath = Resolve-SafeChildPath -BasePath $profileRootPath -ChildPath '.agents\plugins\marketplace.json'
 $runtimePath = Resolve-SafeChildPath -BasePath $localAppDataPath -ChildPath 'CodexAutoRetry'
+$startupApprovalScript = Join-Path $pluginTarget 'scripts\startup-approval.ps1'
+if (-not (Test-Path -LiteralPath $startupApprovalScript -PathType Leaf)) {
+    $startupApprovalScript = Join-Path $PSScriptRoot 'payload\codex-auto-retry\scripts\startup-approval.ps1'
+}
+if (Test-Path -LiteralPath $startupApprovalScript -PathType Leaf) { . $startupApprovalScript }
+
+$startupApprovedRunSubKey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+
+function Test-ReleaseStartupApprovalPresent {
+    param([string]$RunName = 'CodexAutoRetry')
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($startupApprovedRunSubKey, $false)
+    if ($null -eq $key) { return $false }
+    try {
+        return $null -ne $key.GetValue($RunName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    }
+    finally { $key.Close() }
+}
+
+function Remove-ReleaseStartupApproval {
+    param([string]$RunName = 'CodexAutoRetry')
+
+    # Always use the release script's own Registry API path. This keeps
+    # uninstall compatible with old or partially extracted payloads whose
+    # helper script is absent, and avoids silently orphaning the marker.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($startupApprovedRunSubKey, $true)
+    if ($null -ne $key) {
+        try { $key.DeleteValue($RunName, $false) }
+        finally { $key.Close() }
+    }
+    if (Test-ReleaseStartupApprovalPresent -RunName $RunName) {
+        throw "The startup approval for $RunName is still present after uninstall."
+    }
+}
 
 $marketplace = Read-JsonDocument -Path $marketplacePath
 $marketplaceName = if ($null -eq $marketplace) { 'personal' } else { Get-MarketplaceName -Document $marketplace }
@@ -126,6 +160,8 @@ try {
         }
     }
 
+    Remove-ReleaseStartupApproval -RunName 'CodexAutoRetry'
+
     if (-not $SkipCodexCheck) {
         Write-Step 'Removing the plugin from Codex...'
         if (Test-PluginInstalled -Cli $cli -PluginId $pluginId) {
@@ -154,6 +190,9 @@ try {
     $runValue = if ($null -eq $runProperty) { $null } else { $runProperty.CodexAutoRetry }
     if (-not [string]::IsNullOrWhiteSpace([string]$runValue)) {
         throw 'The startup entry is still present after uninstall.'
+    }
+    if (Test-ReleaseStartupApprovalPresent -RunName 'CodexAutoRetry') {
+        throw 'The StartupApproved value is still present after uninstall.'
     }
     if (-not $SkipCodexCheck -and (Test-PluginInstalled -Cli $cli -PluginId $pluginId)) {
         throw 'Codex still reports the plugin as installed.'
