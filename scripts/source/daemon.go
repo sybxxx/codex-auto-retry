@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,28 +25,34 @@ type daemon struct {
 	runner      resumeRunner
 	startedAt   time.Time
 
-	mu                   sync.Mutex
-	wg                   sync.WaitGroup
-	state                RuntimeState
-	active               map[string]RetryJob
-	activeCtx            map[string]context.CancelFunc
-	lastScan             time.Time
-	lastError            string
-	controllerState      string
-	lastControllerProbe  time.Time
-	paused               bool
-	memoryUsageBytes     uint64
-	memoryGuardTriggered bool
-	writeState           func(string, any) error
-	writeStatusFile      func(string, any) error
-	stateWriteDeferred   bool
-	statusWriteDeferred  bool
+	mu                                  sync.Mutex
+	wg                                  sync.WaitGroup
+	state                               RuntimeState
+	active                              map[string]RetryJob
+	activeCtx                           map[string]context.CancelFunc
+	lastScan                            time.Time
+	lastError                           string
+	controllerState                     string
+	lastControllerProbe                 time.Time
+	paused                              bool
+	memoryUsageBytes                    uint64
+	memoryGuardTriggered                bool
+	sharedAppServerMemoryBytes          uint64
+	sharedAppServerMemoryGuardTriggered bool
+	lastSharedAppServerMemoryCheck      time.Time
+	writeState                          func(string, any) error
+	writeStatusFile                     func(string, any) error
+	stateWriteDeferred                  bool
+	statusWriteDeferred                 bool
 }
 
 func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeRunner) (*daemon, error) {
 	configPath := filepath.Join(dataDir, "config.json")
 	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		if err := writeJSONAtomic(configPath, config); err != nil {
+		if _, err := updateConfigFile(configPath, func(current *Config) error {
+			*current = config
+			return nil
+		}); err != nil {
 			return nil, err
 		}
 	}
@@ -75,7 +82,13 @@ func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeR
 		activeCtx:       make(map[string]context.CancelFunc),
 		paused:          control.Paused,
 		controllerState: "starting",
-		writeState:      writeJSONAtomic,
+		writeState: func(path string, value any) error {
+			state, ok := value.(RuntimeState)
+			if !ok {
+				return fmt.Errorf("runtime state writer received %T", value)
+			}
+			return writeRuntimeStateAtomic(path, state)
+		},
 		writeStatusFile: writeJSONAtomic,
 	}
 	daemon.reconcileStartupState(time.Now().UTC())
@@ -146,6 +159,7 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 	// app-server lifecycle probe verifies that the turn is still active. The
 	// probe never starts a task and its result is revalidated under the lock.
 	d.mu.Unlock()
+	d.checkSharedAppServerMemory(ctx, now)
 	if !sharedBackendEnabled {
 		d.reconcileSharedBackendCleanup(ctx)
 	}
@@ -176,6 +190,53 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 		d.logger.Printf("status save deferred category=status_write")
 	}
 	return nil
+}
+
+func (d *daemon) checkSharedAppServerMemory(ctx context.Context, now time.Time) {
+	d.mu.Lock()
+	if !d.config.SharedAppServerEnabled || d.sharedAppServerMemoryGuardTriggered ||
+		(!d.lastSharedAppServerMemoryCheck.IsZero() && now.Sub(d.lastSharedAppServerMemoryCheck) < memoryCheckInterval) {
+		d.mu.Unlock()
+		return
+	}
+	limitMB := d.config.SharedAppServerMemoryLimitMB
+	reader, ok := d.runner.(sharedBackendMemoryReader)
+	d.lastSharedAppServerMemoryCheck = now
+	d.mu.Unlock()
+	if !ok || limitMB <= 0 {
+		return
+	}
+	sample, err := reader.SharedBackendMemory(ctx)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Printf("shared app-server memory sample unavailable category=memory_probe")
+		}
+		return
+	}
+	d.mu.Lock()
+	d.sharedAppServerMemoryBytes = sample.PrivateBytes
+	if sample.PrivateBytes < uint64(limitMB)*1024*1024 || d.sharedAppServerMemoryGuardTriggered {
+		d.mu.Unlock()
+		return
+	}
+	d.sharedAppServerMemoryGuardTriggered = true
+	d.controllerState = "shared_app_server_memory_limit_exceeded"
+	d.lastError = "shared_app_server_memory_limit_exceeded"
+	if d.logger != nil {
+		d.logger.Printf("shared app-server memory guard triggered private_memory_mb=%d limit_mb=%d action=disable_shared_mode", memoryBytesToMB(sample.PrivateBytes), limitMB)
+	}
+	d.mu.Unlock()
+
+	// This is intentionally a fail-open operation, not a process kill. If
+	// Desktop is still connected, cleanup is deferred until it closes so the
+	// visible Codex session is not torn down by the monitor.
+	state := d.failOpenSharedBackend(ctx, "shared_app_server_memory_limit_exceeded")
+	d.mu.Lock()
+	if state == "shared_app_server_disabled" {
+		d.config.SharedAppServerEnabled = false
+	}
+	d.controllerState = state
+	d.mu.Unlock()
 }
 
 func (d *daemon) reconcileSharedBackendCleanup(ctx context.Context) {
@@ -918,22 +979,26 @@ func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 		active = 0
 	}
 	status := StatusSnapshot{
-		Version:                appVersion,
-		Running:                running,
-		PID:                    os.Getpid(),
-		StartedAt:              d.startedAt,
-		LastScanAt:             d.lastScan,
-		WatchedRoots:           rootCount,
-		PendingRetries:         pending,
-		ActiveRetries:          active,
-		Paused:                 d.paused,
-		SharedAppServerEnabled: d.config.SharedAppServerEnabled,
-		ControllerState:        d.controllerState,
-		LastError:              d.lastError,
-		MemoryUsageMB:          memoryBytesToMB(d.memoryUsageBytes),
-		MemoryLimitMB:          d.config.MemoryLimitMB,
-		MemoryGuardTriggered:   d.memoryGuardTriggered,
-		LogPath:                d.logger.path,
+		Version:                             appVersion,
+		Running:                             running,
+		PID:                                 os.Getpid(),
+		StartedAt:                           d.startedAt,
+		LastScanAt:                          d.lastScan,
+		WatchedRoots:                        rootCount,
+		PendingRetries:                      pending,
+		ActiveRetries:                       active,
+		Paused:                              d.paused,
+		SharedAppServerEnabled:              d.config.SharedAppServerEnabled,
+		ControllerState:                     d.controllerState,
+		LastError:                           d.lastError,
+		MemoryUsageMB:                       memoryBytesToMB(d.memoryUsageBytes),
+		MemoryLimitMB:                       d.config.MemoryLimitMB,
+		MemoryGuardTriggered:                d.memoryGuardTriggered,
+		SharedAppServerMemoryUsageMB:        memoryBytesToMB(d.sharedAppServerMemoryBytes),
+		SharedAppServerMemoryLimitMB:        d.config.SharedAppServerMemoryLimitMB,
+		SharedAppServerMemoryGuardTriggered: d.sharedAppServerMemoryGuardTriggered,
+		RetrySafetyWarning:                  d.config.retrySafetyWarning(),
+		LogPath:                             d.logger.path,
 	}
 	writer := d.writeStatusFile
 	if writer == nil {

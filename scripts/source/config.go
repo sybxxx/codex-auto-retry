@@ -11,28 +11,29 @@ import (
 )
 
 type Config struct {
-	ConfigVersion          int      `json:"config_version"`
-	PollIntervalSeconds    int      `json:"poll_interval_seconds"`
-	InitialDelaySeconds    int      `json:"initial_delay_seconds"`
-	MaxDelaySeconds        int      `json:"max_delay_seconds"`
-	DelayIncrementSeconds  int      `json:"delay_increment_seconds"`
-	DelayStrategy          string   `json:"delay_strategy"`
-	MaxConsecutiveRetries  int      `json:"max_consecutive_retries"`
-	MaxRecoveryAttempts    int      `json:"max_recovery_attempts"`
-	MaxParallelRetries     int      `json:"max_parallel_retries"`
-	StartAckTimeoutSeconds int      `json:"start_ack_timeout_seconds"`
-	AuthMaxAttempts        int      `json:"auth_max_attempts"`
-	UnknownMaxAttempts     int      `json:"unknown_max_attempts"`
-	SessionRoots           []string `json:"session_roots"`
-	IncludeDefaultHome     bool     `json:"include_default_home"`
-	IncludeCockpitHomes    bool     `json:"include_cockpit_homes"`
-	PowerShellExecutable   string   `json:"powershell_executable,omitempty"`
-	SharedAppServerPort    int      `json:"shared_app_server_port"`
-	SharedAppServerEnabled bool     `json:"shared_app_server_enabled"`
-	ControllerFailureLimit int      `json:"controller_failure_limit"`
-	MemoryLimitMB          int      `json:"memory_limit_mb"`
-	RetryPrompt            string   `json:"retry_prompt"`
-	ShowNotifications      bool     `json:"show_notifications"`
+	ConfigVersion                int      `json:"config_version"`
+	PollIntervalSeconds          int      `json:"poll_interval_seconds"`
+	InitialDelaySeconds          int      `json:"initial_delay_seconds"`
+	MaxDelaySeconds              int      `json:"max_delay_seconds"`
+	DelayIncrementSeconds        int      `json:"delay_increment_seconds"`
+	DelayStrategy                string   `json:"delay_strategy"`
+	MaxConsecutiveRetries        int      `json:"max_consecutive_retries"`
+	MaxRecoveryAttempts          int      `json:"max_recovery_attempts"`
+	MaxParallelRetries           int      `json:"max_parallel_retries"`
+	StartAckTimeoutSeconds       int      `json:"start_ack_timeout_seconds"`
+	AuthMaxAttempts              int      `json:"auth_max_attempts"`
+	UnknownMaxAttempts           int      `json:"unknown_max_attempts"`
+	SessionRoots                 []string `json:"session_roots"`
+	IncludeDefaultHome           bool     `json:"include_default_home"`
+	IncludeCockpitHomes          bool     `json:"include_cockpit_homes"`
+	PowerShellExecutable         string   `json:"powershell_executable,omitempty"`
+	SharedAppServerPort          int      `json:"shared_app_server_port"`
+	SharedAppServerEnabled       bool     `json:"shared_app_server_enabled"`
+	ControllerFailureLimit       int      `json:"controller_failure_limit"`
+	MemoryLimitMB                int      `json:"memory_limit_mb"`
+	SharedAppServerMemoryLimitMB int      `json:"shared_app_server_memory_limit_mb"`
+	RetryPrompt                  string   `json:"retry_prompt"`
+	ShowNotifications            bool     `json:"show_notifications"`
 }
 
 const legacyRetryPrompt = "Continue the interrupted task from its current state. The previous turn ended because the model provider was temporarily unavailable. First inspect the existing conversation and workspace state, do not repeat completed side effects, then continue toward the user's latest request. Do not discuss the retry mechanism unless it affects the result."
@@ -42,14 +43,16 @@ const defaultRetryPrompt = "继续"
 const maxRetryPromptRunes = 500
 
 const (
-	maxConsecutiveRetriesLimit = 100
-	maxRecoveryAttemptsLimit   = 1000
-	minMemoryLimitMB           = 128
-	maxMemoryLimitMB           = 65536
+	maxConsecutiveRetriesLimit   = 100
+	maxRecoveryAttemptsLimit     = 1000
+	minMemoryLimitMB             = 128
+	maxMemoryLimitMB             = 65536
+	minSharedServerMemoryLimitMB = 512
+	maxSharedServerMemoryLimitMB = 65536
 )
 
 const (
-	currentConfigVersion             = 9
+	currentConfigVersion             = 10
 	legacyDefaultSharedAppServerPort = 49321
 	defaultSharedAppServerPort       = 49621
 )
@@ -62,30 +65,41 @@ const (
 
 func defaultConfig() Config {
 	return Config{
-		ConfigVersion:          currentConfigVersion,
-		PollIntervalSeconds:    2,
-		InitialDelaySeconds:    5,
-		MaxDelaySeconds:        300,
-		DelayIncrementSeconds:  2,
-		DelayStrategy:          delayStrategyExponential,
-		MaxConsecutiveRetries:  5,
-		MaxRecoveryAttempts:    15,
-		MaxParallelRetries:     4,
-		StartAckTimeoutSeconds: 30,
-		AuthMaxAttempts:        6,
-		UnknownMaxAttempts:     3,
-		IncludeDefaultHome:     true,
-		IncludeCockpitHomes:    true,
-		SharedAppServerPort:    defaultSharedAppServerPort,
-		SharedAppServerEnabled: false,
-		ControllerFailureLimit: 3,
-		MemoryLimitMB:          1024,
-		RetryPrompt:            defaultRetryPrompt,
-		ShowNotifications:      true,
+		ConfigVersion:                currentConfigVersion,
+		PollIntervalSeconds:          2,
+		InitialDelaySeconds:          5,
+		MaxDelaySeconds:              300,
+		DelayIncrementSeconds:        2,
+		DelayStrategy:                delayStrategyExponential,
+		MaxConsecutiveRetries:        5,
+		MaxRecoveryAttempts:          15,
+		MaxParallelRetries:           4,
+		StartAckTimeoutSeconds:       30,
+		AuthMaxAttempts:              6,
+		UnknownMaxAttempts:           3,
+		IncludeDefaultHome:           true,
+		IncludeCockpitHomes:          true,
+		SharedAppServerPort:          defaultSharedAppServerPort,
+		SharedAppServerEnabled:       false,
+		ControllerFailureLimit:       3,
+		MemoryLimitMB:                1024,
+		SharedAppServerMemoryLimitMB: 4096,
+		RetryPrompt:                  defaultRetryPrompt,
+		ShowNotifications:            true,
 	}
 }
 
 func loadOrCreateConfig(path string) (Config, error) {
+	var config Config
+	err := withConfigFileLock(path, func() error {
+		var err error
+		config, err = loadOrCreateConfigUnlocked(path)
+		return err
+	})
+	return config, err
+}
+
+func loadOrCreateConfigUnlocked(path string) (Config, error) {
 	cfg := defaultConfig()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -118,7 +132,8 @@ func loadOrCreateConfig(path string) (Config, error) {
 	// Version 7 makes that channel an explicit opt-in so a broken plugin cannot
 	// prevent Codex from starting with its own official backend. Version 8 moves
 	// the default endpoint out of a Windows-excluded port range. Version 9 adds
-	// a bounded private-memory guard for the watchdog process.
+	// a bounded private-memory guard for the watchdog process. Version 10 adds
+	// a monitor-only memory limit for the optional shared Codex app-server.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -170,6 +185,10 @@ func loadOrCreateConfig(path string) (Config, error) {
 		}
 		if _, found := fields["memory_limit_mb"]; !found {
 			cfg.MemoryLimitMB = defaultConfig().MemoryLimitMB
+			changed = true
+		}
+		if _, found := fields["shared_app_server_memory_limit_mb"]; !found {
+			cfg.SharedAppServerMemoryLimitMB = defaultConfig().SharedAppServerMemoryLimitMB
 			changed = true
 		}
 	}
@@ -242,7 +261,22 @@ func (c Config) validate() error {
 	if c.MemoryLimitMB < minMemoryLimitMB || c.MemoryLimitMB > maxMemoryLimitMB {
 		return fmt.Errorf("memory_limit_mb must be between %d and %d", minMemoryLimitMB, maxMemoryLimitMB)
 	}
+	if c.SharedAppServerMemoryLimitMB < minSharedServerMemoryLimitMB || c.SharedAppServerMemoryLimitMB > maxSharedServerMemoryLimitMB {
+		return fmt.Errorf("shared_app_server_memory_limit_mb must be between %d and %d", minSharedServerMemoryLimitMB, maxSharedServerMemoryLimitMB)
+	}
 	return nil
+}
+
+const (
+	recommendedMaxRecoveryAttempts   = 100
+	recommendedMaxConsecutiveRetries = 20
+)
+
+func (c Config) retrySafetyWarning() string {
+	if c.MaxRecoveryAttempts > recommendedMaxRecoveryAttempts || c.MaxConsecutiveRetries > recommendedMaxConsecutiveRetries {
+		return fmt.Sprintf("重试上限偏激进（本次故障 %d 次、连续无进展 %d 次），建议不超过 %d/%d", c.MaxRecoveryAttempts, c.MaxConsecutiveRetries, recommendedMaxRecoveryAttempts, recommendedMaxConsecutiveRetries)
+	}
+	return ""
 }
 
 func expandPath(value string) string {

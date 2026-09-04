@@ -222,8 +222,27 @@ func failOpenSharedAppServer(ctx context.Context, configPath, dataDir string, co
 		"created_at":     time.Now().UTC(),
 	}
 	markerErr := writeSharedFailOpenMarker(markerPath, marker)
-	persistErr := writeSharedFailOpenConfig(configPath, config)
+	persistErr := withConfigFileLock(configPath, func() error {
+		latest, err := loadOrCreateConfigUnlocked(configPath)
+		if err != nil {
+			return err
+		}
+		latest.SharedAppServerEnabled = false
+		if err := latest.validate(); err != nil {
+			return err
+		}
+		config = latest
+		return writeSharedFailOpenConfig(configPath, latest)
+	})
 	cleanupErr := failOpenSharedBackendCleanup(ctx, dataDir, config)
+	if markerErr == nil && persistErr == nil && cleanupErr != nil &&
+		errors.Is(cleanupErr, errSharedServerMigrationDeferred) &&
+		cleanupErr.Error() == errSharedServerMigrationDeferred.Error() {
+		// The disabled preference is already durable. A live Desktop connection
+		// only defers process teardown; the normal worker reconciler will finish
+		// it after Desktop closes and should not make fail-open look unsuccessful.
+		cleanupErr = nil
+	}
 	if markerErr == nil && persistErr == nil && cleanupErr == nil {
 		// Once the disabled preference is durable, a cleanup-only error (for
 		// example a live Desktop connection) can be retried by the normal worker

@@ -8,8 +8,9 @@
 | `.gitignore`, `.gitattributes` | Keep local runtime state out of public source and make cross-platform line endings deterministic. |
 | `.mcp.json` | Portable hidden fallback for the on-demand stdio MCP server; release deployment replaces it with the direct installed executable path. |
 | `skills/codex-auto-retry/SKILL.md` | Status, repair, installation, removal, privacy, compatibility, and retry-policy workflow. |
-| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services, startup mode, StartupApproved state, endpoint presence, and shared-server state without inspecting conversation content. |
-| `scripts/startup-manager.ps1` | Provides a standalone status/start/stop/enable/disable/safe-disable/uninstall manager with ownership checks, synchronized StartupApproved state, and a graphical Windows Forms view. |
+| `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services, startup mode, StartupApproved state, endpoint presence, strict shared-server verification, and memory safeguards without inspecting conversation content. |
+| `scripts/startup-manager.ps1` | Provides a standalone status/start/stop/enable/disable/safe-disable/uninstall manager with ownership checks, synchronized StartupApproved state, strict shared-server verification, and a graphical Windows Forms view. |
+| `scripts/shared-server-status.ps1` | Shared read-only verifier for executable hash, exact app-server command line, process creation time, loopback endpoint, and live listener. |
 | `scripts/startup-approval.ps1` | Uses the Windows current-user Registry API to classify and update only the plugin's `StartupApproved\Run\CodexAutoRetry` marker while preserving other startup values. |
 | `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, migrates the per-user startup entry and approval to supervised/enabled state, and rolls both back on failure. |
 | `scripts/path-safety.ps1` | Detects Windows package redirection or directory links before runtime installation can be mistaken for a host installation. |
@@ -27,6 +28,7 @@
 | `scripts/supervisor-smoke-test.ps1` | Starts the sign-in supervisor, kills only the worker to prove bounded restart, then verifies an intentional stop is honored. |
 | `scripts/status-smoke-test.ps1` | Verifies the installed watchdog process and UTC heartbeat are reported as fresh, including on non-UTC Windows time zones. |
 | `scripts/shared-app-server-smoke-test.ps1` | Uses a real isolated Codex WebSocket app-server, two clients, and a local fake provider to prove Desktop-visible same-task recovery without a visible user message. |
+| `scripts/shared-server-status-smoke-test.ps1` | Proves missing, unowned, and dead owned records are not reported as a live shared backend. |
 | `scripts/environment-smoke-test.ps1` | Proves safe environment ownership, idempotent endpoint updates, restoration, and conflict refusal through a random test-only user variable. |
 | `scripts/app-server-protocol-smoke-test.ps1` | Proves native goal recovery, silent normal-turn continuation, continuation beside an unchanged paused goal, settings-preserving resume of an unloaded parent before fixed event injection, and active-to-blocked goal closure against an isolated app-server and temporary `CODEX_HOME`. |
 | `scripts/empty-response-protocol-smoke-test.ps1` | Reproduces an HTTP 200 response with no model output through a local fake provider, then proves silent same-task recovery without adding a user message or replaying the original turn. |
@@ -69,7 +71,7 @@ Source code lives under `scripts/source`.
 | `config.go` | Versioned defaults, validation, legacy visible-UI migration, and user overrides. |
 | `jsonio.go` | Atomic JSON persistence. |
 | `logger.go` | Size-limited, privacy-safe operational logging. |
-| `lock_windows.go` | Per-user single-instance file lock. |
+| `lock_windows.go`, `lock_nonwindows.go`, `config_lock*.go` | Per-user single-instance lock and cross-process config sidecar lock. |
 | `ui/settings.ps1` | Embedded Windows Forms status and settings window launched from the tray icon. |
 | `*_test.go` | Classification, parsing, privacy, migration, restart, mirroring, correlation, concurrency, controller bounds, shared-server ownership, and two-client recovery regression tests. |
 
@@ -145,13 +147,15 @@ removed renderer debugging channel with `shared_app_server_port` and a bounded
 on its official backend. Version 8 moves the shared-server default port out of
 the Windows-excluded range and adds a bind preflight with distinct reserved and
 occupied-port diagnostics. Version 9 adds a bounded private-memory guard for
-the watchdog.
+the watchdog. Version 10 adds a monitor-only private-memory limit for the
+optional shared app-server.
 
 `control.json` stores the persistent pause switch separately from
 `config.json`. One-use files under `commands` request `retry_now`,
 `cancel_retry`, or `restart_retry`; the watchdog consumes them while it owns
-the retry-state lock. This keeps both graphical management surfaces from
-editing `state.json` concurrently with the scanner.
+the retry-state lock. The worker, MCP settings path, and installer also share
+`config.json.lock`, so a settings update cannot overwrite a concurrent fail-open
+or port migration.
 
 State format version 5 also persists parent-notification acknowledgement and
 post-limit goal-stop requests. These fields make subagent recovery idempotent

@@ -63,6 +63,10 @@ type ManagementSnapshot = {
   memory_limit_mb: number;
   memory_usage_mb?: number;
   memory_guard_triggered?: boolean;
+  shared_app_server_memory_usage_mb?: number;
+  shared_app_server_memory_limit_mb?: number;
+  shared_app_server_memory_guard_triggered?: boolean;
+  retry_safety_warning?: string;
   shared_app_server_port: number;
   now: string;
   last_scan_at?: string;
@@ -251,6 +255,10 @@ function renderService(next: ManagementSnapshot): void {
     label = "共享后台配置不兼容";
     detail = "已自动切回 Codex 官方后台，避免错误配置继续影响对话";
     dot.classList.add("status-dot-danger");
+  } else if (next.running && next.controller_state === "shared_app_server_memory_limit_exceeded") {
+    label = "共享后台内存保护";
+    detail = `共享后台已停止接管（${next.shared_app_server_memory_usage_mb ?? 0} MB/${next.shared_app_server_memory_limit_mb ?? 0} MB），未强制关闭 Codex`;
+    dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state && !["ready", "starting"].includes(next.controller_state)) {
     label = "恢复通道异常";
     detail = `自动重试已停止继续空转：${controllerStateLabel(next.controller_state)}`;
@@ -270,6 +278,12 @@ function renderService(next: ManagementSnapshot): void {
   elements.serviceLine.textContent = detail;
   if (next.memory_guard_triggered) {
     elements.serviceLine.textContent = `${detail}；内存保护已触发（${next.memory_usage_mb ?? 0} MB/${next.memory_limit_mb} MB）`;
+  }
+  if (next.shared_app_server_memory_guard_triggered) {
+    elements.serviceLine.textContent = `${elements.serviceLine.textContent}；共享后台内存保护已触发（${next.shared_app_server_memory_usage_mb ?? 0} MB/${next.shared_app_server_memory_limit_mb ?? 0} MB），未强制关闭 Codex`;
+  }
+  if (next.retry_safety_warning) {
+    elements.serviceLine.textContent = `${elements.serviceLine.textContent}；${next.retry_safety_warning}`;
   }
   elements.pauseDescription.textContent = next.paused ? "已暂停新重试" : "运行中";
 }
@@ -506,6 +520,9 @@ function stopReasonLabel(retry: ManagedRetry): string {
   }
   if (retry.stop_reason === "consecutive_retry_limit") {
     return `无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries ?? retry.consecutive_retry} 达上限`;
+  }
+  if (retry.stop_reason === "recovery_time_limit") {
+    return "自动恢复运行时间达到 30 分钟上限";
   }
   return `本次恢复 ${retry.recovery_attempt}/${retry.max_recovery_attempts ?? retry.recovery_attempt} 达上限`;
 }
@@ -779,6 +796,10 @@ function previewSnapshot(): ManagementSnapshot {
     max_recovery_attempts: 15,
     max_consecutive_retries: 5,
     memory_limit_mb: 1024,
+    shared_app_server_memory_usage_mb: 0,
+    shared_app_server_memory_limit_mb: 4096,
+    shared_app_server_memory_guard_triggered: false,
+    retry_safety_warning: "",
     initial_delay_seconds: 5,
     max_delay_seconds: 300,
     delay_increment_seconds: 2,

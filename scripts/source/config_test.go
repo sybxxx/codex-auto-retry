@@ -148,6 +148,16 @@ func TestConfigValidatesUserVisibleRetrySettings(t *testing.T) {
 		t.Fatal("memory limit above the documented maximum was accepted")
 	}
 	config = defaultConfig()
+	config.SharedAppServerMemoryLimitMB = minSharedServerMemoryLimitMB - 1
+	if err := config.validate(); err == nil {
+		t.Fatal("shared app-server memory limit below the documented minimum was accepted")
+	}
+	config = defaultConfig()
+	config.SharedAppServerMemoryLimitMB = maxSharedServerMemoryLimitMB + 1
+	if err := config.validate(); err == nil {
+		t.Fatal("shared app-server memory limit above the documented maximum was accepted")
+	}
+	config = defaultConfig()
 	config.MaxRecoveryAttempts = maxRecoveryAttemptsLimit + 1
 	if err := config.validate(); err == nil {
 		t.Fatal("recovery limit above the documented maximum was accepted")
@@ -227,8 +237,22 @@ func TestSharedAppServerIsOptInByDefault(t *testing.T) {
 	if config.SharedAppServerEnabled {
 		t.Fatal("shared app-server mode is enabled by default")
 	}
+	if config.SharedAppServerMemoryLimitMB != 4096 {
+		t.Fatalf("unexpected shared app-server memory monitor default: %d", config.SharedAppServerMemoryLimitMB)
+	}
 	if err := config.validate(); err != nil {
 		t.Fatalf("default config is invalid: %v", err)
+	}
+}
+
+func TestConfigReportsAggressiveRetryPolicy(t *testing.T) {
+	config := defaultConfig()
+	if warning := config.retrySafetyWarning(); warning != "" {
+		t.Fatalf("default retry policy unexpectedly warned: %s", warning)
+	}
+	config.MaxRecoveryAttempts = recommendedMaxRecoveryAttempts + 1
+	if warning := config.retrySafetyWarning(); warning == "" {
+		t.Fatal("aggressive recovery policy did not produce a warning")
 	}
 }
 

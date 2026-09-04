@@ -39,34 +39,38 @@ type ManagedRetry struct {
 const stoppedRetryDisplayWindow = time.Hour
 
 type ManagementSnapshot struct {
-	Version                string         `json:"version" jsonschema:"watchdog version"`
-	Running                bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
-	HeartbeatStale         bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
-	Paused                 bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
-	RetryPrompt            string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
-	MaxConsecutiveRetries  int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
-	MaxRecoveryAttempts    int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
-	InitialDelaySeconds    int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
-	MaxDelaySeconds        int            `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
-	DelayIncrementSeconds  int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
-	DelayStrategy          string         `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
-	ShowNotifications      bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
-	MemoryLimitMB          int            `json:"memory_limit_mb" jsonschema:"private memory limit for the watchdog process, from 128 to 65536 MB"`
-	MemoryUsageMB          int64          `json:"memory_usage_mb" jsonschema:"current watchdog private memory in MB"`
-	MemoryGuardTriggered   bool           `json:"memory_guard_triggered" jsonschema:"whether the memory guard stopped the service"`
-	SharedAppServerPort    int            `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
-	SharedAppServerEnabled bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
-	StartupApproved        string         `json:"startup_approved" jsonschema:"Windows sign-in approval state for the CodexAutoRetry startup entry"`
-	Now                    string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
-	LastScanAt             string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
-	PendingRetries         int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
-	ActiveRetries          int            `json:"active_retries" jsonschema:"number of retries starting or running"`
-	StoppedRetries         int            `json:"stopped_retries" jsonschema:"number of currently visible retry chains that have stopped"`
-	WatchedRoots           int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
-	LastError              string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
-	ControllerState        string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
-	Notice                 string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
-	Retries                []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
+	Version                             string         `json:"version" jsonschema:"watchdog version"`
+	Running                             bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
+	HeartbeatStale                      bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
+	Paused                              bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
+	RetryPrompt                         string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
+	MaxConsecutiveRetries               int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
+	MaxRecoveryAttempts                 int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
+	InitialDelaySeconds                 int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
+	MaxDelaySeconds                     int            `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
+	DelayIncrementSeconds               int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
+	DelayStrategy                       string         `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
+	ShowNotifications                   bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
+	MemoryLimitMB                       int            `json:"memory_limit_mb" jsonschema:"private memory limit for the watchdog process, from 128 to 65536 MB"`
+	MemoryUsageMB                       int64          `json:"memory_usage_mb" jsonschema:"current watchdog private memory in MB"`
+	MemoryGuardTriggered                bool           `json:"memory_guard_triggered" jsonschema:"whether the memory guard stopped the service"`
+	SharedAppServerMemoryUsageMB        int64          `json:"shared_app_server_memory_usage_mb" jsonschema:"current shared Codex app-server private memory in MB"`
+	SharedAppServerMemoryLimitMB        int            `json:"shared_app_server_memory_limit_mb" jsonschema:"monitor-only private memory limit for the shared Codex app-server"`
+	SharedAppServerMemoryGuardTriggered bool           `json:"shared_app_server_memory_guard_triggered" jsonschema:"whether shared mode was disabled after its app-server exceeded the monitor limit"`
+	RetrySafetyWarning                  string         `json:"retry_safety_warning,omitempty" jsonschema:"warning when retry limits are unusually aggressive"`
+	SharedAppServerPort                 int            `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
+	SharedAppServerEnabled              bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
+	StartupApproved                     string         `json:"startup_approved" jsonschema:"Windows sign-in approval state for the CodexAutoRetry startup entry"`
+	Now                                 string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
+	LastScanAt                          string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
+	PendingRetries                      int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
+	ActiveRetries                       int            `json:"active_retries" jsonschema:"number of retries starting or running"`
+	StoppedRetries                      int            `json:"stopped_retries" jsonschema:"number of currently visible retry chains that have stopped"`
+	WatchedRoots                        int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
+	LastError                           string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
+	ControllerState                     string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
+	Notice                              string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
+	Retries                             []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
 }
 
 type managementService struct {
@@ -140,27 +144,29 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 	retries = visibleRetries
 
 	snapshot := ManagementSnapshot{
-		Version:                appVersion,
-		Running:                running,
-		HeartbeatStale:         heartbeatStale,
-		Paused:                 control.Paused,
-		RetryPrompt:            config.RetryPrompt,
-		MaxConsecutiveRetries:  config.MaxConsecutiveRetries,
-		MaxRecoveryAttempts:    config.MaxRecoveryAttempts,
-		InitialDelaySeconds:    config.InitialDelaySeconds,
-		MaxDelaySeconds:        config.MaxDelaySeconds,
-		DelayIncrementSeconds:  config.DelayIncrementSeconds,
-		DelayStrategy:          config.DelayStrategy,
-		ShowNotifications:      config.ShowNotifications,
-		MemoryLimitMB:          config.MemoryLimitMB,
-		SharedAppServerPort:    config.SharedAppServerPort,
-		SharedAppServerEnabled: config.SharedAppServerEnabled,
-		StartupApproved:        readStartupApprovalStatus(),
-		Now:                    now.Format(time.RFC3339Nano),
-		PendingRetries:         pending,
-		ActiveRetries:          active,
-		StoppedRetries:         stopped,
-		Retries:                retries,
+		Version:                      appVersion,
+		Running:                      running,
+		HeartbeatStale:               heartbeatStale,
+		Paused:                       control.Paused,
+		RetryPrompt:                  config.RetryPrompt,
+		MaxConsecutiveRetries:        config.MaxConsecutiveRetries,
+		MaxRecoveryAttempts:          config.MaxRecoveryAttempts,
+		InitialDelaySeconds:          config.InitialDelaySeconds,
+		MaxDelaySeconds:              config.MaxDelaySeconds,
+		DelayIncrementSeconds:        config.DelayIncrementSeconds,
+		DelayStrategy:                config.DelayStrategy,
+		ShowNotifications:            config.ShowNotifications,
+		MemoryLimitMB:                config.MemoryLimitMB,
+		SharedAppServerMemoryLimitMB: config.SharedAppServerMemoryLimitMB,
+		RetrySafetyWarning:           config.retrySafetyWarning(),
+		SharedAppServerPort:          config.SharedAppServerPort,
+		SharedAppServerEnabled:       config.SharedAppServerEnabled,
+		StartupApproved:              readStartupApprovalStatus(),
+		Now:                          now.Format(time.RFC3339Nano),
+		PendingRetries:               pending,
+		ActiveRetries:                active,
+		StoppedRetries:               stopped,
+		Retries:                      retries,
 	}
 	if statusFound {
 		if running {
@@ -174,6 +180,14 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 			snapshot.MemoryLimitMB = status.MemoryLimitMB
 		}
 		snapshot.MemoryGuardTriggered = status.MemoryGuardTriggered
+		snapshot.SharedAppServerMemoryUsageMB = status.SharedAppServerMemoryUsageMB
+		if status.SharedAppServerMemoryLimitMB > 0 {
+			snapshot.SharedAppServerMemoryLimitMB = status.SharedAppServerMemoryLimitMB
+		}
+		snapshot.SharedAppServerMemoryGuardTriggered = status.SharedAppServerMemoryGuardTriggered
+		if status.RetrySafetyWarning != "" {
+			snapshot.RetrySafetyWarning = status.RetrySafetyWarning
+		}
 		if !status.LastScanAt.IsZero() {
 			snapshot.LastScanAt = status.LastScanAt.Format(time.RFC3339Nano)
 		}
@@ -204,26 +218,28 @@ func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Tim
 			return ManagementSnapshot{}, err
 		}
 		config = preparedConfig
-		config.SharedAppServerEnabled = true
-		if err := config.validate(); err != nil {
-			_ = disableSharedAppServer(context.Background(), m.dataDir, config)
-			return ManagementSnapshot{}, err
-		}
-		if err := writeJSONAtomic(m.configPath, config); err != nil {
+		persistedConfig, err := updateConfigFile(m.configPath, func(current *Config) error {
+			current.SharedAppServerEnabled = true
+			current.SharedAppServerPort = config.SharedAppServerPort
+			return nil
+		})
+		if err != nil {
 			_ = disableSharedAppServer(context.Background(), m.dataDir, config)
 			return ManagementSnapshot{}, fmt.Errorf("save shared app-server setting: %w", err)
 		}
+		config = persistedConfig
 	} else {
-		config.SharedAppServerEnabled = false
-		if err := config.validate(); err != nil {
-			return ManagementSnapshot{}, err
-		}
 		// Persist the fail-open setting before tearing down the endpoint. If the
 		// cleanup is interrupted, the next watchdog tick still cannot take over
 		// Codex's backend.
-		if err := writeJSONAtomic(m.configPath, config); err != nil {
+		persistedConfig, err := updateConfigFile(m.configPath, func(current *Config) error {
+			current.SharedAppServerEnabled = false
+			return nil
+		})
+		if err != nil {
 			return ManagementSnapshot{}, fmt.Errorf("save shared app-server setting: %w", err)
 		}
+		config = persistedConfig
 		if err := disableSharedAppServer(ctx, m.dataDir, config); err != nil {
 			return ManagementSnapshot{}, err
 		}
@@ -254,15 +270,10 @@ type RetrySettings struct {
 func (m *managementService) setRetrySettings(settings RetrySettings, now time.Time) (ManagementSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	config, err := loadOrCreateConfig(m.configPath)
-	if err != nil {
-		return ManagementSnapshot{}, err
-	}
-	applyRetrySettings(&config, settings)
-	if err := config.validate(); err != nil {
-		return ManagementSnapshot{}, err
-	}
-	if err := writeJSONAtomic(m.configPath, config); err != nil {
+	if _, err := updateConfigFile(m.configPath, func(config *Config) error {
+		applyRetrySettings(config, settings)
+		return nil
+	}); err != nil {
 		return ManagementSnapshot{}, fmt.Errorf("save retry settings: %w", err)
 	}
 	snapshot, err := m.snapshotLocked(now.UTC())
@@ -280,15 +291,17 @@ func (m *managementService) setLocalSettings(settings RetrySettings, paused bool
 		return err
 	}
 	originalConfig := config
-	applyRetrySettings(&config, settings)
-	if err := config.validate(); err != nil {
-		return err
-	}
-	if err := writeJSONAtomic(m.configPath, config); err != nil {
+	if _, err := updateConfigFile(m.configPath, func(config *Config) error {
+		applyRetrySettings(config, settings)
+		return nil
+	}); err != nil {
 		return fmt.Errorf("save local retry settings: %w", err)
 	}
 	if _, err := saveControlState(m.controlPath, paused, now); err != nil {
-		if rollbackErr := writeJSONAtomic(m.configPath, originalConfig); rollbackErr != nil {
+		if _, rollbackErr := updateConfigFile(m.configPath, func(config *Config) error {
+			*config = originalConfig
+			return nil
+		}); rollbackErr != nil {
 			return fmt.Errorf("save local pause state: %v; restore retry settings: %w", err, rollbackErr)
 		}
 		return fmt.Errorf("save local pause state: %w", err)
@@ -315,15 +328,10 @@ func applyRetrySettings(config *Config, settings RetrySettings) {
 func (m *managementService) setRetryPrompt(prompt string, now time.Time) (ManagementSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	config, err := loadOrCreateConfig(m.configPath)
-	if err != nil {
-		return ManagementSnapshot{}, err
-	}
-	config.RetryPrompt = prompt
-	if err := config.validate(); err != nil {
-		return ManagementSnapshot{}, err
-	}
-	if err := writeJSONAtomic(m.configPath, config); err != nil {
+	if _, err := updateConfigFile(m.configPath, func(config *Config) error {
+		config.RetryPrompt = prompt
+		return nil
+	}); err != nil {
 		return ManagementSnapshot{}, fmt.Errorf("save retry prompt: %w", err)
 	}
 	snapshot, err := m.snapshotLocked(now.UTC())

@@ -34,6 +34,21 @@ type failOpenRunner struct {
 	failOpenErr   error
 }
 
+type sharedMemoryRunner struct {
+	*fakeResumeRunner
+	sample        memorySample
+	failOpenCalls int
+}
+
+func (r *sharedMemoryRunner) SharedBackendMemory(context.Context) (memorySample, error) {
+	return r.sample, nil
+}
+
+func (r *sharedMemoryRunner) FailOpenSharedBackend(context.Context) error {
+	r.failOpenCalls++
+	return nil
+}
+
 func (r *failOpenRunner) FailOpenSharedBackend(context.Context) error {
 	r.failOpenCalls++
 	return r.failOpenErr
@@ -232,6 +247,23 @@ func TestSharedBackendFailureFailsOpenAndStopsReusingDeadEndpoint(t *testing.T) 
 	}
 	if d.controllerRestartReady(context.Background(), now.Add(11*time.Second)) {
 		t.Fatal("disabled shared backend was probed as a live recovery channel")
+	}
+}
+
+func TestSharedBackendMemoryGuardFailsOpenWithoutTerminatingProcess(t *testing.T) {
+	config := isolatedConfig(t.TempDir())
+	config.SharedAppServerMemoryLimitMB = minSharedServerMemoryLimitMB
+	runner := &sharedMemoryRunner{
+		fakeResumeRunner: successfulRunner(),
+		sample:           memorySample{PrivateBytes: 513 * 1024 * 1024, CheckedAt: time.Now().UTC()},
+	}
+	d := newTestDaemon(t, config, runner)
+	d.checkSharedAppServerMemory(context.Background(), time.Now().UTC())
+	if !d.sharedAppServerMemoryGuardTriggered || d.sharedAppServerMemoryBytes == 0 {
+		t.Fatalf("shared app-server memory guard did not record the over-limit sample: %+v", d)
+	}
+	if runner.failOpenCalls != 1 || d.config.SharedAppServerEnabled {
+		t.Fatalf("shared memory guard did not fail open exactly once: calls=%d enabled=%v", runner.failOpenCalls, d.config.SharedAppServerEnabled)
 	}
 }
 

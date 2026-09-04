@@ -9,6 +9,7 @@ $configPath = Join-Path $installDir 'config.json'
 $sharedStatePath = Join-Path $installDir 'shared-server.json'
 . (Join-Path $PSScriptRoot 'path-safety.ps1')
 . (Join-Path $PSScriptRoot 'startup-approval.ps1')
+. (Join-Path $PSScriptRoot 'shared-server-status.ps1')
 $redirectedPath = Get-CodexAutoRetryRedirectedPath -Path $installDir
 $runtimePathRedirected = -not [string]::IsNullOrWhiteSpace([string]$redirectedPath)
 
@@ -69,17 +70,17 @@ $startupMode = if ([string]::IsNullOrWhiteSpace($runValue)) { 'missing' } elseif
 $startupApproval = Get-CodexAutoRetryStartupApproval -RunName 'CodexAutoRetry'
 $userEndpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')
 $sharedState = $null
+$sharedStateReadFailed = $false
 if (Test-Path -LiteralPath $sharedStatePath) {
-    try { $sharedState = Get-Content -Raw -Encoding UTF8 -LiteralPath $sharedStatePath | ConvertFrom-Json } catch { $sharedState = $null }
+    try { $sharedState = Get-Content -Raw -Encoding UTF8 -LiteralPath $sharedStatePath | ConvertFrom-Json } catch { $sharedState = $null; $sharedStateReadFailed = $true }
 }
-$sharedStateStatus = 'missing'
-if ($sharedState) {
-    $sharedStateValid = [string]$sharedState.owner -eq 'codex-auto-retry' -and
-        [int]$sharedState.pid -gt 0 -and [string]$sharedState.endpoint -match '^ws://127\.0\.0\.1:\d+$'
-    if (-not $sharedStateValid) { $sharedStateStatus = 'invalid' }
-    elseif ($null -ne (Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$sharedState.pid) -ErrorAction SilentlyContinue)) { $sharedStateStatus = 'live' }
-    else { $sharedStateStatus = 'stale' }
+$expectedSharedPort = if ($config -and $config.PSObject.Properties['shared_app_server_port']) { [int]$config.shared_app_server_port } else { 0 }
+$sharedVerification = if ($sharedStateReadFailed) {
+    [pscustomobject][ordered]@{ Status = 'unknown'; Reason = 'state_unreadable'; PID = $null; Endpoint = $null }
+} else {
+    Get-CodexAutoRetrySharedServerStatus -State $sharedState -ExpectedPort $expectedSharedPort
 }
+$sharedStateStatus = [string]$sharedVerification.Status
 $runtimeRunning = -not $runtimePathRedirected -and $null -ne $process -and [bool]$status.running -and $heartbeatFresh
 $pendingRetries = if ($runtimeRunning -and $status) { $status.pending_retries } else { 0 }
 $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } else { 0 }
@@ -107,6 +108,11 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     StartupApproved = $startupApproval.Status
     SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($userEndpoint)
     SharedServerState = $sharedStateStatus
+    SharedServerVerification = [string]$sharedVerification.Reason
+    SharedAppServerMemoryUsageMB = if ($status) { $status.shared_app_server_memory_usage_mb } else { 0 }
+    SharedAppServerMemoryLimitMB = if ($status) { $status.shared_app_server_memory_limit_mb } else { $null }
+    SharedAppServerMemoryGuardTriggered = if ($status) { [bool]$status.shared_app_server_memory_guard_triggered } else { $false }
+    RetrySafetyWarning = if ($status) { [string]$status.retry_safety_warning } else { $null }
     CodexRestartRequired = if ($runtimePathRedirected) { $false } elseif ($status) { [string]$status.controller_state -eq 'codex_restart_required' } else { $false }
     LastError = if ($runtimePathRedirected) { 'runtime_path_redirected' } elseif ($status) { $status.last_error } else { $null }
     LogPath = Join-Path $installDir 'logs\daemon.log'

@@ -109,7 +109,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 
 Report whether the process is running, its version and PID, pause state, MCP
 server installation, startup mode, endpoint presence, shared-server state, the
-last scan time, pending and active retry counts, and the privacy-safe log path.
+last scan time, pending and active retry counts, shared app-server memory
+usage/limit, and the privacy-safe log path. The status and startup manager
+verify the shared server's executable hash, command line, creation time, exact
+loopback endpoint, and live listener; a matching PID alone is not `live`.
 Also report the separate `StartupApproved` state (`enabled`, `disabled`, or
 `unknown`); a `supervise` Run value with `StartupApproved=disabled` will not
 start at sign-in. Treat that combination as a startup configuration defect,
@@ -134,6 +137,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugin
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\supervisor-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\status-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\startup-manager-smoke-test.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\shared-server-status-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1"
@@ -166,6 +170,13 @@ launches the shared Codex app-server with one hidden inherited console so its
 Playwright, Node REPL, code-mode, and shell descendants do not create separate
 Windows Terminal windows. An older detached server is replaced automatically
 after Codex fully exits, and the installer verifies the watchdog heartbeat.
+The worker and MCP settings path use `config.json.lock` for cross-process
+read-modify-write operations. State is bounded to 20,000 processed events,
+2,000 file cursors, and 500 inactive task records, with an 8 MB serialized
+limit; logs rotate at 5 MB with three backups. Each automatic recovery chain
+also stops after 30 minutes, and unusually high numeric retry limits produce a
+warning instead of being silently changed.
+
 Restart Codex once only after enabling the optional shared mode or changing its
 launch mode; then open a new task so Codex discovers the updated MCP tools and
 panel.
@@ -273,6 +284,11 @@ Codex Desktop is still using the shared server, cleanup is deferred and the
 worker retries it after Desktop closes; dead owned state is removed immediately.
 Stale PID or heartbeat data must be shown as `后台服务未运行`, never as healthy
 `running`.
+
+The optional shared app-server has a monitor-only 4096 MB private-memory limit.
+Exceeding it disables shared mode and defers cleanup while Desktop is live; it
+never force-kills the official Codex process. The watchdog's own memory guard
+remains an independent hard shutdown boundary.
 
 If `config.json` is damaged, process-boundary cleanup does not replace it. The
 watchdog uses the ownership-verified `shared-server.json` record to recover the

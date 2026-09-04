@@ -62,23 +62,58 @@ function Write-CodexAutoRetryJsonAtomic {
     }
 }
 
+function Invoke-CodexAutoRetryConfigLocked {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+    )
+    $lockPath = $ConfigPath + '.lock'
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $stream = $null
+    try {
+        do {
+            try {
+                $stream = [System.IO.File]::Open(
+                    $lockPath,
+                    [System.IO.FileMode]::OpenOrCreate,
+                    [System.IO.FileAccess]::ReadWrite,
+                    [System.IO.FileShare]::None
+                )
+                break
+            }
+            catch [System.IO.IOException] {
+                if ([DateTime]::UtcNow -ge $deadline) {
+                    throw 'The Codex Auto Retry configuration is locked by another process.'
+                }
+                Start-Sleep -Milliseconds 25
+            }
+        } while ($null -eq $stream)
+        return (& $ScriptBlock)
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Disable-CodexAutoRetrySharedMode {
     param([Parameter(Mandatory = $true)][string]$DataDir)
     $configPath = Join-Path $DataDir 'config.json'
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return $false }
-    try { $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json }
-    catch {
-        # Break-glass cleanup must continue even when the settings file is
-        # damaged. Do not replace it with guessed defaults; endpoint and
-        # process cleanup are independently ownership-checked by the caller.
-        return $false
-    }
-    if ($null -eq $config.PSObject.Properties['shared_app_server_enabled']) {
-        $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $false
-    }
-    else { $config.shared_app_server_enabled = $false }
-    Write-CodexAutoRetryJsonAtomic -Path $configPath -Value $config
-    return $true
+    return (Invoke-CodexAutoRetryConfigLocked -ConfigPath $configPath -ScriptBlock {
+        try { $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json }
+        catch {
+            # Break-glass cleanup must continue even when the settings file is
+            # damaged. Do not replace it with guessed defaults; endpoint and
+            # process cleanup are independently ownership-checked by the caller.
+            return $false
+        }
+        if ($null -eq $config.PSObject.Properties['shared_app_server_enabled']) {
+            $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $false
+        }
+        else { $config.shared_app_server_enabled = $false }
+        Write-CodexAutoRetryJsonAtomic -Path $configPath -Value $config
+        return $true
+    })
 }
 
 function Get-CodexAutoRetrySharedAppServerPort {

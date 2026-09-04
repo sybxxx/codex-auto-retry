@@ -13,6 +13,19 @@ $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $manager
 foreach ($required in @('Set-ManagedStartup', 'Remove-ManagedStartup', 'Restore-ManagedStartupValue', 'Get-ManagerState', 'Hide-ManagerConsoleWindow', '$refreshView', '-RefreshView $refreshView', 'safe-disable', 'uninstall', 'supervise', 'Test-OwnedStartupValue', 'StartupApproved')) {
     if (-not $source.Contains($required)) { throw "Startup manager is missing required behavior: $required" }
 }
+
+function Remove-OrphanedSmokeApprovalValues {
+    $key = Open-CodexAutoRetryStartupApprovedKey -Writable $true
+    if ($null -eq $key) { return }
+    try {
+        foreach ($name in @($key.GetValueNames())) {
+            if ($name -notmatch '^CodexAutoRetry(?:Smoke|SafeDisableSmoke)_[0-9a-f]{32}$') { continue }
+            $runValue = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name $name -ErrorAction SilentlyContinue
+            if ($null -eq $runValue) { $key.DeleteValue($name, $false) }
+        }
+    }
+    finally { $key.Close() }
+}
 if ($source.Contains('function Refresh-ManagerView')) {
     throw 'Startup manager still relies on a function with an unsafe event-handler scope.'
 }
@@ -28,6 +41,7 @@ $testRunName = 'CodexAutoRetrySmoke_' + [guid]::NewGuid().ToString('N')
 $sentinelName = 'CodexAutoRetryUnrelatedSmoke_' + [guid]::NewGuid().ToString('N')
 $sentinelValue = 'C:\OtherSoftware\unrelated-startup.exe'
 . (Join-Path $PSScriptRoot 'startup-approval.ps1')
+Remove-OrphanedSmokeApprovalValues
 $before = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction SilentlyContinue
 $beforeSentinel = Get-ItemProperty -Path $runKey -Name $sentinelName -ErrorAction SilentlyContinue
 $beforeDefault = Get-ItemProperty -Path $runKey -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
@@ -225,6 +239,7 @@ namespace CodexAutoRetrySmoke {
     }
 }
 finally {
+    Remove-OrphanedSmokeApprovalValues
     if ($null -ne $guiProcess) {
         Stop-Process -Id $guiProcess.Id -Force -ErrorAction SilentlyContinue
         try { [void]$guiProcess.WaitForExit(5000) } catch { }

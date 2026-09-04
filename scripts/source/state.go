@@ -5,7 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"time"
+)
+
+const (
+	maxProcessedEventEntries = 20000
+	maxFileCursorEntries     = 2000
+	maxThreadEntries         = 500
+	maxRuntimeStateBytes     = 8 * 1024 * 1024
 )
 
 func newRuntimeState() RuntimeState {
@@ -25,6 +33,9 @@ func loadState(path string) (RuntimeState, error) {
 	}
 	if err != nil {
 		return state, err
+	}
+	if len(data) > maxRuntimeStateBytes {
+		return state, fmt.Errorf("runtime state exceeds %d bytes", maxRuntimeStateBytes)
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return newRuntimeState(), fmt.Errorf("parse state: %w", err)
@@ -126,4 +137,119 @@ func (s *RuntimeState) prune(now time.Time) {
 			delete(s.Threads, id)
 		}
 	}
+	trimProcessedEvents(s.ProcessedEvents, maxProcessedEventEntries)
+	trimFileCursors(s.Files, maxFileCursorEntries)
+	trimInactiveThreads(s.Threads, maxThreadEntries, now)
+}
+
+func trimProcessedEvents(events map[string]time.Time, limit int) {
+	if len(events) <= limit {
+		return
+	}
+	type entry struct {
+		key string
+		at  time.Time
+	}
+	entries := make([]entry, 0, len(events))
+	for key, at := range events {
+		entries = append(entries, entry{key: key, at: at})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].at.Equal(entries[j].at) {
+			return entries[i].key < entries[j].key
+		}
+		return entries[i].at.Before(entries[j].at)
+	})
+	for _, item := range entries[:len(entries)-limit] {
+		delete(events, item.key)
+	}
+}
+
+func trimFileCursors(files map[string]FileCursor, limit int) {
+	if len(files) <= limit {
+		return
+	}
+	type entry struct {
+		path string
+		at   time.Time
+	}
+	entries := make([]entry, 0, len(files))
+	for path, cursor := range files {
+		entries = append(entries, entry{path: path, at: cursor.LastSeen})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].at.Equal(entries[j].at) {
+			return entries[i].path < entries[j].path
+		}
+		return entries[i].at.Before(entries[j].at)
+	})
+	for _, item := range entries[:len(entries)-limit] {
+		delete(files, item.path)
+	}
+}
+
+func trimInactiveThreads(threads map[string]ThreadState, limit int, now time.Time) {
+	if len(threads) <= limit {
+		return
+	}
+	type entry struct {
+		id string
+		at time.Time
+	}
+	entries := make([]entry, 0, len(threads))
+	for id, thread := range threads {
+		// Never discard a retry that can still run or a recent stopped entry.
+		if thread.Pending != nil || thread.Awaiting != nil {
+			continue
+		}
+		at := thread.LastFailureAt
+		if thread.GoalUpdatedAt.After(at) {
+			at = thread.GoalUpdatedAt
+		}
+		if thread.GoalObservedAt.After(at) {
+			at = thread.GoalObservedAt
+		}
+		if thread.LastAbortedAt.After(at) {
+			at = thread.LastAbortedAt
+		}
+		if thread.Stopped != nil && thread.Stopped.StoppedAt.After(at) {
+			at = thread.Stopped.StoppedAt
+		}
+		if thread.GoalStop != nil && thread.GoalStop.RequestedAt.After(at) {
+			at = thread.GoalStop.RequestedAt
+		}
+		if thread.Stopped != nil && !thread.Stopped.Historical &&
+			(thread.Stopped.StoppedAt.IsZero() || now.Sub(thread.Stopped.StoppedAt) <= stoppedRetryDisplayWindow) {
+			continue
+		}
+		entries = append(entries, entry{id: id, at: at})
+	}
+	if len(threads)-len(entries) >= limit {
+		// Active and visible stopped entries already consume the entire budget.
+		return
+	}
+	removeCount := len(threads) - limit
+	if removeCount > len(entries) {
+		removeCount = len(entries)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].at.Equal(entries[j].at) {
+			return entries[i].id < entries[j].id
+		}
+		return entries[i].at.Before(entries[j].at)
+	})
+	for _, item := range entries[:removeCount] {
+		delete(threads, item.id)
+	}
+}
+
+func writeRuntimeStateAtomic(path string, state RuntimeState) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if len(data) > maxRuntimeStateBytes {
+		return fmt.Errorf("runtime state exceeds %d bytes", maxRuntimeStateBytes)
+	}
+	return writeJSONAtomic(path, state)
 }

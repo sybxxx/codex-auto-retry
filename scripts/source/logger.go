@@ -6,7 +6,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+)
+
+const (
+	maxLogBytes = 5 * 1024 * 1024
+	maxLogFiles = 4 // active log plus three bounded backups
 )
 
 type safeLogger struct {
@@ -20,9 +26,11 @@ func newSafeLogger(path string) (*safeLogger, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	if info, err := os.Stat(path); err == nil && info.Size() > 5*1024*1024 {
-		_ = os.Remove(path + ".1")
-		_ = os.Rename(path, path+".1")
+	// Remove any backup beyond the supported retention window left by an older
+	// build before opening the active log.
+	_ = os.Remove(path + "." + strconv.Itoa(maxLogFiles))
+	if info, err := os.Stat(path); err == nil && info.Size() > maxLogBytes {
+		rotateLogFiles(path)
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -33,6 +41,18 @@ func newSafeLogger(path string) (*safeLogger, error) {
 		logger: log.New(io.Writer(file), "", log.Ldate|log.Ltime|log.LUTC),
 		path:   path,
 	}, nil
+}
+
+func rotateLogFiles(path string) {
+	_ = os.Remove(path + "." + strconv.Itoa(maxLogFiles))
+	for index := maxLogFiles - 2; index >= 1; index-- {
+		source := path + "." + strconv.Itoa(index)
+		destination := path + "." + strconv.Itoa(index+1)
+		_ = os.Remove(destination)
+		_ = os.Rename(source, destination)
+	}
+	_ = os.Remove(path + ".1")
+	_ = os.Rename(path, path+".1")
 }
 
 func (l *safeLogger) Close() error {

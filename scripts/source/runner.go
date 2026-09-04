@@ -58,6 +58,12 @@ type retryLifecycleReader interface {
 	RetryThreadStatus(context.Context, string, string) (string, error)
 }
 
+// sharedBackendMemoryReader is deliberately optional. Test/fallback runners
+// and the official-backend mode do not expose a second process to monitor.
+type sharedBackendMemoryReader interface {
+	SharedBackendMemory(context.Context) (memorySample, error)
+}
+
 var (
 	errControllerTimeout       = errors.New("app controller timed out")
 	errControllerInvalidResult = errors.New("app controller returned an invalid result")
@@ -109,16 +115,11 @@ func (r *appResumeRunner) FailOpenSharedBackend(ctx context.Context) error {
 	if err := config.validate(); err != nil {
 		return err
 	}
-	// Persist the fail-open decision before restoring the endpoint. If cleanup
-	// is interrupted, a later startup still cannot take over Codex's backend.
-	if err := writeJSONAtomic(r.configPath, config); err != nil {
-		cleanupErr := disableSharedAppServer(ctx, filepath.Dir(r.configPath), config)
-		if cleanupErr != nil {
-			return fmt.Errorf("save fail-open setting: %w; cleanup shared backend: %v", err, cleanupErr)
-		}
-		return err
-	}
-	return disableSharedAppServer(ctx, filepath.Dir(r.configPath), config)
+	// Use the same durable marker, cross-process config lock, and ownership
+	// checked cleanup as the startup fail-open path. Runtime failures must not
+	// have a separate write protocol that can race management settings.
+	_, err = failOpenSharedAppServer(ctx, r.configPath, filepath.Dir(r.configPath), config)
+	return err
 }
 
 func (r *appResumeRunner) ReconcileSharedBackendCleanup(ctx context.Context) error {
@@ -140,6 +141,14 @@ func (r *appResumeRunner) RetryThreadStatus(ctx context.Context, threadID, codex
 		return "", errors.New("retry lifecycle reader is unavailable")
 	}
 	return reader.RetryThreadStatus(ctx, threadID, codexHome)
+}
+
+func (r *appResumeRunner) SharedBackendMemory(ctx context.Context) (memorySample, error) {
+	reader, ok := r.controller.(sharedBackendMemoryReader)
+	if !ok {
+		return memorySample{}, errors.New("shared backend memory reader is unavailable")
+	}
+	return reader.SharedBackendMemory(ctx)
 }
 
 func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {

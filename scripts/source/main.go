@@ -166,6 +166,9 @@ func main() {
 		cleanupCancel()
 		return
 	}
+	if warning := config.retrySafetyWarning(); warning != "" {
+		logger.Printf("retry policy warning category=aggressive_limits recovery=%d consecutive=%d", config.MaxRecoveryAttempts, config.MaxConsecutiveRetries)
+	}
 	// A previous fail-open may have been interrupted while config.json was
 	// locked. Resolve that durable marker before any readiness or Ensure call so
 	// an old enabled setting can never recreate a dead endpoint on this startup.

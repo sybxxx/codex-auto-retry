@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const maxAutomaticRecoveryDuration = 30 * time.Minute
+
 func (d *daemon) reconcileStartupState(now time.Time) {
 	for threadID, thread := range d.state.Threads {
 		if thread.Awaiting == nil || thread.Awaiting.RetryTurnID != "" {
@@ -35,6 +37,7 @@ func (d *daemon) reconcileStartupState(now time.Time) {
 }
 
 func (d *daemon) reloadConfigLocked() {
+	wasSharedEnabled := d.config.SharedAppServerEnabled
 	config, err := loadOrCreateConfig(filepath.Join(d.dataDir, "config.json"))
 	if err != nil {
 		d.lastError = err.Error()
@@ -42,6 +45,11 @@ func (d *daemon) reloadConfigLocked() {
 		return
 	}
 	d.config = config
+	if !wasSharedEnabled && config.SharedAppServerEnabled {
+		d.sharedAppServerMemoryGuardTriggered = false
+		d.sharedAppServerMemoryBytes = 0
+		d.lastSharedAppServerMemoryCheck = time.Time{}
+	}
 	if !config.SharedAppServerEnabled {
 		if !controllerFailureNeedsFailOpen(d.controllerState) {
 			d.controllerState = "shared_app_server_disabled"
@@ -140,6 +148,7 @@ func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time
 		thread.GoalHeld = false
 		thread.RecoveryAttempts = 1
 		thread.ConsecutiveRetries = 1
+		thread.RecoveryStartedAt = now
 		recoveryLimit, consecutiveLimit := retryLimits(stopped.Class, d.config)
 		thread.Pending = &PendingRetry{
 			EventKey:            stopped.EventKey,
@@ -371,6 +380,12 @@ func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now tim
 }
 
 func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.Time, thread ThreadState, recoveryAttempt, consecutiveRetry int, originTurnStartedAt time.Time, parentNotified bool) {
+	if thread.RecoveryAttempts == 0 && thread.ConsecutiveRetries == 0 {
+		thread.RecoveryStartedAt = now
+	}
+	if thread.RecoveryStartedAt.IsZero() {
+		thread.RecoveryStartedAt = now
+	}
 	if thread.GoalHeld {
 		if thread.GoalStatus == "blocked" && goalBlockedByFailure(thread.GoalUpdatedAt, item.Event.Timestamp) {
 			thread.GoalHeld = false
@@ -393,10 +408,14 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		return
 	}
 	recoveryLimit, consecutiveLimit := retryLimitsForDecision(decision, d.config)
-	if recoveryAttempt > recoveryLimit || consecutiveRetry > consecutiveLimit {
+	timeLimitExceeded := now.Sub(thread.RecoveryStartedAt) > maxAutomaticRecoveryDuration
+	if timeLimitExceeded || recoveryAttempt > recoveryLimit || consecutiveRetry > consecutiveLimit {
 		completedAttempts := completedRetryCount(recoveryAttempt, recoveryLimit)
 		completedConsecutive := completedRetryCount(consecutiveRetry, consecutiveLimit)
 		reason := retryStopReason(recoveryAttempt, recoveryLimit, consecutiveRetry, consecutiveLimit)
+		if timeLimitExceeded {
+			reason = "recovery_time_limit"
+		}
 		if decision.Class == classEmptyResponse && thread.GoalStatus == "active" {
 			reason = goalEmptyResponseStopReason
 		}

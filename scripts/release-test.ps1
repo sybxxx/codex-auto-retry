@@ -53,6 +53,7 @@ try {
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\startup-approval.ps1',
+        'payload\codex-auto-retry\scripts\shared-server-status.ps1',
         'payload\codex-auto-retry\scripts\path-safety.ps1',
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
@@ -62,6 +63,7 @@ try {
         'payload\codex-auto-retry\scripts\supervisor-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\shared-server-status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry.exe',
@@ -125,6 +127,7 @@ try {
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\install.ps1',
         'payload\codex-auto-retry\scripts\startup-approval.ps1',
+        'payload\codex-auto-retry\scripts\shared-server-status.ps1',
         'payload\codex-auto-retry\scripts\path-safety.ps1',
         'payload\codex-auto-retry\scripts\path-safety-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\safe-disable.ps1',
@@ -136,6 +139,7 @@ try {
         'payload\codex-auto-retry\scripts\smoke-test.ps1',
         'payload\codex-auto-retry\scripts\startup-fail-open-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\shared-app-server-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\shared-server-status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\status.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\environment-smoke-test.ps1'
@@ -146,6 +150,15 @@ try {
         if ($errors.Count -gt 0) {
             throw "PowerShell parse error in $relative`: $($errors[0].Message)"
         }
+    }
+    $sharedStatusSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\shared-server-status.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    if (-not $sharedStatusSource.Contains('Get-CodexAutoRetrySharedServerStatus') -or
+        -not $sharedStatusSource.Contains('CreationDate') -or
+        -not $sharedStatusSource.Contains('Test-CodexAutoRetryTcpEndpoint')) {
+        throw 'Shared-server status does not verify process identity, creation time, and endpoint liveness.'
     }
     $settingsPath = Join-Path $root 'payload\codex-auto-retry\scripts\source\ui\settings.ps1'
     $settingsSource = [System.IO.File]::ReadAllText($settingsPath, [System.Text.UTF8Encoding]::new($false))
@@ -179,6 +192,7 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     if (-not $installerSource.Contains('Set-ConfigSharedMode ([bool]$EnableSharedAppServer)') -or
+        -not $installerSource.Contains('Invoke-CodexAutoRetryConfigLocked') -or
         -not $installerSource.Contains('Assert-CodexAutoRetryHostPath') -or
         -not $installerSource.Contains('-WorkingDirectory $installDir') -or
         -not $installerSource.Contains('-LegacyOwnedEndpoint') -or
@@ -205,6 +219,7 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     if (-not $installerSource.Contains('existing Codex Auto Retry configuration is invalid and was not overwritten') -or
+        -not $environmentSource.Contains('Invoke-CodexAutoRetryConfigLocked') -or
         -not $environmentSource.Contains('Break-glass cleanup must continue even when the settings file is') -or
         -not $environmentSource.Contains('Do not replace it with guessed defaults')) {
         throw 'Installer or safe-disable does not preserve a damaged configuration.'

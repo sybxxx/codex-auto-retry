@@ -333,15 +333,10 @@ func (m *sharedServerManager) updateConfiguredPort(port int) error {
 		return nil
 	}
 	configPath := filepath.Join(m.dataDir, "config.json")
-	config, err := loadOrCreateConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("load config while selecting shared app-server port: %w", err)
-	}
-	config.SharedAppServerPort = port
-	if err := config.validate(); err != nil {
-		return err
-	}
-	if err := writeJSONAtomic(configPath, config); err != nil {
+	if _, err := updateConfigFile(configPath, func(config *Config) error {
+		config.SharedAppServerPort = port
+		return nil
+	}); err != nil {
 		return fmt.Errorf("save selected shared app-server port: %w", err)
 	}
 	m.config.SharedAppServerPort = port
@@ -546,6 +541,23 @@ func (m *sharedServerManager) probe(ctx context.Context) error {
 		return err
 	}
 	return client.Close()
+}
+
+// PrivateMemoryBytes is monitor-only. It verifies the durable ownership
+// record and live command line before reading the Codex app-server's private
+// bytes; it never terminates or reconfigures that process.
+func (m *sharedServerManager) PrivateMemoryBytes(ctx context.Context) (uint64, error) {
+	if m == nil {
+		return 0, errSharedServerUnavailable
+	}
+	state, err := m.readState()
+	if err != nil {
+		return 0, err
+	}
+	if !m.sharedServerStateOwnedForCleanup(state) || !m.ownsProcess(ctx, state) {
+		return 0, errSharedServerOwnershipUnknown
+	}
+	return processPrivateBytes(state.PID)
 }
 
 func (m *sharedServerManager) start(executable string) error {

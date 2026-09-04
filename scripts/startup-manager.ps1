@@ -24,6 +24,7 @@ $configPath = Join-Path $installDir 'config.json'
 $sharedStatePath = Join-Path $installDir 'shared-server.json'
 $runSubKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
 . (Join-Path $PSScriptRoot 'startup-approval.ps1')
+. (Join-Path $PSScriptRoot 'shared-server-status.ps1')
 
 function Open-RunKey {
     param([bool]$Writable)
@@ -237,6 +238,7 @@ function Get-ManagerState {
     $status = Read-JsonOrNull -Path $statusPath
     $config = Read-JsonOrNull -Path $configPath
     $sharedState = Read-JsonOrNull -Path $sharedStatePath
+    $sharedStateReadFailed = (Test-Path -LiteralPath $sharedStatePath -PathType Leaf) -and $null -eq $sharedState
     $processes = @(Get-ManagerProcesses)
     $heartbeatFresh = $false
     if ($status -and $status.last_scan_at) {
@@ -257,21 +259,13 @@ function Get-ManagerState {
     else {
         'unknown'
     }
-    $sharedStateStatus = 'missing'
-    if ($sharedState) {
-        $valid = [string]$sharedState.owner -eq 'codex-auto-retry' -and
-            [int]$sharedState.pid -gt 0 -and
-            [string]$sharedState.endpoint -match '^ws://127\.0\.0\.1:\d+$'
-        if (-not $valid) {
-            $sharedStateStatus = 'invalid'
-        }
-        elseif ($null -ne (Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$sharedState.pid) -ErrorAction SilentlyContinue)) {
-            $sharedStateStatus = 'live'
-        }
-        else {
-            $sharedStateStatus = 'stale'
-        }
+    $expectedSharedPort = if ($config -and $config.PSObject.Properties['shared_app_server_port']) { [int]$config.shared_app_server_port } else { 0 }
+    $sharedVerification = if ($sharedStateReadFailed) {
+        [pscustomobject][ordered]@{ Status = 'unknown'; Reason = 'state_unreadable'; PID = $null; Endpoint = $null }
+    } else {
+        Get-CodexAutoRetrySharedServerStatus -State $sharedState -ExpectedPort $expectedSharedPort
     }
+    $sharedStateStatus = [string]$sharedVerification.Status
     $endpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')
     $manifest = Read-JsonOrNull -Path (Join-Path $pluginTarget '.codex-plugin\plugin.json')
     return [pscustomobject][ordered]@{
@@ -291,6 +285,11 @@ function Get-ManagerState {
         SharedModeEnabled = if ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
         SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($endpoint)
         SharedServerState = $sharedStateStatus
+        SharedServerVerification = [string]$sharedVerification.Reason
+        SharedAppServerMemoryUsageMB = if ($status) { $status.shared_app_server_memory_usage_mb } else { 0 }
+        SharedAppServerMemoryLimitMB = if ($status) { $status.shared_app_server_memory_limit_mb } else { $null }
+        SharedAppServerMemoryGuardTriggered = if ($status) { [bool]$status.shared_app_server_memory_guard_triggered } else { $false }
+        RetrySafetyWarning = if ($status) { [string]$status.retry_safety_warning } else { $null }
         DataDirectoryExists = Test-Path -LiteralPath $installDir -PathType Container
     }
 }

@@ -94,6 +94,12 @@ if it still cannot be replaced, the watchdog keeps its in-memory state, reports
 `state_write_deferred`, and retries persistence on the next scan instead of
 exiting and removing the tray icon.
 
+The state file has hard bounds of 20,000 processed events, 2,000 file cursors,
+and 500 inactive task records, and is rejected above 8 MB. The 5 MB operational
+log rotates into at most three backups. A single automatic recovery chain also
+has a 30-minute elapsed-time circuit breaker. These limits prevent a retry storm
+from growing memory, state, or logs without bound.
+
 ## Windows Tray Controller
 
 The watchdog owns one notification-area icon; it does not install or start a
@@ -363,3 +369,10 @@ shutdown. It does not overwrite that file; it uses the ownership-verified
 the environment backup, stops the matching plugin-owned server, and exits for
 explicit repair. This prevents a damaged configuration from leaving Codex
 connected to a dead plugin port.
+
+The optional shared app-server is monitored without being force-killed. Its
+default private-memory warning limit is 4096 MB; exceeding it disables shared
+mode and defers cleanup until Codex closes. The status panel reports the sample
+and the action. Numeric retry settings above 100 recovery attempts or 20
+consecutive no-progress retries remain available for compatibility but show a
+visible safety warning.

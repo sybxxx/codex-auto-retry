@@ -167,6 +167,20 @@ func (c *sharedAppServerController) RetryThreadStatus(ctx context.Context, threa
 	return thread.Thread.Status.Type, nil
 }
 
+func (c *sharedAppServerController) SharedBackendMemory(ctx context.Context) (memorySample, error) {
+	reader, ok := c.server.(interface {
+		PrivateMemoryBytes(context.Context) (uint64, error)
+	})
+	if !ok {
+		return memorySample{}, errors.New("shared backend memory reader is unavailable")
+	}
+	bytes, err := reader.PrivateMemoryBytes(ctx)
+	if err != nil {
+		return memorySample{}, err
+	}
+	return memorySample{PrivateBytes: bytes, CheckedAt: time.Now().UTC()}, nil
+}
+
 func (c *sharedAppServerController) Dispatch(
 	ctx context.Context,
 	threadID string,

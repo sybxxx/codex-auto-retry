@@ -129,8 +129,10 @@ UI surface that caused both reported failures.
    times, but no conversation content.
 3. The MCP App receives structured tool output, refreshes approximately every
    five seconds, and updates each countdown locally once per second.
-4. `set_retry_prompt` atomically updates only `config.json`. The runner reloads
-   that fallback field immediately before dispatching a normal-conversation retry.
+ 4. `set_retry_prompt` atomically updates only `config.json`. The runner reloads
+    that fallback field immediately before dispatching a normal-conversation retry.
+    Every config read-modify-write uses the sidecar `config.json.lock`, shared
+    by the worker, MCP process, tray settings helper, and installer.
 5. `set_auto_retry_paused` atomically updates `control.json`. The watchdog keeps
    scanning and tracking active turns while paused, but starts no new retry.
 6. `retry_now` and `cancel_retry` create unique atomic command files. During its
@@ -225,6 +227,10 @@ worker restarts.
   bounded interval even with an empty retry queue. An exited or unresponsive
   owned server is restarted through the same ownership checks; an occupied or
   unowned port remains fail-open.
+- The daemon samples the owned app-server's private memory without terminating
+  it. The 4 GB default monitor limit disables shared mode and defers cleanup
+  while Desktop is live; it never force-kills Codex. The watchdog's own memory
+  guard remains a separate hard shutdown boundary.
 - Missing or invalid persisted task settings fail closed and reschedule only
   that task; App defaults are never substituted during recovery.
 - Subagent recovery validates a deterministic event ID, loads an unloaded
@@ -275,6 +281,12 @@ clears the retry state, records the explicit stop reason, and waits for a manual
 restart command after Codex is open again. This prevents a closed desktop from
 causing an unbounded background polling loop.
 
+An elapsed-time circuit breaker stops one automatic recovery chain after 30
+minutes, even when larger numeric limits are configured. The panel reports
+`recovery_time_limit`. Configurations above the recommended 100 recovery
+attempts or 20 consecutive no-progress retries produce a visible warning
+instead of being silently rewritten.
+
 Every task has separate pending, awaiting, recovery-attempt, consecutive
 no-progress, and dispatch-failure state.
 Due tasks are dispatched up to `max_parallel_retries` instead of competing for
@@ -317,6 +329,12 @@ bounded backoff. If the target remains temporarily locked, the daemon retains
 the authoritative in-memory state, publishes `state_write_deferred`, and tries
 again on the next scan. A persistence hiccup is therefore visible but does not
 terminate the watchdog or its tray controller.
+
+The state writer also applies hard collection bounds (20,000 processed events,
+2,000 file cursors, and 500 inactive task records) and rejects a state file
+larger than 8 MB. The logger rotates the active 5 MB file into at most three
+backups. These limits contain high-frequency retry storms without deleting an
+active retry.
 
 A pending retry moves to `awaiting` before background dispatch begins, so a
 fast `task_started` cannot be lost. A matching start attaches its turn ID. A

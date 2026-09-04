@@ -12,6 +12,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Startup fail-open smoke test failed.' }
 $sharedResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'shared-app-server-smoke-test.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Shared app-server recovery smoke test failed.' }
 
+$sharedStatusResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'shared-server-status-smoke-test.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Shared-server status smoke test failed.' }
+
 $environmentResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'environment-smoke-test.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Environment ownership smoke test failed.' }
 
@@ -26,6 +29,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Supervisor smoke test failed.' }
     StartupApproval = ($startupApprovalResult -join [Environment]::NewLine)
     StartupFailOpen = ($startupResult -join [Environment]::NewLine)
     SharedAppServer = ($sharedResult -join [Environment]::NewLine)
+    SharedServerStatus = ($sharedStatusResult -join [Environment]::NewLine)
     EnvironmentOwnership = ($environmentResult -join [Environment]::NewLine)
     SafeDisable = ($safeDisableResult -join [Environment]::NewLine)
     Supervisor = ($supervisorResult -join [Environment]::NewLine)

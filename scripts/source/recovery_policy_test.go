@@ -118,6 +118,25 @@ func TestCCSwitchUpstream400UsesBoundedRecoveryChain(t *testing.T) {
 	}
 }
 
+func TestRecoveryChainStopsAtTimeSafetyLimit(t *testing.T) {
+	config := isolatedConfig(t.TempDir())
+	config.MaxRecoveryAttempts = maxRecoveryAttemptsLimit
+	config.MaxConsecutiveRetries = maxConsecutiveRetriesLimit
+	d := newTestDaemon(t, config, successfulRunner())
+	threadID := "019fa94e-0103-7183-b405-36bd307b6dc0"
+	now := time.Date(2026, 9, 4, 1, 0, 0, 0, time.UTC)
+	thread := ThreadState{
+		RecoveryAttempts:   10,
+		ConsecutiveRetries: 10,
+		RecoveryStartedAt:  now.Add(-maxAutomaticRecoveryDuration - time.Second),
+	}
+	d.scheduleFailureLocked(failureScannedEvent(threadID, "retry", now), "event-time-limit", now, thread, 11, 11, time.Time{}, false)
+	stopped := d.state.Threads[threadID].Stopped
+	if stopped == nil || stopped.Reason != "recovery_time_limit" {
+		t.Fatalf("recovery chain did not stop at its elapsed-time safety limit: %+v", stopped)
+	}
+}
+
 func TestProgressOutsideCorrelatedRetryDoesNotResetCounter(t *testing.T) {
 	threadID := "019fa94e-0103-7183-b405-36bd307b6db5"
 	now := time.Now().UTC()

@@ -238,23 +238,25 @@ function Recover-IncompleteInstall {
 
 function Set-ConfigSharedMode {
     param([bool]$Enabled)
-    $config = $null
-    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-        try {
-            $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+    Invoke-CodexAutoRetryConfigLocked -ConfigPath $configPath -ScriptBlock {
+        $config = $null
+        if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+            try {
+                $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+            }
+            catch {
+                throw "The existing Codex Auto Retry configuration is invalid and was not overwritten: $configPath"
+            }
         }
-        catch {
-            throw "The existing Codex Auto Retry configuration is invalid and was not overwritten: $configPath"
+        if ($null -eq $config) {
+            $config = [pscustomobject]@{}
         }
+        if ($null -eq $config.PSObject.Properties['shared_app_server_enabled']) {
+            $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $Enabled
+        }
+        else { $config.shared_app_server_enabled = $Enabled }
+        Write-CodexAutoRetryJsonAtomic -Path $configPath -Value $config
     }
-    if ($null -eq $config) {
-        $config = [pscustomobject]@{}
-    }
-    if ($null -eq $config.PSObject.Properties['shared_app_server_enabled']) {
-        $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $Enabled
-    }
-    else { $config.shared_app_server_enabled = $Enabled }
-    Write-CodexAutoRetryJsonAtomic -Path $configPath -Value $config
 }
 
 function Wait-Heartbeat {

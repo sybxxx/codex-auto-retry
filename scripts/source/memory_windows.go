@@ -25,9 +25,25 @@ type processMemoryCounters struct {
 }
 
 func currentProcessPrivateBytes() (uint64, error) {
+	return privateBytesForHandle(windows.CurrentProcess())
+}
+
+func processPrivateBytes(pid int) (uint64, error) {
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid process id: %d", pid)
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ, false, uint32(pid))
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseHandle(handle)
+	return privateBytesForHandle(handle)
+}
+
+func privateBytesForHandle(handle windows.Handle) (uint64, error) {
 	counters := processMemoryCounters{CB: uint32(unsafe.Sizeof(processMemoryCounters{}))}
 	result, _, callErr := processMemoryInfo.Call(
-		uintptr(windows.CurrentProcess()),
+		uintptr(handle),
 		uintptr(unsafe.Pointer(&counters)),
 		uintptr(counters.CB),
 	)

@@ -55,6 +55,12 @@ While shared mode is enabled, readiness is also checked periodically when no
 retry is queued. A plugin-owned server that exits is restarted after the same
 ownership and WebSocket health checks; an unowned listener is never terminated.
 
+The same readiness boundary samples the owned server's private memory. The
+default monitor limit is 4096 MB. An over-limit sample records
+`shared_app_server_memory_limit_exceeded`, disables shared mode, and defers
+cleanup while Desktop is live; it never force-kills Codex. The watchdog has a
+separate private-memory guard and alert for its own process.
+
 The sign-in entry launches a small supervisor. It starts the actual watchdog
 worker, restarts it after an unexpected exit with a one-second-to-one-minute
 backoff, and records only lifecycle categories. A clean tray exit, uninstall,
@@ -145,3 +151,8 @@ deliberately before enabling shared mode again.
 All status consumers verify both PID/path and heartbeat age. A stale status file
 is therefore shown as `backend service not running`, even when it still
 contains an old `running=true` value.
+
+The status script and startup manager additionally verify the shared state
+record's executable hash, exact command line, process creation time, loopback
+endpoint, and live TCP listener. A matching PID alone is never displayed as a
+healthy shared backend.

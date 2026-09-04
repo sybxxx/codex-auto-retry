@@ -121,6 +121,7 @@ type StoppedRetry struct {
 type ThreadState struct {
 	RecoveryAttempts    int              `json:"recovery_attempts,omitempty"`
 	ConsecutiveRetries  int              `json:"consecutive_retries,omitempty"`
+	RecoveryStartedAt   time.Time        `json:"recovery_started_at,omitempty"`
 	LegacyFailures      int              `json:"consecutive_failures,omitempty"`
 	LastFailureAt       time.Time        `json:"last_failure_at,omitempty"`
 	LastAutoRetryAt     time.Time        `json:"last_auto_retry_at,omitempty"`
@@ -199,20 +200,24 @@ type DispatchResult struct {
 }
 
 type StatusSnapshot struct {
-	Version                string    `json:"version"`
-	Running                bool      `json:"running"`
-	PID                    int       `json:"pid"`
-	StartedAt              time.Time `json:"started_at"`
-	LastScanAt             time.Time `json:"last_scan_at"`
-	WatchedRoots           int       `json:"watched_roots"`
-	PendingRetries         int       `json:"pending_retries"`
-	ActiveRetries          int       `json:"active_retries"`
-	Paused                 bool      `json:"paused"`
-	SharedAppServerEnabled bool      `json:"shared_app_server_enabled"`
-	ControllerState        string    `json:"controller_state,omitempty"`
-	LastError              string    `json:"last_error,omitempty"`
-	MemoryUsageMB          int64     `json:"memory_usage_mb,omitempty"`
-	MemoryLimitMB          int       `json:"memory_limit_mb,omitempty"`
-	MemoryGuardTriggered   bool      `json:"memory_guard_triggered,omitempty"`
-	LogPath                string    `json:"log_path"`
+	Version                             string    `json:"version"`
+	Running                             bool      `json:"running"`
+	PID                                 int       `json:"pid"`
+	StartedAt                           time.Time `json:"started_at"`
+	LastScanAt                          time.Time `json:"last_scan_at"`
+	WatchedRoots                        int       `json:"watched_roots"`
+	PendingRetries                      int       `json:"pending_retries"`
+	ActiveRetries                       int       `json:"active_retries"`
+	Paused                              bool      `json:"paused"`
+	SharedAppServerEnabled              bool      `json:"shared_app_server_enabled"`
+	ControllerState                     string    `json:"controller_state,omitempty"`
+	LastError                           string    `json:"last_error,omitempty"`
+	MemoryUsageMB                       int64     `json:"memory_usage_mb,omitempty"`
+	MemoryLimitMB                       int       `json:"memory_limit_mb,omitempty"`
+	MemoryGuardTriggered                bool      `json:"memory_guard_triggered,omitempty"`
+	SharedAppServerMemoryUsageMB        int64     `json:"shared_app_server_memory_usage_mb,omitempty"`
+	SharedAppServerMemoryLimitMB        int       `json:"shared_app_server_memory_limit_mb,omitempty"`
+	SharedAppServerMemoryGuardTriggered bool      `json:"shared_app_server_memory_guard_triggered,omitempty"`
+	RetrySafetyWarning                  string    `json:"retry_safety_warning,omitempty"`
+	LogPath                             string    `json:"log_path"`
 }
