@@ -156,6 +156,8 @@ try {
         [System.Text.UTF8Encoding]::new($false)
     )
     if (-not $sharedStatusSource.Contains('Get-CodexAutoRetrySharedServerStatus') -or
+        -not $sharedStatusSource.Contains('Get-CodexAutoRetryStatusProperty') -or
+        -not $sharedStatusSource.Contains('legacy_status_schema') -or
         -not $sharedStatusSource.Contains('CreationDate') -or
         -not $sharedStatusSource.Contains('Test-CodexAutoRetryTcpEndpoint')) {
         throw 'Shared-server status does not verify process identity, creation time, and endpoint liveness.'
@@ -232,9 +234,16 @@ try {
         (Join-Path $root 'payload\codex-auto-retry\scripts\status.ps1'),
         [System.Text.UTF8Encoding]::new($false)
     )
+    $managerSource = [System.IO.File]::ReadAllText(
+        (Join-Path $root 'payload\codex-auto-retry\scripts\startup-manager.ps1'),
+        [System.Text.UTF8Encoding]::new($false)
+    )
     if (-not $deploySource.Contains('Assert-CodexAutoRetryHostPath') -or
-        -not $statusSource.Contains('runtime_path_redirected')) {
-        throw 'Release does not reject or report a redirected runtime path.'
+        -not $statusSource.Contains('runtime_path_redirected') -or
+        -not $statusSource.Contains('Get-CodexAutoRetryStatusProperty') -or
+        -not $managerSource.Contains('Get-CodexAutoRetryStatusProperty') -or
+        -not $managerSource.Contains('StatusCompatibility')) {
+        throw 'Release does not enforce runtime-path or legacy-status compatibility guards.'
     }
     $runtimeUninstallSource = [System.IO.File]::ReadAllText(
         (Join-Path $root 'payload\codex-auto-retry\scripts\uninstall.ps1'),

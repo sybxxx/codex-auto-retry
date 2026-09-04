@@ -112,7 +112,9 @@ server installation, startup mode, endpoint presence, shared-server state, the
 last scan time, pending and active retry counts, shared app-server memory
 usage/limit, and the privacy-safe log path. The status and startup manager
 verify the shared server's executable hash, command line, creation time, exact
-loopback endpoint, and live listener; a matching PID alone is not `live`.
+loopback endpoint, and live listener; a matching PID alone is not `live`. They
+also report `legacy_status_schema` when an older watchdog is still writing a
+valid status file, rather than failing on missing newer fields.
 Also report the separate `StartupApproved` state (`enabled`, `disabled`, or
 `unknown`); a `supervise` Run value with `StartupApproved=disabled` will not
 start at sign-in. Treat that combination as a startup configuration defect,

@@ -40,8 +40,9 @@ function Test-CodexAutoRetryHeartbeatFresh {
 }
 
 $status = $null
+$statusReadFailed = $false
 if (Test-Path -LiteralPath $statusPath) {
-    try { $status = Get-Content -Raw -Encoding UTF8 -LiteralPath $statusPath | ConvertFrom-Json } catch { $status = $null }
+    try { $status = Get-Content -Raw -Encoding UTF8 -LiteralPath $statusPath | ConvertFrom-Json } catch { $status = $null; $statusReadFailed = $true }
 }
 $statusPid = if ($status -and [int]$status.pid -gt 0) { [int]$status.pid } else { 0 }
 $process = if ($statusPid -gt 0) {
@@ -75,6 +76,7 @@ if (Test-Path -LiteralPath $sharedStatePath) {
     try { $sharedState = Get-Content -Raw -Encoding UTF8 -LiteralPath $sharedStatePath | ConvertFrom-Json } catch { $sharedState = $null; $sharedStateReadFailed = $true }
 }
 $expectedSharedPort = if ($config -and $config.PSObject.Properties['shared_app_server_port']) { [int]$config.shared_app_server_port } else { 0 }
+$statusCompatibility = Get-CodexAutoRetryStatusCompatibility -Status $status -ReadFailed $statusReadFailed
 $sharedVerification = if ($sharedStateReadFailed) {
     [pscustomobject][ordered]@{ Status = 'unknown'; Reason = 'state_unreadable'; PID = $null; Endpoint = $null }
 } else {
@@ -109,10 +111,12 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($userEndpoint)
     SharedServerState = $sharedStateStatus
     SharedServerVerification = [string]$sharedVerification.Reason
-    SharedAppServerMemoryUsageMB = if ($status) { $status.shared_app_server_memory_usage_mb } else { 0 }
-    SharedAppServerMemoryLimitMB = if ($status) { $status.shared_app_server_memory_limit_mb } else { $null }
-    SharedAppServerMemoryGuardTriggered = if ($status) { [bool]$status.shared_app_server_memory_guard_triggered } else { $false }
-    RetrySafetyWarning = if ($status) { [string]$status.retry_safety_warning } else { $null }
+    SharedAppServerMemoryUsageMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_usage_mb' -Default 0
+    SharedAppServerMemoryLimitMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_limit_mb' -Default $null
+    SharedAppServerMemoryGuardTriggered = [bool](Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_guard_triggered' -Default $false)
+    RetrySafetyWarning = [string](Get-CodexAutoRetryStatusProperty -Status $status -Name 'retry_safety_warning' -Default '')
+    StatusCompatibility = $statusCompatibility
+    StatusCompatibilityMessage = Get-CodexAutoRetryStatusCompatibilityMessage -Status $statusCompatibility
     CodexRestartRequired = if ($runtimePathRedirected) { $false } elseif ($status) { [string]$status.controller_state -eq 'codex_restart_required' } else { $false }
     LastError = if ($runtimePathRedirected) { 'runtime_path_redirected' } elseif ($status) { $status.last_error } else { $null }
     LogPath = Join-Path $installDir 'logs\daemon.log'

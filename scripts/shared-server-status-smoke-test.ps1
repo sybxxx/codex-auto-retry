@@ -6,6 +6,12 @@ $helper = Join-Path $PSScriptRoot 'shared-server-status.ps1'
 if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'shared-server-status.ps1 is missing.' }
 . $helper
 
+$legacyStatus = [pscustomobject]@{ version = '0.7.9'; running = $true; pending_retries = 0; active_retries = 0 }
+if ((Get-CodexAutoRetryStatusCompatibility -Status $legacyStatus) -ne 'legacy_status_schema' -or
+    (Get-CodexAutoRetryStatusProperty -Status $legacyStatus -Name 'shared_app_server_memory_usage_mb' -Default 0) -ne 0) {
+    throw 'Legacy status data was not handled with compatibility defaults.'
+}
+
 $missing = Get-CodexAutoRetrySharedServerStatus -State $null
 if ($missing.Status -ne 'missing') { throw "Missing state was not reported as missing: $($missing | ConvertTo-Json -Compress)" }
 

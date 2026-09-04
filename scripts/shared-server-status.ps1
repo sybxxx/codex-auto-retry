@@ -1,6 +1,46 @@
 # Shared process verification used by status.ps1 and startup-manager.ps1.
 # Keep this read-only: it must never stop a process or mutate the endpoint.
 
+function Get-CodexAutoRetryStatusProperty {
+    param(
+        [AllowNull()]$Status,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+    if ($null -eq $Status) { return $Default }
+    $property = $Status.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $Default }
+    return $property.Value
+}
+
+function Get-CodexAutoRetryStatusCompatibility {
+    param(
+        [AllowNull()]$Status,
+        [bool]$ReadFailed = $false
+    )
+    if ($ReadFailed) { return 'status_unreadable' }
+    if ($null -eq $Status) { return 'status_missing' }
+    foreach ($name in @(
+        'shared_app_server_memory_usage_mb',
+        'shared_app_server_memory_limit_mb',
+        'shared_app_server_memory_guard_triggered',
+        'retry_safety_warning'
+    )) {
+        if ($null -eq $Status.PSObject.Properties[$name]) { return 'legacy_status_schema' }
+    }
+    return 'current'
+}
+
+function Get-CodexAutoRetryStatusCompatibilityMessage {
+    param([string]$Status)
+    switch ($Status) {
+        'legacy_status_schema' { return 'Legacy status format: readable, some new metrics are unavailable' }
+        'status_unreadable' { return 'Status file is unreadable' }
+        'status_missing' { return 'Status file has not been generated' }
+        default { return 'Status format matches the current manager' }
+    }
+}
+
 function ConvertTo-CodexAutoRetryDateTimeOffset {
     param([AllowNull()]$Value)
     try {

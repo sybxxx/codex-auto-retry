@@ -238,6 +238,7 @@ function Get-ManagerState {
     $status = Read-JsonOrNull -Path $statusPath
     $config = Read-JsonOrNull -Path $configPath
     $sharedState = Read-JsonOrNull -Path $sharedStatePath
+    $statusReadFailed = (Test-Path -LiteralPath $statusPath -PathType Leaf) -and $null -eq $status
     $sharedStateReadFailed = (Test-Path -LiteralPath $sharedStatePath -PathType Leaf) -and $null -eq $sharedState
     $processes = @(Get-ManagerProcesses)
     $heartbeatFresh = $false
@@ -260,6 +261,7 @@ function Get-ManagerState {
         'unknown'
     }
     $expectedSharedPort = if ($config -and $config.PSObject.Properties['shared_app_server_port']) { [int]$config.shared_app_server_port } else { 0 }
+    $statusCompatibility = Get-CodexAutoRetryStatusCompatibility -Status $status -ReadFailed $statusReadFailed
     $sharedVerification = if ($sharedStateReadFailed) {
         [pscustomobject][ordered]@{ Status = 'unknown'; Reason = 'state_unreadable'; PID = $null; Endpoint = $null }
     } else {
@@ -286,10 +288,12 @@ function Get-ManagerState {
         SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($endpoint)
         SharedServerState = $sharedStateStatus
         SharedServerVerification = [string]$sharedVerification.Reason
-        SharedAppServerMemoryUsageMB = if ($status) { $status.shared_app_server_memory_usage_mb } else { 0 }
-        SharedAppServerMemoryLimitMB = if ($status) { $status.shared_app_server_memory_limit_mb } else { $null }
-        SharedAppServerMemoryGuardTriggered = if ($status) { [bool]$status.shared_app_server_memory_guard_triggered } else { $false }
-        RetrySafetyWarning = if ($status) { [string]$status.retry_safety_warning } else { $null }
+        SharedAppServerMemoryUsageMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_usage_mb' -Default 0
+        SharedAppServerMemoryLimitMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_limit_mb' -Default $null
+        SharedAppServerMemoryGuardTriggered = [bool](Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_guard_triggered' -Default $false)
+        RetrySafetyWarning = [string](Get-CodexAutoRetryStatusProperty -Status $status -Name 'retry_safety_warning' -Default '')
+        StatusCompatibility = $statusCompatibility
+        StatusCompatibilityMessage = Get-CodexAutoRetryStatusCompatibilityMessage -Status $statusCompatibility
         DataDirectoryExists = Test-Path -LiteralPath $installDir -PathType Container
     }
 }
