@@ -11,6 +11,9 @@
 | `scripts/status.ps1` | Reads the installed heartbeat, verifies PID/path and age, and reports stale or app-sandbox-redirected services, startup mode, StartupApproved state, endpoint presence, strict shared-server verification, memory safeguards, and legacy status-schema compatibility without inspecting conversation content. |
 | `scripts/startup-manager.ps1` | Provides a standalone status/start/stop/enable/disable/safe-disable/uninstall manager with ownership checks, synchronized StartupApproved state, strict shared-server verification, legacy status-schema compatibility, and a graphical Windows Forms view. |
 | `scripts/shared-server-status.ps1` | Shared read-only verifier for executable hash, exact app-server command line, process creation time, loopback endpoint, and live listener. |
+| `scripts/launch-codex.ps1` | Explicit process-scoped Desktop launcher: current-user package discovery, fresh worker/strict shared health checks, official fallback, existing-Desktop refusal, launch mutex and bounded last-result record. Never publishes global routing or starts/stops the service. |
+| `scripts/launch-codex-smoke-test.ps1` | Isolated route-selection regressions and actual substitute-child environment checks; never launches real Codex. |
+| `scripts/install-routing-smoke-test.ps1` | Simulates interrupted install/rollback with random test-only registry values; proves owned routes are not republished and the old worker is not restarted. |
 | `scripts/startup-approval.ps1` | Uses the Windows current-user Registry API to classify and update only the plugin's `StartupApproved\Run\CodexAutoRetry` marker while preserving other startup values. |
 | `scripts/install.ps1` | Rejects app-sandbox path redirection, then transactionally stages and verifies binaries, defaults to fail-open, optionally enables the shared app-server after health checks, migrates the per-user startup entry and approval to supervised/enabled state, and rolls both back on failure. |
 | `scripts/path-safety.ps1` | Detects Windows package redirection or directory links before runtime installation can be mistaken for a host installation. |
@@ -44,6 +47,7 @@ Source code lives under `scripts/source`.
 | Module | Ownership |
 | --- | --- |
 | `main.go` | Process startup, supervised worker shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
+| `environment_isolation_windows_test.go` | Redirects all Go test routing registry operations to a unique test-only name so even an interrupted suite cannot modify live Desktop routing. |
 | `supervisor.go` | Stable sign-in supervisor, bounded worker restart backoff, intentional-stop marker handling, shared-backend lifecycle ownership across worker restarts, and privacy-safe lifecycle logging. |
 | `daemon.go` | Scan loop, bounded parallel dispatch, generic controller lifecycle, acknowledgement timeouts, and status publication. |
 | `retry_state.go` | Generic retry transitions, dual attempt limits, visible-progress resets, startup reconciliation, later external-turn attribution, and management command application. |
@@ -93,7 +97,7 @@ returned by `ManagementSnapshot`.
 | `%LOCALAPPDATA%\CodexAutoRetry` | Supervisor/worker and MCP executables, configuration, controls, commands, state, heartbeat, shared-server ownership, environment backup, locks, stop signals, and logs. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Current-user startup entry named `CodexAutoRetry`. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` | Windows sign-in approval marker for `CodexAutoRetry`, read and updated independently from the `Run` command. |
-| `HKCU\Environment\CODEX_APP_SERVER_WS_URL` | Optional loopback WebSocket endpoint; written only after explicit shared-mode health checks, with ownership backup and safe restoration. |
+| `HKCU\Environment\CODEX_APP_SERVER_WS_URL` | Legacy routing surface, no longer published. Migration retires plugin-owned values; foreign values remain untouched. The safe launcher supplies only a child environment value. |
 
 ## Release Layout
 

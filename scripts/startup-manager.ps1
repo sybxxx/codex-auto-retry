@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('gui', 'status', 'enable', 'disable', 'start', 'stop', 'safe-disable', 'uninstall')]
+    [ValidateSet('gui', 'status', 'enable', 'disable', 'start', 'stop', 'launch-codex', 'safe-disable', 'uninstall')]
     [string]$Action = 'gui',
     [switch]$RemoveData,
     [switch]$NoPrompt,
@@ -286,6 +286,8 @@ function Get-ManagerState {
         StartupApproved = $startupApproval.Status
         SharedModeEnabled = if ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
         SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($endpoint)
+        DesktopLaunchMode = Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_launch_mode' -Default 'legacy_unprotected'
+        SafeLauncher = Join-Path $PSScriptRoot 'launch-codex.ps1'
         SharedServerState = $sharedStateStatus
         SharedServerVerification = [string]$sharedVerification.Reason
         SharedAppServerMemoryUsageMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_usage_mb' -Default 0
@@ -389,6 +391,10 @@ function Invoke-ManagerAction {
         'disable' { $null = Remove-ManagedStartup; return Get-ManagerState }
         'start' { return Start-ManagedService }
         'stop' { return Stop-ManagedService }
+        'launch-codex' {
+            $null = Invoke-ManagedScript -Path (Join-Path $PSScriptRoot 'launch-codex.ps1') -Arguments @('-DataDir', $installDir)
+            return Get-ManagerState
+        }
         'safe-disable' { return Invoke-ManagerSafeDisable }
         'uninstall' {
             if ($RemoveData -and -not $NoPrompt) {
@@ -444,8 +450,8 @@ function Show-Manager {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'Codex Auto Retry Startup Manager'
     $form.StartPosition = 'CenterScreen'
-    $form.Size = New-Object System.Drawing.Size(720, 560)
-    $form.MinimumSize = New-Object System.Drawing.Size(620, 480)
+    $form.Size = New-Object System.Drawing.Size(720, 600)
+    $form.MinimumSize = New-Object System.Drawing.Size(620, 540)
 
     $title = New-Object System.Windows.Forms.Label
     $title.Text = 'Codex Auto Retry Startup Manager'
@@ -476,7 +482,7 @@ function Show-Manager {
     $buttons.WrapContents = $true
     $buttons.Anchor = 'Bottom,Left,Right'
     $buttons.Location = New-Object System.Drawing.Point(18, 420)
-    $buttons.Size = New-Object System.Drawing.Size(668, 84)
+    $buttons.Size = New-Object System.Drawing.Size(668, 124)
     $buttons.Padding = New-Object System.Windows.Forms.Padding(0)
     $form.Controls.Add($buttons)
 
@@ -487,6 +493,7 @@ function Show-Manager {
     $buttons.Controls.Add($refresh)
 
     $definitions = @(
+        @('Launch Codex safely', 'launch-codex', $false),
         @('Enable startup', 'enable', $false),
         @('Disable startup', 'disable', $false),
         @('Start service', 'start', $false),
@@ -562,6 +569,11 @@ function Show-Manager {
     $refresh.Add_Click({ & $refreshView }.GetNewClosure())
     $form.Add_Shown({
         Hide-ManagerConsoleWindow
+        # A hidden script host can also suppress the first ShowWindow call.
+        # Explicitly show this dialog, never the console or a Codex window.
+        if ('CodexAutoRetry.NativeWindow' -as [type]) {
+            [void][CodexAutoRetry.NativeWindow]::ShowWindow($form.Handle, 1)
+        }
         & $refreshView
         $form.Activate()
     }.GetNewClosure())

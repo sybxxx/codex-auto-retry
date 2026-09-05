@@ -10,7 +10,43 @@ The plugin has two deliberately separate modes:
 - Shared mode (explicit): the management panel or installer switch starts the
   plugin-owned loopback server, verifies the endpoint, WebSocket handshake,
   executable/version marker, PID, command line, and Codex home, then publishes
-  the endpoint. A failed check does not change the environment.
+  the endpoint to the explicit safe launcher's child environment only. A failed
+  check never publishes a persistent environment variable.
+
+## Process-Scoped Desktop Launch
+
+Persistent user routing has been retired. `scripts/launch-codex.ps1` (also
+available as `安全启动Codex.vbs` and the startup manager's `Launch Codex safely`
+button) inspects the installed worker's fresh `desktop_launch_mode=process_scoped`
+status, worker identity, shared-server ownership and WebSocket health. It gives
+only the new Desktop process the verified endpoint. Missing, old, stopped or
+unhealthy services select the official backend instead. `-Official` explicitly
+selects that backend; `-CheckOnly` performs read-only preflight without opening
+Desktop or writing a result record.
+
+The launcher removes `CODEX_APP_SERVER_WS_URL` from the child environment before
+choosing a route, including stale inherited values. It does not change the
+parent environment, registry, account, provider configuration, official
+shortcuts, protocol handlers or update entry points. An existing Desktop or
+uncertain process identity blocks launch; no process is killed or focused.
+A bounded launch mutex prevents concurrent safe-launch clicks. The current-user
+OpenAI.Codex package supplies the executable path, not a saved versioned path.
+
+Ordinary Codex launches no longer depend on the watchdog after old plugin-owned
+persistent routing has been retired. Such launches use the official backend
+and do not support this plugin's silent recovery. A missing/disabled Windows
+startup approval can therefore disable retries without making Codex unbootable.
+Foreign persistent user routes are preserved, not claimed to be safe or owned.
+After migration, existing shells may still carry their old environment until
+they restart or the user signs out. The safe launcher sanitizes its child copy.
+
+This prevents a plugin-owned route surviving a reboot. It does not promise that
+a shared server cannot fail between preflight and connection, or that a Codex
+update's self-relaunch discards its inherited route. The last bounded
+`desktop-launch.json` record says `launch_requested`, not "connected". Actual
+recovery additionally requires an established Desktop TCP connection to the
+expected shared port. Real packaged-Desktop login/update behavior and a full
+reboot remain controlled manual acceptance gates.
 
 The default loopback port is `49621`. The watchdog binds it before launching
 Codex so Windows-excluded ranges and occupied ports can be reported separately
@@ -39,11 +75,10 @@ transport, the watchdog disables shared mode, restores the official endpoint,
 and stops the affected retry instead of repeatedly sending requests to a bad
 backend.
 
-If the stored shared-mode flag is still enabled but `CODEX_APP_SERVER_WS_URL`
-has disappeared, readiness first verifies the plugin-owned server state and
-restores the recorded endpoint, then broadcasts the environment change. A
-different current user value is treated as an ownership conflict and is never
-overwritten; the watchdog fails open and reports that conflict explicitly.
+Readiness retires only legacy plugin-owned persistent routing; it never restores
+a missing shared endpoint into the user environment. A different current user
+value is treated as an ownership conflict and is never overwritten; the
+watchdog fails open and reports that conflict explicitly.
 
 An upgrade may find a still-running app-server recorded by an older plugin
 release. If its owner marker, executable path and hash, loopback endpoint, Codex
@@ -95,10 +130,15 @@ backup, and stops only the matching plugin-owned process. The watchdog then
 stops so the damaged configuration can be repaired explicitly; Codex is not
 left pointed at a dead plugin endpoint.
 
-Installation is transactional. Candidate binaries are staged and hashed before
+Installation requires Desktop to be fully closed, even in official mode.
+It is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
 environment ownership, and the previous binaries are captured; a failed
-heartbeat or shared-mode health check restores them. Runtime state and chat
+heartbeat or shared-mode health check restores the binaries and startup state,
+but leaves the previous worker stopped with shared mode disabled. Rollback and
+interrupted-journal recovery never republish a recorded plugin endpoint, even
+when an older backup incorrectly calls that same endpoint its previous value.
+Foreign current user values and unrelated retry settings are preserved. Runtime state and chat
 data are not part of the rollback. The Windows environment-change broadcast is
 advisory and runs through a minimal system process, so an oversized parent
 environment cannot make the transaction fail after the durable registry write.

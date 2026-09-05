@@ -116,6 +116,21 @@ function Disable-CodexAutoRetrySharedMode {
     })
 }
 
+function Disable-CodexAutoRetryLegacyRouting {
+    param([Parameter(Mandatory = $true)][string]$DataDir)
+    $ownedEndpoint = $null
+    $statePath = Join-Path $DataDir 'shared-server.json'
+    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        try {
+            $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json
+            if ([string]$state.owner -eq 'codex-auto-retry' -and
+                [string]$state.endpoint -match '^ws://127\.0\.0\.1:\d+$') { $ownedEndpoint = [string]$state.endpoint }
+        } catch { }
+    }
+    $null = Disable-CodexAutoRetrySharedMode -DataDir $DataDir
+    $null = Restore-CodexAutoRetrySharedEnvironment -DataDir $DataDir -LegacyOwnedEndpoint $ownedEndpoint
+}
+
 function Get-CodexAutoRetrySharedAppServerPort {
     param([Parameter(Mandatory = $true)][string]$ConfigPath)
     $defaultPort = 49621
@@ -136,6 +151,11 @@ function Set-CodexAutoRetrySharedEnvironment {
         [string]$EnvironmentName = 'CODEX_APP_SERVER_WS_URL',
         [switch]$SkipBroadcast
     )
+    # Persistent Desktop routing is retired. Retain the old writer only for
+    # isolated ownership tests; production callers must use a child environment.
+    if ($EnvironmentName -notmatch '^CODEX_AUTO_RETRY_ENV_TEST_[0-9a-f]{32}$') {
+        throw 'Persistent shared routing is disabled. Use the safe Codex launcher (process-scoped routing).'
+    }
     $name = $EnvironmentName
     $backupPath = Join-Path $DataDir 'environment-backup.json'
     $port = Get-CodexAutoRetrySharedAppServerPort -ConfigPath $ConfigPath
@@ -226,6 +246,15 @@ function Restore-CodexAutoRetrySharedEnvironment {
     $current = [Environment]::GetEnvironmentVariable($name, 'User')
     $installed = [string]$backup.installed_value
     $previous = if ([bool]$backup.previous_present) { [string]$backup.previous_value } else { $null }
+    if ($name -eq 'CODEX_APP_SERVER_WS_URL' -and $installed -notmatch '^ws://127\.0\.0\.1:\d+$') {
+        throw 'The saved shared endpoint is not a recognized plugin loopback endpoint.'
+    }
+    # Older releases could back up their own already-installed endpoint. Never
+    # resurrect that endpoint when retiring persistent routing, even on rollback.
+    foreach ($owned in @($installed) + @($LegacyOwnedEndpoint)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$owned) -and
+            (Test-CodexAutoRetryEnvironmentValue $previous ([string]$owned))) { $previous = $null }
+    }
     $changedByUser = -not (Test-CodexAutoRetryEnvironmentValue $current $installed) -and
         -not (Test-CodexAutoRetryEnvironmentValue $current $previous)
     $restored = $false

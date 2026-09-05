@@ -200,6 +200,7 @@ type DispatchResult struct {
 }
 
 type StatusSnapshot struct {
+	DesktopLaunchMode                   string    `json:"desktop_launch_mode"`
 	Version                             string    `json:"version"`
 	Running                             bool      `json:"running"`
 	PID                                 int       `json:"pid"`

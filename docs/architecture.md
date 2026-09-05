@@ -36,13 +36,21 @@ Three recovery channels were evaluated:
    already loaded by Codex Desktop. That risks stale UI state and concurrent
    rollout ownership.
 3. The selected design can launch one loopback WebSocket app-server and set
-   `CODEX_APP_SERVER_WS_URL` only when the user explicitly enables shared mode.
-   The watchdog becomes another client of the same server after Codex restarts.
+   `CODEX_APP_SERVER_WS_URL` only in a new Desktop child process via the explicit
+   safe launcher. Enabling shared mode never publishes a user environment value.
+   The watchdog becomes another client of that same server.
    With shared mode disabled, Codex remains on its official backend and the
    watchdog fails closed without writing the global endpoint.
 
 The third option preserves native behavior while removing the shared visible
 UI surface that caused both reported failures.
+
+`scripts/launch-codex.ps1` owns desktop launch policy independently of the
+watchdog's startup order: strict backend checks select a single-use shared
+route; unavailable backends select official routing. Standard Codex entry
+points are not intercepted. Migration and rollback retire legacy plugin-owned
+registry routes and never resurrect them. See `shared-backend-safety.md` for
+the explicit launcher, existing-process, stale-shell and self-update boundaries.
 
 ## Data Flow
 
@@ -77,7 +85,9 @@ UI surface that caused both reported failures.
    are ignored; only the separate `user_message` lifecycle event proves that a
    person superseded the automatic chain.
 8. The controller verifies that Codex Desktop is using the configured shared
-   transport. An old Desktop-owned stdio app-server produces the visible,
+   transport using its executable identity and established connection to the
+   exact shared port; absence of a stdio child alone proves nothing. An old
+   Desktop-owned stdio app-server produces the visible,
    terminal `codex_restart_required` state instead of another countdown.
 9. A reverse reader finds the latest `turn_context` and
    `thread_settings_applied` records in that task's rollout and decodes only the
@@ -481,9 +491,11 @@ Runtime installation is fail-open by default: it does not write
 `CODEX_APP_SERVER_WS_URL`, and a new configuration has
 `shared_app_server_enabled=false`. The explicit shared-mode path first starts
 and validates a versioned, plugin-owned loopback server and completes a
-WebSocket health handshake; only then does it atomically publish the endpoint
-and startup entry. A failed candidate restores the previous binaries,
-configuration, environment value, and startup entry. Uninstall and the
+WebSocket initialization check. The safe Desktop launcher then supplies the
+endpoint only to its child process. A failed candidate restores previous files
+and startup registration but leaves shared mode disabled and the old worker
+stopped. Neither rollback layer may call an old installer to re-enable shared
+routing or republish a saved plugin endpoint. Uninstall and the
 independent `scripts/safe-disable.ps1` restore only the endpoint recorded in
 `environment-backup.json`; neither path removes `CODEX_API_KEY` or chat/state
 data by default.
@@ -537,13 +549,15 @@ reject directory links before recursive removal.
 Retrying cannot repair a permanently expired or revoked login. Codex App must
 be running. An App update that removes or changes its local structured protocol
 prevents dispatch; this fails closed at the controller limit instead of falling
-back to visible navigation. When shared mode is enabled, Codex requires one
-restart to inherit `CODEX_APP_SERVER_WS_URL`; the default fail-open mode does
-not require that restart.
+back to visible navigation. Shared recovery requires starting Codex through the
+safe launcher; opening ordinary shortcuts uses official routing after legacy
+environment migration. An abnormal reboot may intentionally disable shared
+mode when a stale owned server record is found; explicitly re-enable it after
+checking service state. The launcher does not silently change that preference.
 
-On every shared-mode readiness/preflight, the watchdog reconciles a missing
-owned endpoint before classifying the Desktop transport. It restores the
-endpoint only after validating the owned server and leaves a different user
+On every shared-mode readiness/preflight, the watchdog retires legacy
+owned persistent routing before classifying the Desktop transport. It never
+publishes a missing endpoint and leaves a different user
 value untouched, transitioning to an explicit environment-conflict fail-open
 state instead of repeating the restart prompt.
 

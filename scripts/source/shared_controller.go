@@ -18,8 +18,8 @@ type sharedServer interface {
 
 // sharedEnvironmentOwner is implemented by the Windows shared-server manager.
 // Keeping this optional preserves the controller's small test/fallback server
-// contract while allowing the real manager to repair an endpoint that was
-// removed after the shared mode had already been enabled.
+// contract while allowing the real manager to retire a legacy persistent route
+// without publishing a new one.
 type sharedEnvironmentOwner interface {
 	EnsureOwnedEnvironment(context.Context) error
 }
@@ -63,10 +63,12 @@ type appLoadedThreadsResult struct {
 }
 
 func newSharedAppServerController(config Config, dataDir string, logger *safeLogger) *sharedAppServerController {
+	server := newSharedServerManager(config, dataDir, logger)
 	return &sharedAppServerController{
-		server: newSharedServerManager(config, dataDir, logger),
+		server: server,
 		checker: powerShellDesktopTransportChecker{
 			configuredExecutable: config.PowerShellExecutable,
+			expectedEndpoint:     server.Endpoint,
 		},
 		settingsForThread: findThreadResumeSettings,
 		configPath:        filepath.Join(dataDir, "config.json"),
@@ -114,6 +116,8 @@ func (c *sharedAppServerController) Readiness(ctx context.Context) (string, erro
 		return "codex_not_running", nil
 	case desktopLegacyStdio:
 		return "codex_restart_required", nil
+	case desktopUnknown:
+		return "codex_app_not_ready", nil
 	case desktopSharedServer:
 		return "ready", nil
 	default:
@@ -406,6 +410,8 @@ func (c *sharedAppServerController) preflight(ctx context.Context, parentNotifie
 		return retryLaterResult("codex_not_running", parentNotified), false, nil
 	case desktopLegacyStdio:
 		return retryLaterResult("codex_restart_required", parentNotified), false, nil
+	case desktopUnknown:
+		return retryLaterResult("codex_app_not_ready", parentNotified), false, nil
 	case desktopSharedServer:
 		return DispatchResult{}, true, nil
 	default:

@@ -83,7 +83,7 @@ The stopped task is shown with its reason and can be restarted manually after
 Codex is open again. Other local controller failures stop after three consecutive
 failures by default instead of refreshing a countdown forever. A task that
 still uses Codex's old per-process transport stops with
-`codex_restart_required` and asks for one Codex restart.
+`codex_restart_required` and asks for a full exit followed by the safe Codex launcher.
 User cancellation, invalid requests, ordinary HTTP 400/404 errors, missing
 models, context length errors, policy failures, permission failures, and
 approval failures are not retried.
@@ -174,14 +174,12 @@ messages, assistant output text, tool input, tool output, credentials, provider
 URLs, or response bodies.
 
 Optional shared recovery uses one local app-server bound only to `127.0.0.1`.
-It is disabled by default: an ordinary install leaves
-`CODEX_APP_SERVER_WS_URL` untouched, so Codex keeps its official backend. When
-the user explicitly enables shared mode, the plugin first validates the
-plugin-owned server and only then sets the current-user endpoint. At worker
-startup it temporarily detaches a prior owned endpoint until the replacement
-server passes its health check. When a worker or supervisor exits, it restores
-the prior endpoint and removes stale owned state before Codex can inherit a
-dead port. The watchdog uses only the structured `thread/read`, `thread/resume`,
+It is disabled by default. Installation retires legacy plugin-owned routing
+without overwriting foreign user values. Shared mode validates the owned server
+but never sets the current-user endpoint: the safe launcher passes it only to a
+new Desktop child process. Thus a disabled or missing watchdog does not leave a
+persistent dead port for ordinary Codex launches after migration. The watchdog
+uses only the structured `thread/read`, `thread/resume`,
 `thread/inject_items`, `thread/goal/get`, `thread/goal/set`, and `turn/start`
 methods used by Codex. It validates ownership of the loopback server before
 using it and never routes local recovery traffic through an HTTP proxy. It
@@ -229,19 +227,25 @@ configuration, controls, and
 privacy-safe logs remain in the same local directory. Plugin management
 commands live in `skills/codex-auto-retry/SKILL.md`.
 
-The installer refuses to overwrite a different existing
-`CODEX_APP_SERVER_WS_URL`, records the environment value it owns, and restores
-the prior user value on uninstall. If Codex was open during the first install
-or the hidden-console launch upgrade, fully exit and restart Codex once. The
-panel and tray show that requirement instead of
-repeatedly pretending to retry.
+The installer requires Codex to be fully closed and retires only old
+plugin-owned `CODEX_APP_SERVER_WS_URL` values. It never publishes a persistent
+route, even when shared mode is enabled. Rollback leaves the previous worker
+stopped with shared mode disabled rather than restoring an unsafe route.
 
-When shared mode is already enabled, each controller readiness check also
-reconciles the endpoint before inspecting the Desktop transport. If the owned
-endpoint is missing, the watchdog restores it only after re-validating the
-plugin-owned server and broadcasts the Windows environment change. A different
-user value is never overwritten; shared mode fails open with an explicit
-environment-conflict status instead of repeatedly asking for a restart.
+For silent recovery, start the service, enable shared mode, fully exit Codex,
+then use `安全启动Codex.vbs` in the extracted package or `Launch Codex safely`
+in the startup manager. This checks the installed worker and shared backend,
+then passes the address only to that new Desktop process. An unavailable,
+outdated or unverified backend selects official mode instead. Existing Codex
+instances are never stopped or focused by this launcher.
+
+Ordinary shortcuts remain unchanged and use the official backend after legacy
+routing is retired, regardless of whether Windows starts the plugin. Silent
+recovery is unavailable on that official connection. A different user-owned
+persistent route is preserved and reported as a conflict, not silently deleted.
+The launcher's `-Official` option clears inherited routing only in its child;
+`-CheckOnly` checks without launching. Reboot and packaged-app self-update
+acceptance boundaries are documented in `docs/shared-backend-safety.md`.
 
 At process startup, the worker checks the recorded shared-server state, live
 process identity, creation time, and WebSocket endpoint before it can adopt or

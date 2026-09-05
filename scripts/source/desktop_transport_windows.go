@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ const (
 	desktopStopped      desktopTransportState = "stopped"
 	desktopLegacyStdio  desktopTransportState = "legacy_stdio"
 	desktopSharedServer desktopTransportState = "shared_server"
+	desktopUnknown      desktopTransportState = "unknown"
 )
 
 type desktopTransportChecker interface {
@@ -27,12 +29,16 @@ type desktopTransportChecker interface {
 
 type powerShellDesktopTransportChecker struct {
 	configuredExecutable string
+	expectedEndpoint     func() string
 }
 
 const desktopTransportScript = `$ErrorActionPreference = 'Stop'
 $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
 $main = @($all | Where-Object {
     $_.Name -eq 'ChatGPT.exe' -and
+    $_.ExecutablePath -and
+    ($_.ExecutablePath -match '(?i)\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\ChatGPT\.exe$' -or
+     $_.ExecutablePath -match '(?i)\\OpenAI\\Codex\\ChatGPT\.exe$') -and
     (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
 })
 if ($main.Count -eq 0) {
@@ -51,10 +57,23 @@ $legacy = @($owned | Where-Object {
 if ($legacy.Count -gt 0) {
     [Console]::Out.Write('legacy_stdio')
 } else {
-    [Console]::Out.Write('shared_server')
+    $connections = @(Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object {
+        $mainIds -contains [int]$_.OwningProcess -and
+        $_.RemoteAddress -eq '127.0.0.1' -and [int]$_.RemotePort -eq $expectedPort
+    })
+    if ($connections.Count -gt 0) { [Console]::Out.Write('shared_server') }
+    else { [Console]::Out.Write('unknown') }
 }`
 
 func (c powerShellDesktopTransportChecker) State(ctx context.Context) (desktopTransportState, error) {
+	if c.expectedEndpoint == nil {
+		return desktopUnknown, nil
+	}
+	endpoint := c.expectedEndpoint()
+	port := endpointPort(endpoint)
+	if !validSharedServerEndpoint(endpoint, port) {
+		return desktopUnknown, nil
+	}
 	powerShell, err := resolvePowerShellExecutable(c.configuredExecutable)
 	if err != nil {
 		return "", err
@@ -63,7 +82,7 @@ func (c powerShellDesktopTransportChecker) State(ctx context.Context) (desktopTr
 	defer cancel()
 	command := exec.CommandContext(commandCtx, powerShell,
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-")
-	command.Stdin = strings.NewReader(powerShellScriptInput(desktopTransportScript))
+	command.Stdin = strings.NewReader(powerShellScriptInput("$expectedPort = " + strconv.Itoa(port) + "\n" + desktopTransportScript))
 	var stdout bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = io.Discard
@@ -78,6 +97,8 @@ func (c powerShellDesktopTransportChecker) State(ctx context.Context) (desktopTr
 		return desktopLegacyStdio, nil
 	case desktopSharedServer:
 		return desktopSharedServer, nil
+	case desktopUnknown:
+		return desktopUnknown, nil
 	default:
 		return "", errors.New("unrecognized Codex desktop transport state")
 	}

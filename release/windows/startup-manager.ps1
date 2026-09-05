@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('gui', 'status', 'enable', 'disable', 'start', 'stop', 'safe-disable', 'uninstall')]
+    [ValidateSet('gui', 'status', 'enable', 'disable', 'start', 'stop', 'launch-codex', 'safe-disable', 'uninstall')]
     [string]$Action = 'gui',
     [switch]$RemoveData,
     [switch]$NoPrompt,

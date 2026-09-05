@@ -11,11 +11,13 @@ $statusPath = Join-Path $dataDir 'status.json'
 $stopPath = Join-Path $dataDir 'stop.signal'
 $environmentName = 'CODEX_APP_SERVER_WS_URL'
 $beforeEndpoint = [Environment]::GetEnvironmentVariable($environmentName, 'User')
-$beforeProcessEndpoint = [Environment]::GetEnvironmentVariable($environmentName, 'Process')
 $process = $null
 $listener = $null
 
 try {
+    if (-not [string]::IsNullOrWhiteSpace($beforeEndpoint)) {
+        throw 'Startup smoke requires the production user route to be absent; no live routing was modified.'
+    }
     if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Watchdog binary is missing: $binary" }
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
@@ -50,23 +52,15 @@ try {
         ($config | ConvertTo-Json -Depth 8),
         [System.Text.UTF8Encoding]::new($false)
     )
-    $environmentBackup = [ordered]@{
-        schema_version = 1
-        name = $environmentName
-        previous_present = $null -ne $beforeEndpoint
-        previous_value = if ($null -ne $beforeEndpoint) { $beforeEndpoint } else { '' }
-        installed_value = $endpoint
-        recorded_at = [DateTime]::UtcNow.ToString('o')
-    }
-    [System.IO.File]::WriteAllText(
-        (Join-Path $dataDir 'environment-backup.json'),
-        ($environmentBackup | ConvertTo-Json -Depth 8),
-        [System.Text.UTF8Encoding]::new($false)
-    )
-    [Environment]::SetEnvironmentVariable($environmentName, $endpoint, 'User')
-    Set-Item -Path "Env:$environmentName" -Value $endpoint
-
-    $process = Start-Process -FilePath $binary -ArgumentList @('run', '--data-dir', $dataDir, '--no-tray') -WindowStyle Hidden -PassThru
+    # Keep the real User environment read-only. Only the isolated child inherits
+    # the unavailable endpoint; never restore test state over live routing.
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $binary
+    $startInfo.Arguments = 'run --data-dir "' + $dataDir + '" --no-tray'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.EnvironmentVariables[$environmentName] = $endpoint
+    $process = [System.Diagnostics.Process]::Start($startInfo)
     $deadline = (Get-Date).AddSeconds(20)
     $status = $null
     do {
@@ -84,11 +78,11 @@ try {
     if ([bool]$storedConfig.shared_app_server_enabled) {
         throw 'A failed shared backend was left enabled during startup.'
     }
-    if ([string]$status.controller_state -ne 'codex_background_channel_unavailable') {
+    if ([string]$status.controller_state -ne 'shared_app_server_port_conflict') {
         throw "Unexpected startup fail-open reason: $([string]$status.controller_state)"
     }
     if (-not [string]::Equals([string]$afterEndpoint, [string]$beforeEndpoint, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw 'The startup fail-open path did not restore the previous user endpoint.'
+        throw 'The isolated startup test changed the real user endpoint.'
     }
 
     [pscustomobject]@{
@@ -96,7 +90,7 @@ try {
         StartupHeartbeat = $true
         SharedModeDisabled = $true
         FailOpenReasonPublished = $true
-        EndpointRestored = $true
+        ProductionEndpointUntouched = $true
     }
 }
 finally {
@@ -109,11 +103,11 @@ finally {
         $process.Dispose()
     }
     if ($listener) { $listener.Stop() }
-    [Environment]::SetEnvironmentVariable($environmentName, $beforeEndpoint, 'User')
-    if ($null -eq $beforeEndpoint) { Remove-CodexAutoRetryUserEnvironmentValue -Name $environmentName }
-    elseif ($null -eq $beforeProcessEndpoint) { Remove-Item -Path "Env:$environmentName" -ErrorAction SilentlyContinue }
-    else { Set-Item -Path "Env:$environmentName" -Value $beforeProcessEndpoint }
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
-        Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+        $resolved = [System.IO.Path]::GetFullPath($testRoot)
+        $tempPrefix = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
+        if ($resolved.StartsWith($tempPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }

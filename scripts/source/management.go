@@ -247,7 +247,7 @@ func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Tim
 	snapshot, err := m.snapshotLocked(now.UTC())
 	if err == nil {
 		if enabled {
-			snapshot.Notice = "共享后台模式已启用；重启 Codex 后生效"
+			snapshot.Notice = "共享后台已启用；完全退出 Codex 后，通过安全启动 Codex 入口接入"
 		} else {
 			snapshot.Notice = "共享后台模式已关闭，Codex 将使用官方后台"
 		}

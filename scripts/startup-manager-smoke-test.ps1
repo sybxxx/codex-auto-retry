@@ -123,12 +123,17 @@ try {
     Remove-ItemProperty -Path $runKey -Name $testRunName -ErrorAction SilentlyContinue
     $guiArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $manager,
         '-Action', 'gui', '-UserProfileRoot', $profileRoot, '-LocalAppDataRoot', $localRoot, '-RunName', $testRunName)
-    $guiProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $guiArgs -PassThru
-    Start-Sleep -Seconds 2
-    $guiWindow = Get-Process -Id $guiProcess.Id -ErrorAction SilentlyContinue
+    $guiError = Join-Path $testRoot 'gui-error.txt'
+    $guiProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $guiArgs -WindowStyle Hidden -RedirectStandardError $guiError -PassThru
+    $deadline = (Get-Date).AddSeconds(12)
+    do {
+        Start-Sleep -Milliseconds 250
+        $guiWindow = Get-Process -Id $guiProcess.Id -ErrorAction SilentlyContinue
+    } while (-not $guiProcess.HasExited -and
+        ($null -eq $guiWindow -or $guiWindow.MainWindowTitle -ne 'Codex Auto Retry Startup Manager') -and (Get-Date) -lt $deadline)
     if ($guiProcess.HasExited -or $null -eq $guiWindow -or $guiWindow.MainWindowHandle -eq 0 -or
         $guiWindow.MainWindowTitle -ne 'Codex Auto Retry Startup Manager') {
-        throw 'Startup manager GUI did not create its visible settings window.'
+        throw ('Startup manager GUI did not create its visible settings window. ' + (Get-Content -LiteralPath $guiError -Raw))
     }
     Stop-Process -Id $guiProcess.Id -Force -ErrorAction SilentlyContinue
     try { [void]$guiProcess.WaitForExit(5000) } catch { }
@@ -154,7 +159,7 @@ namespace CodexAutoRetrySmoke {
     if ($null -eq $runRegistryKey) { throw 'The current-user startup registry key could not be opened.' }
     try { $runRegistryKey.SetValue($testRunName, ('"' + $fakeWatchdog + '" supervise'), [Microsoft.Win32.RegistryValueKind]::String) }
     finally { $runRegistryKey.Close() }
-    $actionProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $guiArgs -PassThru
+    $actionProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $guiArgs -WindowStyle Hidden -PassThru
     try {
         $deadline = (Get-Date).AddSeconds(10)
         $actionWindow = $null

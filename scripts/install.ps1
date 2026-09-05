@@ -21,6 +21,7 @@ $environmentName = 'CODEX_APP_SERVER_WS_URL'
 . (Join-Path $PSScriptRoot 'environment.ps1')
 . (Join-Path $PSScriptRoot 'path-safety.ps1')
 . (Join-Path $PSScriptRoot 'startup-approval.ps1')
+. (Join-Path $PSScriptRoot 'shared-server-status.ps1')
 [void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
 function Get-RunValue {
@@ -93,7 +94,8 @@ function Stop-InstalledRuntime {
 function Test-CodexDesktopRunning {
     try {
         $main = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-            $_.Name -eq 'ChatGPT.exe' -and
+            ($_.Name -eq 'ChatGPT.exe' -or ($_.Name -eq 'Codex.exe' -and
+                $_.ExecutablePath -match '\\app\\Codex\.exe$')) -and
             (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
         })
         return $main.Count -gt 0
@@ -170,7 +172,7 @@ function Recover-IncompleteInstall {
         Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
         return
     }
-    if ([bool]$journal.shared_enabled -and (Test-CodexDesktopRunning)) {
+    if (Test-CodexDesktopRunning) {
         throw 'An interrupted runtime install requires Codex Desktop to be closed before rollback.'
     }
     $backupRoot = Join-Path $transactionRoot 'previous'
@@ -220,20 +222,19 @@ function Recover-IncompleteInstall {
     else {
         Write-Warning 'The startup entry changed during interrupted-install recovery; the foreign value was preserved.'
     }
-    if ([bool]$journal.environment_present) {
-        [Environment]::SetEnvironmentVariable($environmentName, [string]$journal.environment_value, 'User')
-    }
-    else {
-        Remove-CodexAutoRetryUserEnvironmentValue -Name $environmentName
-    }
-    Send-CodexAutoRetryEnvironmentChange
-	if ([bool]$journal.watchdog_was_running -and (Test-Path -LiteralPath $watchdogTarget -PathType Leaf)) {
-		Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
-		Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
-		Start-Process -FilePath $watchdogTarget -ArgumentList @('supervise') -WorkingDirectory $installDir -WindowStyle Hidden | Out-Null
-	}
+    # Restoring a binary must not restore its unsafe global routing behavior.
+    # Leave the old worker stopped and disable shared mode before any later sign-in.
+    Restore-SafeInstallRouting
     Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
+}
+
+function Restore-SafeInstallRouting {
+    # Both rollback paths restore ownership files first. The migration then
+    # removes only recorded plugin endpoints, never the journal's raw User value.
+    # Do this before environment restoration: even a damaged backup must not
+    # leave an old shared-enabled worker eligible to publish again next sign-in.
+    Disable-CodexAutoRetryLegacyRouting -DataDir $installDir
 }
 
 function Set-ConfigSharedMode {
@@ -276,12 +277,17 @@ function Wait-Heartbeat {
         } else {
             $status -and [int]$status.pid -eq $ProcessId
         }
-    } while ((-not $status -or -not $status.running -or -not $heartbeatMatches -or ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required'))) -and (Get-Date) -lt $deadline)
+    } while ((-not $status -or -not $status.running -or -not $heartbeatMatches -or ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required', 'codex_not_running'))) -and (Get-Date) -lt $deadline)
     if (-not $status -or -not $status.running -or -not $heartbeatMatches) {
         throw "Watchdog did not publish a running heartbeat. Check $installDir\logs\daemon.log"
     }
-    if ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required')) {
+    if ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required', 'codex_not_running')) {
         throw "Shared app-server health check did not pass. State: $([string]$status.controller_state)"
+    }
+    if ($RequireSharedReady) {
+        $sharedState = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $installDir 'shared-server.json') | ConvertFrom-Json
+        $verification = Get-CodexAutoRetrySharedServerStatus -State $sharedState -ExpectedPort (Get-CodexAutoRetrySharedAppServerPort -ConfigPath $configPath)
+        if ($verification.Status -ne 'live') { throw 'The prepared shared server failed independent identity and endpoint verification.' }
     }
     return $status
 }
@@ -290,13 +296,16 @@ if (-not (Test-Path -LiteralPath $watchdogSource -PathType Leaf)) { throw "Built
 if (-not (Test-Path -LiteralPath $mcpSource -PathType Leaf)) { throw "Built MCP server not found: $mcpSource" }
 [void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
+if (Test-CodexDesktopRunning) {
+    throw 'Close Codex Desktop completely before installing, upgrading, or recovering the runtime. No runtime or routing changes were made.'
+}
 Recover-IncompleteInstall
 
 $existingConfig = $null
 if (Test-Path -LiteralPath $configPath -PathType Leaf) {
     try { $existingConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json } catch { }
 }
-if ((Test-SharedBackendInUse) -and (Test-CodexDesktopRunning)) {
+if (Test-CodexDesktopRunning) {
 	throw 'Codex Desktop is using the shared backend. Close Codex completely before installing or upgrading the runtime.'
 }
 
@@ -401,12 +410,9 @@ try {
     Stop-InstalledRuntime
 	$journal.phase = 'runtime_stopped'
 	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
-    if (-not $EnableSharedAppServer) {
-        # A previous release may have installed the endpoint by default. Remove
-        # only the recorded value, or a legacy value proven to belong to this
-        # installation, before the new fail-open runtime starts.
-        $null = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir -LegacyOwnedEndpoint $legacyOwnedEndpoint
-    }
+    # Migration is mandatory even when the shared service remains enabled.
+    # Desktop routing is now inherited only from the explicit safe launcher.
+    $environmentMigration = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir -LegacyOwnedEndpoint $legacyOwnedEndpoint
 
     $candidateRoot = Join-Path $transactionRoot 'candidate'
     New-Item -ItemType Directory -Force -Path $candidateRoot | Out-Null
@@ -434,10 +440,6 @@ try {
     $startedProcess = Start-Process -FilePath $watchdogTarget -ArgumentList @('supervise') -WorkingDirectory $installDir -WindowStyle Hidden -PassThru
     $status = Wait-Heartbeat -ProcessId $startedProcess.Id -RequireSharedReady:$EnableSharedAppServer -ProcessIsSupervisor
 
-    if ($EnableSharedAppServer) {
-        $environment = Set-CodexAutoRetrySharedEnvironment -DataDir $installDir -ConfigPath $configPath
-        $environmentChanged = $true
-    }
     $installationSucceeded = $true
 	$journal.phase = 'committed'
 	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
@@ -451,8 +453,10 @@ try {
         InstallDirectory = $installDir
         Startup = 'Current user sign-in'
         SharedAppServerEnabled = [bool]$EnableSharedAppServer
-        SharedAppServer = if ($EnableSharedAppServer) { $environment.Value } else { $null }
-        EnvironmentChanged = if ($EnableSharedAppServer) { $environment.Changed } else { $false }
+        SharedAppServer = if ($EnableSharedAppServer) { 'ws://127.0.0.1:' + (Get-CodexAutoRetrySharedAppServerPort -ConfigPath $configPath) } else { $null }
+        EnvironmentChanged = [bool]$environmentMigration.Restored
+        DesktopLaunchMode = 'process_scoped'
+        SafeLauncher = Join-Path $PSScriptRoot 'launch-codex.ps1'
         CodexRestartRequired = [string]$status.controller_state -eq 'codex_restart_required'
     }
 }
@@ -465,9 +469,6 @@ catch {
             [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($sharedStatePath)) -ne [Convert]::ToBase64String($oldSharedStateBytes))) {
             $null = Stop-CodexAutoRetrySharedServerIfUnused -DataDir $installDir
         }
-        if ($environmentChanged) { $null = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir }
-        if ($oldEnvironmentPresent) { [Environment]::SetEnvironmentVariable($environmentName, $oldEnvironment, 'User') }
-        else { Remove-CodexAutoRetryUserEnvironmentValue -Name $environmentName }
         # Restore startup state only when the entry still contains the value
         # written by this transaction. A concurrent user or installer change
         # is preserved instead of being overwritten during rollback.
@@ -514,7 +515,7 @@ catch {
         else { Remove-Item -LiteralPath $environmentBackupPath -Force -ErrorAction SilentlyContinue }
         if ($oldSharedStateExisted) { [System.IO.File]::WriteAllBytes($sharedStatePath, $oldSharedStateBytes) }
         else { Remove-Item -LiteralPath $sharedStatePath -Force -ErrorAction SilentlyContinue }
-        Send-CodexAutoRetryEnvironmentChange
+        Restore-SafeInstallRouting
 		if (Test-Path -LiteralPath $installJournalPath -PathType Leaf) {
 			$rollbackJournal = Get-Content -Raw -Encoding UTF8 -LiteralPath $installJournalPath | ConvertFrom-Json
 			$rollbackJournal.phase = 'rolled_back'

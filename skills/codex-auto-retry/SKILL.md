@@ -61,8 +61,9 @@ and exit. This is not a second watchdog or a separate retry engine.
   recovery with `codex_not_running`; restart it manually from the panel after
   Codex is open again. Other controller failures stop after three consecutive
   failures by default instead of refreshing the countdown forever.
-  `codex_restart_required` means the user must restart Codex once after the
-  optional shared mode is enabled so Desktop inherits the shared endpoint.
+  `codex_restart_required` means the user must fully exit Codex and reopen it
+  through `安全启动Codex.vbs` or the startup manager's safe-launch button.
+  Ordinary shortcuts do not opt into shared routing.
 
 ## Embedded Management
 
@@ -164,8 +165,8 @@ variable and restores it. The isolated app-server tests use temporary
 `CODEX_HOME` directories; the empty-response test also uses a local fake
 provider and no real account.
 Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces both
-executables, leaves `CODEX_APP_SERVER_WS_URL` untouched by default (or sets it
-only after the explicit shared-mode health gate), registers per-user Windows
+executables, retires only legacy plugin-owned `CODEX_APP_SERVER_WS_URL` values
+without ever publishing a new persistent route, registers per-user Windows
 startup in `supervise` mode rather than the legacy direct `run` mode, points the plugin at the direct installed MCP
 executable, starts both GUI-subsystem processes without a visible console, and
 launches the shared Codex app-server with one hidden inherited console so its
@@ -179,7 +180,7 @@ limit; logs rotate at 5 MB with three backups. Each automatic recovery chain
 also stops after 30 minutes, and unusually high numeric retry limits produce a
 warning instead of being silently changed.
 
-Restart Codex once only after enabling the optional shared mode or changing its
+Fully exit and use the safe Codex launcher after enabling shared mode or changing its
 launch mode; then open a new task so Codex discovers the updated MCP tools and
 panel.
 
@@ -272,9 +273,15 @@ Shared app-server recovery is opt-in. Treat `shared_app_server_enabled=false`
 as the safe default and never add `CODEX_APP_SERVER_WS_URL` to the user's
 global environment during an ordinary install. The optional enable operation
 must verify loopback ownership, a WebSocket health handshake, executable and
-plugin version, and the recorded live PID before publishing the endpoint.
-Installation and update are transactional; a failed health check restores the
-previous binary, config, endpoint, and startup entry.
+plugin version, and the recorded live PID. It never publishes the user endpoint.
+`scripts/launch-codex.ps1` passes a verified endpoint only to its new Desktop
+child, or selects the official backend when the service is absent, old or
+unhealthy. It refuses existing Desktop instances and does not start/stop services.
+`-CheckOnly` is read-only; use it for diagnostics without opening Codex.
+Installation requires Desktop to be fully closed. Rollback restores files and
+startup state, leaves old workers stopped and shared mode disabled, and never
+republishes a plugin-owned persistent route. A real reboot and Codex's own
+update/relaunch behavior still require controlled desktop acceptance.
 
 For a startup emergency, run `scripts/safe-disable.ps1` directly. It is
 watchdog-independent, persists shared mode disabled, stops only processes

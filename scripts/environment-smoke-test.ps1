@@ -10,6 +10,7 @@ $conflictDir = Join-Path $testRoot 'conflict'
 $configPath = Join-Path $dataDir 'config.json'
 $name = 'CODEX_AUTO_RETRY_ENV_TEST_' + [guid]::NewGuid().ToString('N')
 $apiKeyBefore = [Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User')
+$productionEndpointBefore = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')
 
 function Remove-TestEnvironmentValue {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -20,6 +21,10 @@ function Remove-TestEnvironmentValue {
 
 try {
     New-Item -ItemType Directory -Force -Path $dataDir, $conflictDir | Out-Null
+    $productionWriteRejected = $false
+    try { $null = Set-CodexAutoRetrySharedEnvironment -DataDir $dataDir -ConfigPath $configPath -SkipBroadcast }
+    catch { $productionWriteRejected = $_.Exception.Message -like 'Persistent shared routing is disabled*' }
+    if (-not $productionWriteRejected) { throw 'The production environment writer was not disabled.' }
     [System.IO.File]::WriteAllText(
         $configPath,
         '{"shared_app_server_port":51234}',
@@ -64,6 +69,18 @@ try {
     $legacyPreserved = Restore-CodexAutoRetrySharedEnvironment -DataDir (Join-Path $testRoot 'legacy-keep') -EnvironmentName $name -LegacyOwnedEndpoint $legacyEndpoint -SkipBroadcast
     if ($legacyPreserved.Restored -or [Environment]::GetEnvironmentVariable($name, 'User') -ne $unownedEndpoint) {
         throw 'An unowned legacy endpoint was overwritten.'
+    }
+
+    $poisonedDir = Join-Path $testRoot 'poisoned-backup'
+    New-Item -ItemType Directory -Force -Path $poisonedDir | Out-Null
+    Write-CodexAutoRetryJsonAtomic -Path (Join-Path $poisonedDir 'environment-backup.json') -Value ([pscustomobject]@{
+        schema_version = 1; name = $name; previous_present = $true
+        previous_value = $legacyEndpoint; installed_value = $legacyEndpoint
+    })
+    [Environment]::SetEnvironmentVariable($name, $legacyEndpoint, 'User')
+    $poisonedRestored = Restore-CodexAutoRetrySharedEnvironment -DataDir $poisonedDir -EnvironmentName $name -SkipBroadcast
+    if (-not $poisonedRestored.Restored -or $null -ne [Environment]::GetEnvironmentVariable($name, 'User')) {
+        throw 'An old backup resurrected its own installed endpoint.'
     }
 
     $staleStateDir = Join-Path $testRoot 'stale-state'
@@ -112,6 +129,8 @@ try {
         StaleOwnedStateRemoved = $true
         ConflictingValuePreserved = $true
         FailedInstallRolledBack = $true
+        ProductionWriterRejected = $productionWriteRejected
+        PoisonedBackupCleared = $true
         ApiKeyUntouched = ([Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User') -eq $apiKeyBefore)
     }
 }
@@ -126,5 +145,8 @@ finally {
     }
     if ([Environment]::GetEnvironmentVariable('CODEX_API_KEY', 'User') -ne $apiKeyBefore) {
         throw 'Environment ownership smoke test changed CODEX_API_KEY.'
+    }
+    if ([Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User') -ne $productionEndpointBefore) {
+        throw 'Environment ownership smoke test changed production Desktop routing.'
     }
 }

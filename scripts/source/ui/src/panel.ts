@@ -220,8 +220,8 @@ function renderService(next: ManagementSnapshot): void {
     detail = `后台内存 ${next.memory_usage_mb ?? 0} MB，已超过上限 ${next.memory_limit_mb} MB`;
     dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state === "codex_restart_required") {
-    label = "等待重启";
-    detail = "请重启一次 Codex，使后台恢复通道生效";
+    label = "等待安全启动";
+    detail = "完全退出 Codex 后，通过安全启动 Codex 入口接入共享后台";
     dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state === "codex_not_running") {
     label = "Codex 已退出";
@@ -486,7 +486,7 @@ function stopReasonLabel(retry: ManagedRetry): string {
     return "共享后台模式已关闭，Codex 仍使用官方后台";
   }
   if (retry.stop_reason === "codex_restart_required") {
-    return "重启一次 Codex 后会自动恢复";
+    return "通过安全启动 Codex 入口重新打开后接入共享后台";
   }
   if (retry.stop_reason === "codex_home_not_shared") {
     return "此任务不在当前 Codex 的共享会话目录中";
@@ -534,7 +534,7 @@ function stoppedStateLabel(retry: ManagedRetry): string {
     case "codex_not_running":
       return "Codex 已退出";
     case "codex_restart_required":
-      return "等待重启 Codex";
+      return "等待安全启动 Codex";
     case "codex_home_not_shared":
       return "任务目录未接入";
     case "shared_app_server_port_conflict":
@@ -554,7 +554,7 @@ function stoppedStateLabel(retry: ManagedRetry): string {
 
 function controllerStateLabel(value: string): string {
   const labels: Record<string, string> = {
-    codex_restart_required: "需要重启 Codex",
+    codex_restart_required: "需要安全启动 Codex",
     codex_not_running: "Codex 已退出，自动重试已停止",
     shared_app_server_disabled: "共享后台模式已关闭，Codex 使用官方后台",
     codex_home_not_shared: "任务目录未接入共享通道",

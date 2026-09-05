@@ -14,6 +14,7 @@ $installReadme = 'README-' + ([char]0x5b89) + ([char]0x88c5) + ([char]0x8bf4) + 
 $startupManagerLauncher = ([string][char]0x542f) + ([char]0x52a8) + ([char]0x7ba1) + ([char]0x7406) + ([char]0x5668) + '.cmd'
 $safeDisableLauncher = ([string][char]0x5b89) + ([char]0x5168) + ([char]0x505c) + ([char]0x7528) + '.cmd'
 $startupManagerVbs = 'startup-manager.vbs'
+$safeCodexLauncher = ([string][char]0x5b89) + ([char]0x5168) + ([char]0x542f) + ([char]0x52a8) + 'Codex.vbs'
 
 function Get-PeSubsystem {
     param([string]$Path)
@@ -42,6 +43,7 @@ try {
         'uninstall-release.ps1',
         'startup-manager.ps1',
         $startupManagerVbs,
+        $safeCodexLauncher,
         $startupManagerLauncher,
         $safeDisableLauncher,
         'common.ps1',
@@ -52,6 +54,9 @@ try {
         'payload\codex-auto-retry\.mcp.json',
         'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
+        'payload\codex-auto-retry\scripts\launch-codex.ps1',
+        'payload\codex-auto-retry\scripts\launch-codex-smoke-test.ps1',
+        'payload\codex-auto-retry\scripts\install-routing-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\startup-approval.ps1',
         'payload\codex-auto-retry\scripts\shared-server-status.ps1',
         'payload\codex-auto-retry\scripts\path-safety.ps1',
@@ -193,6 +198,10 @@ try {
         (Join-Path $root 'payload\codex-auto-retry\scripts\startup-approval.ps1'),
         [System.Text.UTF8Encoding]::new($false)
     )
+    if ($installerSource -match 'Set-CodexAutoRetrySharedEnvironment|\[Environment\]::SetEnvironmentVariable' -or
+        -not $installerSource.Contains('Restore-SafeInstallRouting')) {
+        throw 'Installer can republish persistent Desktop routing or lacks safe rollback.'
+    }
     if (-not $installerSource.Contains('Set-ConfigSharedMode ([bool]$EnableSharedAppServer)') -or
         -not $installerSource.Contains('Invoke-CodexAutoRetryConfigLocked') -or
         -not $installerSource.Contains('Assert-CodexAutoRetryHostPath') -or
@@ -322,13 +331,24 @@ try {
 
     $testProfile = Join-Path $testRoot 'install-profile'
     $testLocalAppData = Join-Path $testRoot 'install-local-app-data'
-    $installOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'deploy.ps1') `
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $installOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'deploy.ps1') `
         -UserProfileRoot $testProfile `
         -LocalAppDataRoot $testLocalAppData `
         -SkipCodexCheck `
         -SkipPluginRegistration `
         -SkipRuntimeInstall 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) { throw "Isolated installer test failed:`n$installOutput" }
+        $isolatedExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
+    $directMcpInstall = 'passed'
+    if ($isolatedExit -ne 0) {
+        if ($installOutput -notmatch 'Close Codex completely before installing or upgrading' -or
+            (Test-Path -LiteralPath (Join-Path $testProfile 'plugins\codex-auto-retry'))) {
+            throw "Isolated installer test failed:`n$installOutput"
+        }
+        $directMcpInstall = 'blocked_by_live_desktop; no plugin files changed'
+    } else {
     $installedMcpConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $testProfile 'plugins\codex-auto-retry\.mcp.json') | ConvertFrom-Json
     $installedMcpServer = $installedMcpConfig.mcpServers.'codex-auto-retry'
     $installedMcpArgs = @($installedMcpServer.args)
@@ -337,19 +357,20 @@ try {
         $installedMcpArgs.Count -ne 1 -or [string]$installedMcpArgs[0] -ne 'mcp') {
         throw 'Installed plugin did not replace the shell wrapper with the direct MCP launcher.'
     }
+    }
 
     [pscustomobject]@{
         Archive = $archive
         TopLevelFolder = $roots[0].Name
         FilesVerified = $sumCount
         InstallerDryRun = 'passed'
-        DirectMcpInstall = 'passed'
+        DirectMcpInstall = $directMcpInstall
         UninstallerDryRun = 'passed'
         SettingsCommandWait = 'bounded-and-responsive'
         StartupManager = 'verified'
         FailOpenInstallGuard = 'present'
         RuntimePathGuard = 'verified'
-        Status = 'release verified'
+        Status = if ($isolatedExit -eq 0) { 'release verified' } else { 'package verified; live installation not tested' }
     }
 }
 finally {

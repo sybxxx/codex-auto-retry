@@ -20,10 +20,13 @@ import (
 )
 
 const (
-	sharedAppServerEnvironmentName = "CODEX_APP_SERVER_WS_URL"
-	sharedServerOwner              = "codex-auto-retry"
-	sharedFailOpenMarkerName       = "shared-fail-open.json"
+	sharedServerOwner        = "codex-auto-retry"
+	sharedFailOpenMarkerName = "shared-fail-open.json"
 )
+
+// Tests replace only this registry name with a random test-only name. No
+// environment or configuration option can change the production routing key.
+var sharedAppServerEnvironmentName = "CODEX_APP_SERVER_WS_URL"
 
 type sharedEnvironmentBackup struct {
 	SchemaVersion   int       `json:"schema_version"`
@@ -145,33 +148,21 @@ func enableSharedAppServer(ctx context.Context, dataDir string, config Config) (
 		cleanupSharedServer(manager)
 		return config, errors.New("shared app-server endpoint is not the expected loopback address")
 	}
-	if _, err := setOwnedSharedEnvironment(dataDir, endpoint); err != nil {
+	if err := manager.EnsureOwnedEnvironment(ctx); err != nil {
 		cleanupSharedServer(manager)
 		return config, err
 	}
 	return manager.config, nil
 }
 
-// EnsureOwnedEnvironment repairs an endpoint that this plugin previously
-// published but that disappeared from HKCU\Environment (for example after a
-// cleanup script or an interrupted upgrade). The caller has already run
-// Ensure, but an endpoint change is high impact, so ownership is revalidated
-// before writing anything. A different user value is never overwritten.
+// EnsureOwnedEnvironment retires the legacy persistent route. Shared routing
+// now belongs exclusively to the explicit Desktop launcher's child process.
+// Removing a registry value does not disconnect an existing Desktop process.
 func (m *sharedServerManager) EnsureOwnedEnvironment(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	current, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
-	if err != nil {
-		return err
-	}
-	if present && current == m.Endpoint() {
-		return nil
-	}
-	if err := m.ValidateOwned(ctx); err != nil {
-		return err
-	}
-	result, err := setOwnedSharedEnvironment(m.dataDir, m.Endpoint())
+	result, err := restoreOwnedSharedEnvironment(m.dataDir, m.ownedLegacyEndpoints(ctx)...)
 	if err != nil {
 		if m.logger != nil {
 			category := "shared_app_server_environment"
@@ -182,8 +173,13 @@ func (m *sharedServerManager) EnsureOwnedEnvironment(ctx context.Context) error 
 		}
 		return err
 	}
-	if result.Changed && m.logger != nil {
-		m.logger.Printf("shared app-server endpoint restored port=%d", m.config.SharedAppServerPort)
+	if present, readErr := m.nonemptySharedEnvironmentPresent(); readErr != nil {
+		return readErr
+	} else if present {
+		return errSharedAppServerEnvironmentConflict
+	}
+	if result.Restored && m.logger != nil {
+		m.logger.Printf("legacy shared route retired category=process_scoped_launch")
 	}
 	return nil
 }
@@ -460,6 +456,9 @@ func setOwnedSharedEnvironment(dataDir, desired string) (sharedEnvironmentResult
 }
 
 func setOwnedSharedEnvironmentNamed(dataDir, name, desired string) (sharedEnvironmentResult, error) {
+	if strings.EqualFold(name, "CODEX_APP_SERVER_WS_URL") {
+		return sharedEnvironmentResult{}, errors.New("persistent shared routing is disabled; use the safe Codex launcher")
+	}
 	if !validSharedServerEndpoint(desired, endpointPort(desired)) {
 		return sharedEnvironmentResult{}, fmt.Errorf("%w: invalid endpoint", errSharedAppServerEnvironmentConflict)
 	}
@@ -553,6 +552,18 @@ func restoreOwnedSharedEnvironment(dataDir string, legacyEndpoints ...string) (s
 	previous := backup.PreviousValue
 	if !backup.PreviousPresent {
 		previous = ""
+	}
+	// Old installers could back up their own endpoint as the previous value.
+	// Restoring that value would recreate the same dead route after reboot.
+	if previous == backup.InstalledValue {
+		previous = ""
+		backup.PreviousPresent = false
+	}
+	for _, owned := range legacyEndpoints {
+		if previous == owned && validSharedServerEndpoint(owned, endpointPort(owned)) {
+			previous = ""
+			backup.PreviousPresent = false
+		}
 	}
 	changedByUser := present && current != backup.InstalledValue && current != previous
 	if !changedByUser && (!present || current != previous) {

@@ -23,7 +23,8 @@ function Write-Step {
 function Test-CodexDesktopRunning {
     try {
         $main = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-            $_.Name -eq 'ChatGPT.exe' -and
+            ($_.Name -eq 'ChatGPT.exe' -or ($_.Name -eq 'Codex.exe' -and
+                $_.ExecutablePath -match '\\app\\Codex\.exe$')) -and
             (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
         })
         return $main.Count -gt 0
@@ -412,6 +413,9 @@ function Verify-Installation {
             -not [string]::Equals($process.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw 'The watchdog heartbeat does not match a running installed process.'
         }
+        if ($null -eq $status.PSObject.Properties['desktop_launch_mode'] -or $status.desktop_launch_mode -ne 'process_scoped') {
+            throw 'The installed worker does not support process-scoped Desktop routing.'
+        }
         $config = Read-JsonDocument -Path (Join-Path $RuntimePath 'config.json')
         if ($null -eq $config -or [bool]$config.shared_app_server_enabled -ne $ExpectedSharedAppServer) {
             throw 'The installed shared app-server mode does not match the requested setting.'
@@ -510,7 +514,7 @@ try {
     $unfinished = Read-UpgradeJournal -Path $upgradeJournalPath
     if ($unfinished) {
         $phase = [string]$unfinished.phase
-        if ($phase -ne 'committed' -and (Test-SharedBackendInUse -RuntimePath $runtimePath) -and (Test-CodexDesktopRunning)) {
+        if ($phase -ne 'committed' -and (Test-CodexDesktopRunning)) {
             throw 'An interrupted upgrade is waiting for recovery. Close Codex completely before running the repair again.'
         }
         if ($phase -eq 'committed') {
@@ -519,12 +523,15 @@ try {
         }
         else {
             Write-Step "Recovering interrupted upgrade transaction $([string]$unfinished.transaction_id)..."
+            [void](Stop-RuntimeForUpgrade -RuntimePath $runtimePath)
+            . (Join-Path $payloadRoot 'scripts\environment.ps1')
+            Disable-CodexAutoRetryLegacyRouting -DataDir $runtimePath
             Restore-IncompleteUpgrade -Journal $unfinished -PluginTarget $pluginTarget -MarketplacePath $marketplacePath -JournalPath $upgradeJournalPath
         }
     }
 
-    if ((Test-SharedBackendInUse -RuntimePath $runtimePath) -and (Test-CodexDesktopRunning)) {
-        throw 'Codex Desktop is using the shared backend. Close Codex completely before upgrading; no files or settings were changed.'
+    if (Test-CodexDesktopRunning) {
+        throw 'Close Codex completely before installing or upgrading, including official-backend sessions. No plugin or runtime changes were made.'
     }
 }
 catch {
@@ -694,9 +701,10 @@ catch {
                 [void](Invoke-CodexCli -Path $cli -Arguments @('plugin', 'remove', $pluginId, '--json'))
             }
         }
-        if (($runtimeAttempted -or $existingRuntimeWasRunning) -and $pluginExisted -and
-            (Test-Path -LiteralPath (Join-Path $pluginTarget 'scripts\install.ps1') -PathType Leaf)) {
-            [void](Install-Runtime -PluginPath $pluginTarget -EnableSharedAppServer:$EnableSharedAppServer)
+        if ($runtimeAttempted -or $existingRuntimeWasRunning) {
+            # Never invoke an old installer's shared-mode publisher on rollback.
+            . (Join-Path $payloadRoot 'scripts\environment.ps1')
+            Disable-CodexAutoRetryLegacyRouting -DataDir $runtimePath
         }
 		if ($success -eq $false -and (Test-Path -LiteralPath $upgradeJournalPath -PathType Leaf)) {
 			$rollbackJournal = Read-UpgradeJournal -Path $upgradeJournalPath
