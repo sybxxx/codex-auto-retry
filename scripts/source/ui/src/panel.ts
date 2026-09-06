@@ -221,8 +221,8 @@ function renderService(next: ManagementSnapshot): void {
     detail = `后台内存 ${next.memory_usage_mb ?? 0} MB，已超过上限 ${next.memory_limit_mb} MB`;
     dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state === "codex_restart_required") {
-    label = "等待安全启动";
-    detail = "完全退出 Codex 后，通过安全启动 Codex 入口接入共享后台";
+    label = "当前为官方后台";
+    detail = "尚未接入共享通道；普通重启不会切换，请使用安全启动 Codex 入口";
     dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state === "codex_not_running") {
     label = "Codex 已退出";

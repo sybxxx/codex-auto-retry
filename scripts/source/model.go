@@ -4,6 +4,8 @@ import "time"
 
 const appVersion = "0.7.9"
 
+var buildSourceHash = "development"
+
 type FailureClass string
 
 const (
@@ -200,6 +202,7 @@ type DispatchResult struct {
 }
 
 type StatusSnapshot struct {
+	BuildSourceHash                     string    `json:"build_source_hash"`
 	DesktopLaunchMode                   string    `json:"desktop_launch_mode"`
 	Version                             string    `json:"version"`
 	Running                             bool      `json:"running"`

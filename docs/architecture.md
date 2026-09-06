@@ -552,8 +552,10 @@ prevents dispatch; this fails closed at the controller limit instead of falling
 back to visible navigation. Shared recovery requires starting Codex through the
 safe launcher; opening ordinary shortcuts uses official routing after legacy
 environment migration. An abnormal reboot may intentionally disable shared
-mode when a stale owned server record is found; explicitly re-enable it after
-checking service state. The launcher does not silently change that preference.
+runtime readiness when a stale owned server record is found; version 11 keeps
+the independent requested preference. The safe launcher can request bounded
+worker-owned preparation without altering consent. A stopped service is not
+automatically started by the launcher.
 
 On every shared-mode readiness/preflight, the watchdog retires legacy
 owned persistent routing before classifying the Desktop transport. It never

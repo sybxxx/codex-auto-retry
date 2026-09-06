@@ -105,6 +105,17 @@ func (d *daemon) processSharedRecovery(ctx context.Context, now time.Time) {
 	}
 	recoveryCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	config, err = updateConfigFile(configPath, func(latest *Config) error {
+		if !latest.SharedAppServerRequested || recoveryCtx.Err() != nil {
+			return errors.New("shared preparation was cancelled")
+		}
+		latest.SharedAppServerEnabled = false
+		return nil
+	})
+	if err != nil {
+		reason = "recovery_cancelled"
+		return
+	}
 	if err = failOpenSharedBackendCleanup(recoveryCtx, d.dataDir, config); err != nil {
 		reason = "cleanup_not_safe"
 		return

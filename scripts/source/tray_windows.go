@@ -304,7 +304,7 @@ func (a *trayApp) refresh() {
 	tip := "Codex Auto Retry - 运行中"
 	iconState := "running"
 	if snapshot.ControllerState == "codex_restart_required" {
-		tip = "Codex Auto Retry - 请重启一次 Codex"
+		tip = "Codex Auto Retry - 当前为官方后台；请通过安全启动入口接入共享通道"
 		iconState = "paused"
 	} else if snapshot.ControllerState == "codex_not_running" && snapshot.StoppedRetries > 0 {
 		tip = "Codex Auto Retry - Codex 已退出，重试已停止"

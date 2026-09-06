@@ -429,7 +429,7 @@ function Get-StoppedStateText {
     param([string]$Reason)
     if ($Reason -eq 'codex_not_running') { return 'Codex 已退出' }
     if ($Reason -eq 'shared_app_server_disabled') { return '共享后台已关闭' }
-    if ($Reason -eq 'codex_restart_required') { return '等待安全启动 Codex' }
+    if ($Reason -eq 'codex_restart_required') { return '未接入共享后台' }
     if ($Reason -eq 'codex_home_not_shared') { return '任务目录未接入' }
     if ($Reason -eq 'shared_app_server_port_conflict') { return '恢复端口冲突' }
     if ($Reason -eq 'shared_app_server_port_reserved') { return '端口被 Windows 保留' }
@@ -502,13 +502,13 @@ function Update-RuntimeView {
         $serviceValue.Text = '后台服务未运行'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ([string]$status.controller_state -eq 'codex_restart_required') {
-        $serviceValue.Text = '等待安全启动 Codex'
+        $serviceValue.Text = '未接入共享后台'
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
     } elseif ([string]$status.controller_state -eq 'codex_not_running') {
         $serviceValue.Text = 'Codex 已退出，重试已停止'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ([string]$status.controller_state -eq 'shared_app_server_disabled') {
-        $serviceValue.Text = if (Get-SharedModeRequested (Read-JsonFile $configPath)) { '共享后台暂不可用，偏好已保留' } else { '共享后台已关闭，重试未执行' }
+        $serviceValue.Text = if (Get-SharedModeRequested (Read-JsonFile $configPath)) { '共享后台暂不可用' } else { '共享后台已关闭' }
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
     } elseif ([string]$status.controller_state -eq 'shared_app_server_port_reserved') {
         $serviceValue.Text = '共享端口被 Windows 保留，重试未执行'

@@ -108,6 +108,8 @@ try {
     if ($sumCount -lt 8) { throw 'Release checksum list is incomplete.' }
 
     $payloadRoot = Join-Path $root 'payload\codex-auto-retry'
+    . (Join-Path $payloadRoot 'scripts\build-provenance.ps1')
+    Assert-CodexBuildProvenance -Root $payloadRoot
     $payloadMcpConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $payloadRoot '.mcp.json') | ConvertFrom-Json
     $payloadMcpServer = $payloadMcpConfig.mcpServers.'codex-auto-retry'
     $payloadArgs = @($payloadMcpServer.args)

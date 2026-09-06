@@ -46,6 +46,13 @@ if ($main.Count -eq 0) {
     return
 }
 $mainIds = @($main | ForEach-Object { [int]$_.ProcessId })
+# The client is Desktop (or its Electron network process), not the listening
+# app-server. Do not count arbitrary task/CLI descendants as Desktop clients.
+$clientIds = @($mainIds) + @($all | Where-Object {
+    $mainIds -contains [int]$_.ParentProcessId -and
+    @($main | ForEach-Object { $_.ExecutablePath }) -contains $_.ExecutablePath -and
+    $_.CommandLine -match '--utility-sub-type=network\.mojom\.NetworkService'
+} | ForEach-Object { [int]$_.ProcessId })
 $owned = @($all | Where-Object {
     $_.Name -eq 'codex.exe' -and
     $mainIds -contains [int]$_.ParentProcessId -and
@@ -58,7 +65,7 @@ if ($legacy.Count -gt 0) {
     [Console]::Out.Write('legacy_stdio')
 } else {
     $connections = @(Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object {
-        $mainIds -contains [int]$_.OwningProcess -and
+        $clientIds -contains [int]$_.OwningProcess -and
         $_.RemoteAddress -eq '127.0.0.1' -and [int]$_.RemotePort -eq $expectedPort
     })
     if ($connections.Count -gt 0) { [Console]::Out.Write('shared_server') }

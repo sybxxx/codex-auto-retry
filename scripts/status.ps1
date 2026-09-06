@@ -111,6 +111,7 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     StartupApproved = $startupApproval.Status
     SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($userEndpoint)
     DesktopLaunchMode = Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_launch_mode' -Default 'legacy_unprotected'
+    BuildSourceHash = Get-CodexAutoRetryStatusProperty -Status $status -Name 'build_source_hash' -Default 'unverified_legacy_build'
     SafeLauncher = Join-Path $PSScriptRoot 'launch-codex.ps1'
     SharedServerState = $sharedStateStatus
     SharedServerVerification = [string]$sharedVerification.Reason

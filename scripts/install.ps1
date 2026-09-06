@@ -285,6 +285,10 @@ function Wait-Heartbeat {
     if (-not $status -or -not $status.running -or -not $heartbeatMatches) {
         throw "Watchdog did not publish a running heartbeat. Check $installDir\logs\daemon.log"
     }
+    $expectedBuild = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-info.json') -Raw | ConvertFrom-Json
+    if ((Get-CodexAutoRetryStatusProperty $status 'build_source_hash' '') -ne $expectedBuild.source_hash) {
+        throw 'The running watchdog build does not match this package. Installation was not verified.'
+    }
     if ($RequireSharedReady -and [string]$status.controller_state -notin @('ready', 'codex_restart_required', 'codex_not_running')) {
         throw "Shared app-server health check did not pass. State: $([string]$status.controller_state)"
     }

@@ -46,6 +46,8 @@ if (-not $SkipBuild) {
 }
 
 $watchdog = Join-Path $pluginRoot 'scripts\bin\codex-auto-retry.exe'
+. (Join-Path $PSScriptRoot 'build-provenance.ps1')
+Assert-CodexBuildProvenance -Root $pluginRoot
 $mcp = Join-Path $pluginRoot 'scripts\bin\codex-auto-retry-mcp.exe'
 Assert-X64PeBinary -Path $watchdog
 Assert-X64PeBinary -Path $mcp

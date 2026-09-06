@@ -18,7 +18,7 @@ func TestDesktopTransportScriptDistinguishesListenServerFromLegacyStdio(t *testi
 }
 
 func TestDesktopTransportRequiresActualTargetConnection(t *testing.T) {
-	for _, required := range []string{"$_.ExecutablePath", "Get-NetTCPConnection -State Established", "$mainIds -contains [int]$_.OwningProcess", "[int]$_.RemotePort -eq $expectedPort", "Write('unknown')"} {
+	for _, required := range []string{"$_.ExecutablePath", "Get-NetTCPConnection -State Established", "$clientIds -contains [int]$_.OwningProcess", "network\\.mojom\\.NetworkService", "[int]$_.RemotePort -eq $expectedPort", "Write('unknown')"} {
 		if !strings.Contains(desktopTransportScript, required) {
 			t.Fatalf("transport proof missing: %s", required)
 		}

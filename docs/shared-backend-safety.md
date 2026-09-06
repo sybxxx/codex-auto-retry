@@ -15,6 +15,30 @@ The plugin has two deliberately separate modes:
 
 ## Process-Scoped Desktop Launch
 
+Configuration version 11 separates the saved user preference
+`shared_app_server_requested` from the effective `shared_app_server_enabled`
+gate. Temporary failure disables only the latter. Explicit disable, uninstall
+or fail-open installation disables both. Migration cannot infer a previously
+lost preference: a version-10 configuration already set to false stays false
+until the user explicitly enables it.
+
+When an already-running compatible worker is fresh, the safe launcher may
+request preparation twice, waiting up to 10 seconds per request. The worker
+owns preparation on its serialized tick and consumes expiring requests; it
+does not activate goals or retry conversations as part of preparation. User
+opt-out, an existing Desktop, an expired request or a memory guard refuses
+automatic preparation. If the worker is stopped, the launcher does not start
+it against the user's choice. A failed attempt still uses the official backend.
+`shared-availability.json` records the last failure without resetting consent.
+
+Build provenance is checked independently of the version label:
+`scripts/build.ps1` records source and EXE hashes in `scripts/build-info.json`
+and embeds the source hash into the worker's `build_source_hash` heartbeat.
+Packaging, including `-SkipBuild`, refuses missing or stale build provenance.
+Installation verifies the actual running worker against that record. A plugin
+version label or a ZIP checksum alone does not prove the EXE contains the
+current source. Never distribute a rebuilt script bundle with previous EXEs.
+
 Persistent user routing has been retired. `scripts/launch-codex.ps1` (also
 available as `安全启动Codex.vbs` and the startup manager's `Launch Codex safely`
 button) inspects the installed worker's fresh `desktop_launch_mode=process_scoped`

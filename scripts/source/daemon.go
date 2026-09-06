@@ -981,6 +981,7 @@ func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 		active = 0
 	}
 	status := StatusSnapshot{
+		BuildSourceHash:                     buildSourceHash,
 		DesktopLaunchMode:                   "process_scoped",
 		Version:                             appVersion,
 		Running:                             running,
