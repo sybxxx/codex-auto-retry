@@ -285,6 +285,7 @@ function Get-ManagerState {
         StartupOwned = Test-OwnedStartupValue $startupEntry
         StartupApproved = $startupApproval.Status
         SharedModeEnabled = if ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
+        SharedModeRequested = if ($config -and $config.PSObject.Properties['shared_app_server_requested']) { [bool]$config.shared_app_server_requested } elseif ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
         SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($endpoint)
         DesktopLaunchMode = Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_launch_mode' -Default 'legacy_unprotected'
         SafeLauncher = Join-Path $PSScriptRoot 'launch-codex.ps1'

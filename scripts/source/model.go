@@ -211,6 +211,7 @@ type StatusSnapshot struct {
 	ActiveRetries                       int       `json:"active_retries"`
 	Paused                              bool      `json:"paused"`
 	SharedAppServerEnabled              bool      `json:"shared_app_server_enabled"`
+	SharedAppServerRequested            bool      `json:"shared_app_server_requested"`
 	ControllerState                     string    `json:"controller_state,omitempty"`
 	LastError                           string    `json:"last_error,omitempty"`
 	MemoryUsageMB                       int64     `json:"memory_usage_mb,omitempty"`

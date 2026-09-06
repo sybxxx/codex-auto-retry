@@ -26,6 +26,12 @@ $statusPath = Join-Path $DataDir 'status.json'
 $statePath = Join-Path $DataDir 'state.json'
 $smokeClosePath = Join-Path $DataDir 'settings-smoke-close.signal'
 
+function Get-SharedModeRequested($Config) {
+    if (-not $Config) { return $false }
+    if ($Config.PSObject.Properties['shared_app_server_requested']) { return [bool]$Config.shared_app_server_requested }
+    return [bool]$Config.shared_app_server_enabled
+}
+
 function Read-JsonFile {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
@@ -223,7 +229,7 @@ $sharedCheck = [System.Windows.Forms.CheckBox]::new()
 $sharedCheck.Text = '启用共享 Codex 后台（健康检查）'
 $sharedCheck.Location = [System.Drawing.Point]::new(18, 52)
 $sharedCheck.Size = [System.Drawing.Size]::new(260, 24)
-$sharedCheck.Checked = [bool]$config.shared_app_server_enabled
+$sharedCheck.Checked = Get-SharedModeRequested $config
 $sharedPortValue = New-Label ('当前共享端口：' + [int]$config.shared_app_server_port) 300 25 255 24
 $sharedPortValue.ForeColor = [System.Drawing.Color]::DimGray
 $notificationsCheck = [System.Windows.Forms.CheckBox]::new()
@@ -502,7 +508,7 @@ function Update-RuntimeView {
         $serviceValue.Text = 'Codex 已退出，重试已停止'
         $serviceValue.ForeColor = [System.Drawing.Color]::Firebrick
     } elseif ([string]$status.controller_state -eq 'shared_app_server_disabled') {
-        $serviceValue.Text = '共享后台已关闭，重试未执行'
+        $serviceValue.Text = if (Get-SharedModeRequested (Read-JsonFile $configPath)) { '共享后台暂不可用，偏好已保留' } else { '共享后台已关闭，重试未执行' }
         $serviceValue.ForeColor = [System.Drawing.Color]::DarkOrange
     } elseif ([string]$status.controller_state -eq 'shared_app_server_port_reserved') {
         $serviceValue.Text = '共享端口被 Windows 保留，重试未执行'
@@ -662,7 +668,7 @@ $saveButton.add_Click({
         shared_app_server_enabled = [bool]$sharedCheck.Checked
     }
     $currentConfig = Read-JsonFile $configPath
-    $storedSharedEnabled = if ($currentConfig) { [bool]$currentConfig.shared_app_server_enabled } else { [bool]$config.shared_app_server_enabled }
+    $storedSharedEnabled = if ($currentConfig) { Get-SharedModeRequested $currentConfig } else { Get-SharedModeRequested $config }
     $storedSharedPort = if ($currentConfig) { [int]$currentConfig.shared_app_server_port } else { [int]$config.shared_app_server_port }
     $sharedModeChanged = [bool]$sharedCheck.Checked -ne $storedSharedEnabled
     $sharedModeEnabling = [bool]$sharedCheck.Checked -and -not $storedSharedEnabled
@@ -692,7 +698,7 @@ $saveButton.add_Click({
         if ($sharedModeChanged) {
             $latestConfig = Read-JsonFile $configPath
             if ($latestConfig) {
-                $sharedCheck.Checked = [bool]$latestConfig.shared_app_server_enabled
+                $sharedCheck.Checked = Get-SharedModeRequested $latestConfig
             } else {
                 $sharedCheck.Checked = $storedSharedEnabled
             }

@@ -60,6 +60,7 @@ type ManagementSnapshot struct {
 	RetrySafetyWarning                  string         `json:"retry_safety_warning,omitempty" jsonschema:"warning when retry limits are unusually aggressive"`
 	SharedAppServerPort                 int            `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
 	SharedAppServerEnabled              bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
+	SharedAppServerRequested            bool           `json:"shared_app_server_requested" jsonschema:"whether the user wants shared recovery mode, including when temporarily unavailable"`
 	StartupApproved                     string         `json:"startup_approved" jsonschema:"Windows sign-in approval state for the CodexAutoRetry startup entry"`
 	Now                                 string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
 	LastScanAt                          string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
@@ -161,6 +162,7 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		RetrySafetyWarning:           config.retrySafetyWarning(),
 		SharedAppServerPort:          config.SharedAppServerPort,
 		SharedAppServerEnabled:       config.SharedAppServerEnabled,
+		SharedAppServerRequested:     config.SharedAppServerRequested,
 		StartupApproved:              readStartupApprovalStatus(),
 		Now:                          now.Format(time.RFC3339Nano),
 		PendingRetries:               pending,
@@ -202,7 +204,7 @@ func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Tim
 	if err != nil {
 		return ManagementSnapshot{}, err
 	}
-	if config.SharedAppServerEnabled == enabled {
+	if config.SharedAppServerEnabled == enabled && config.SharedAppServerRequested == enabled {
 		snapshot, snapshotErr := m.snapshotLocked(now.UTC())
 		if snapshotErr == nil {
 			snapshot.Notice = "共享后台模式未改变"
@@ -213,12 +215,22 @@ func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Tim
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if enabled {
+		config, err = updateConfigFile(m.configPath, func(current *Config) error {
+			current.SharedAppServerRequested = true
+			return nil
+		})
+		if err != nil {
+			return ManagementSnapshot{}, fmt.Errorf("save shared app-server preference: %w", err)
+		}
 		preparedConfig, err := enableSharedAppServer(ctx, m.dataDir, config)
 		if err != nil {
 			return ManagementSnapshot{}, err
 		}
 		config = preparedConfig
 		persistedConfig, err := updateConfigFile(m.configPath, func(current *Config) error {
+			if !current.SharedAppServerRequested {
+				return fmt.Errorf("shared app-server enable cancelled by user")
+			}
 			current.SharedAppServerEnabled = true
 			current.SharedAppServerPort = config.SharedAppServerPort
 			return nil
@@ -228,11 +240,17 @@ func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Tim
 			return ManagementSnapshot{}, fmt.Errorf("save shared app-server setting: %w", err)
 		}
 		config = persistedConfig
+		for _, marker := range []string{"shared-availability.json", "shared-fail-open.json"} {
+			if err := os.Remove(filepath.Join(m.dataDir, marker)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return ManagementSnapshot{}, fmt.Errorf("clear shared recovery marker: %w", err)
+			}
+		}
 	} else {
 		// Persist the fail-open setting before tearing down the endpoint. If the
 		// cleanup is interrupted, the next watchdog tick still cannot take over
 		// Codex's backend.
 		persistedConfig, err := updateConfigFile(m.configPath, func(current *Config) error {
+			current.SharedAppServerRequested = false
 			current.SharedAppServerEnabled = false
 			return nil
 		})

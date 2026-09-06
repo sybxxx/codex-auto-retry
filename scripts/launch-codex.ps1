@@ -114,6 +114,51 @@ function Get-CodexDesktopExecutable {
     throw 'Cannot find the current-user OpenAI.Codex package executable. Install or repair Codex first.'
 }
 
+function Invoke-CodexLaunchRecovery {
+    param([string]$Runtime, [string]$Executable)
+    $route = Get-CodexLaunchRoute $Runtime
+    if ($route.Mode -eq 'shared') { return $route }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    for ($attempt = 1; $attempt -le 2 -and $clock.Elapsed.TotalSeconds -lt 24; $attempt++) {
+        Assert-CodexDesktopStopped $Executable
+        $config = Read-CodexLaunchJson (Join-Path $Runtime 'config.json')
+        $status = Read-CodexLaunchJson (Join-Path $Runtime 'status.json')
+        if ((Get-CodexAutoRetryStatusProperty $config 'shared_app_server_requested' $false) -ne $true -or
+            $null -eq $status -or $null -eq $status.PSObject.Properties['shared_app_server_requested'] -or
+            (Get-CodexAutoRetryStatusProperty $status 'running' $false) -ne $true -or
+            -not (Test-CodexLaunchWorker $status $Runtime)) { return $route }
+        $heartbeat = ConvertTo-CodexAutoRetryDateTimeOffset (Get-CodexAutoRetryStatusProperty $status 'last_scan_at')
+        if ($null -eq $heartbeat -or ([DateTimeOffset]::UtcNow - $heartbeat).TotalSeconds -gt 15 -or $heartbeat -gt [DateTimeOffset]::UtcNow) { return $route }
+        $id = [Guid]::NewGuid().ToString('N')
+        $requestPath = Join-Path $Runtime 'shared-recovery-request.json'
+        $temporary = Join-Path $Runtime ('shared-recovery-' + $id + '.tmp')
+        try {
+            $request = @{ id = $id; expires_at = [DateTimeOffset]::UtcNow.AddSeconds(10).ToString('o') }
+            [IO.File]::WriteAllText($temporary, ($request | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            if (Test-Path -LiteralPath $requestPath) { [IO.File]::Replace($temporary, $requestPath, [NullString]::Value) }
+            else { [IO.File]::Move($temporary, $requestPath) }
+            $until = [DateTimeOffset]::UtcNow.AddSeconds(10)
+            do {
+                Start-Sleep -Milliseconds 200
+                $result = Read-CodexLaunchJson (Join-Path $Runtime 'shared-recovery-result.json')
+                if ((Get-CodexAutoRetryStatusProperty $result 'id' '') -eq $id) { break }
+            } while ([DateTimeOffset]::UtcNow -lt $until -and $clock.Elapsed.TotalSeconds -lt 24)
+            Write-CodexLaunchResult $Runtime 'official' ('recovery_attempt_' + $attempt) 'checked'
+            $route = Get-CodexLaunchRoute $Runtime
+            if ($route.Mode -eq 'shared') { return $route }
+            if ((Get-CodexAutoRetryStatusProperty $result 'reason' '') -in @('manual_recovery_required', 'preference_disabled', 'desktop_already_running', 'cleanup_not_safe')) { return $route }
+        } catch {
+            $route.Reason = 'recovery_request_failed'
+            return $route
+        } finally {
+            if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+            $pending = Read-CodexLaunchJson $requestPath
+            if ((Get-CodexAutoRetryStatusProperty $pending 'id' '') -eq $id) { Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    return $route
+}
+
 function Assert-CodexDesktopStopped {
     param([string]$Executable)
     try {
@@ -178,6 +223,9 @@ try {
     if ($CheckOnly) {
         [pscustomobject]@{ Mode = $route.Mode; Reason = $route.Reason; Executable = $exe; CanLaunch = $true }
         return
+    }
+    if (-not $Official -and $route.Mode -ne 'shared') {
+        $route = Invoke-CodexLaunchRecovery -Runtime $DataDir -Executable $exe
     }
     # Recheck immediately before creating the child; never delegate to a shell broker.
     $route = Get-CodexLaunchRoute -Runtime $DataDir -OfficialOnly:$Official

@@ -8,6 +8,35 @@ import (
 	"testing"
 )
 
+func TestSharedPreferenceMigration(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		legacy := map[string]any{"config_version": 10, "shared_app_server_enabled": enabled}
+		if err := writeJSONAtomic(path, legacy); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadOrCreateConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.SharedAppServerRequested != enabled || cfg.ConfigVersion != 11 {
+			t.Fatalf("migration changed user preference: %+v", cfg)
+		}
+		cfg.SharedAppServerRequested = true
+		cfg.SharedAppServerEnabled = false
+		if err := writeJSONAtomic(path, cfg); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err = loadOrCreateConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.SharedAppServerRequested || cfg.SharedAppServerEnabled {
+			t.Fatal("temporary failure lost preference")
+		}
+	}
+}
+
 func TestLoadConfigMigratesLegacyCliDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	legacy := `{

@@ -29,6 +29,7 @@ type Config struct {
 	PowerShellExecutable         string   `json:"powershell_executable,omitempty"`
 	SharedAppServerPort          int      `json:"shared_app_server_port"`
 	SharedAppServerEnabled       bool     `json:"shared_app_server_enabled"`
+	SharedAppServerRequested     bool     `json:"shared_app_server_requested"`
 	ControllerFailureLimit       int      `json:"controller_failure_limit"`
 	MemoryLimitMB                int      `json:"memory_limit_mb"`
 	SharedAppServerMemoryLimitMB int      `json:"shared_app_server_memory_limit_mb"`
@@ -52,7 +53,7 @@ const (
 )
 
 const (
-	currentConfigVersion             = 10
+	currentConfigVersion             = 11
 	legacyDefaultSharedAppServerPort = 49321
 	defaultSharedAppServerPort       = 49621
 )
@@ -134,6 +135,7 @@ func loadOrCreateConfigUnlocked(path string) (Config, error) {
 	// the default endpoint out of a Windows-excluded port range. Version 9 adds
 	// a bounded private-memory guard for the watchdog process. Version 10 adds
 	// a monitor-only memory limit for the optional shared Codex app-server.
+	// Version 11 separates user preference from temporary backend availability.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -143,6 +145,10 @@ func loadOrCreateConfigUnlocked(path string) (Config, error) {
 		changed = true
 	}
 	if cfg.ConfigVersion == currentConfigVersion {
+		if _, found := fields["shared_app_server_requested"]; !found {
+			cfg.SharedAppServerRequested = cfg.SharedAppServerEnabled
+			changed = true
+		}
 		legacyLimit := 0
 		if raw, found := fields["max_retry_attempts"]; found {
 			_ = json.Unmarshal(raw, &legacyLimit)

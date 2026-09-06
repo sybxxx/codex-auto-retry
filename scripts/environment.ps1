@@ -111,6 +111,10 @@ function Disable-CodexAutoRetrySharedMode {
             $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $false
         }
         else { $config.shared_app_server_enabled = $false }
+        if ($null -eq $config.PSObject.Properties['shared_app_server_requested']) {
+            $config | Add-Member -NotePropertyName shared_app_server_requested -NotePropertyValue $false
+        }
+        else { $config.shared_app_server_requested = $false }
         Write-CodexAutoRetryJsonAtomic -Path $configPath -Value $config
         return $true
     })

@@ -51,6 +51,7 @@ type ManagementSnapshot = {
   heartbeat_stale: boolean;
   paused: boolean;
   shared_app_server_enabled: boolean;
+  shared_app_server_requested?: boolean;
   startup_approved: "enabled" | "disabled" | "unknown";
   retry_prompt: string;
   max_recovery_attempts: number;
@@ -189,10 +190,10 @@ function render(next: ManagementSnapshot): void {
   }
   savedSettings = serializedSettings(next);
   elements.pauseToggle.checked = !next.paused;
-  elements.sharedAppServerToggle.checked = next.shared_app_server_enabled;
+  elements.sharedAppServerToggle.checked = next.shared_app_server_requested ?? next.shared_app_server_enabled;
   elements.sharedAppServerDescription.textContent = next.shared_app_server_enabled
     ? `正在使用插件拥有且已通过健康检查的后台（端口 ${next.shared_app_server_port}）`
-    : "默认关闭，不影响 Codex 官方后台";
+    : next.shared_app_server_requested ? "共享后台暂不可用，启用偏好已保留；安全启动入口会尝试恢复" : "默认关闭，不影响 Codex 官方后台";
   elements.sharedAppServerPort.textContent = next.shared_app_server_port > 0 ? `端口 ${next.shared_app_server_port}` : "";
   const startupApprovalLabels: Record<ManagementSnapshot["startup_approved"], string> = {
     enabled: "Windows 登录启动：已启用",
@@ -228,7 +229,7 @@ function renderService(next: ManagementSnapshot): void {
     detail = "相关任务已停止自动重试；启动 Codex 后可手动重新开始";
     dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state === "shared_app_server_disabled") {
-    label = "共享后台已关闭";
+    label = next.shared_app_server_requested ? "共享后台暂不可用" : "共享后台已关闭";
     detail = "Codex 继续使用官方后台；打开共享后台后才会执行静默恢复";
     dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state === "shared_app_server_port_reserved") {
@@ -708,8 +709,15 @@ async function callTool(name: string, args: Record<string, unknown> = {}, quiet 
     if (next) render(next);
     else if (result.isError) throw new Error(result.content?.find((item) => item.text)?.text ?? "操作失败");
   } catch (error) {
+    if (name === "set_shared_app_server_enabled") {
+      // A failed health check may still have persisted the user's preference.
+      try {
+        const latest = extractSnapshot((await app.callServerTool({ name: "get_auto_retry_status", arguments: {} })) as ToolResult);
+        if (latest) render(latest);
+      } catch { /* Retain the last known status when the status read also fails. */ }
+    }
     if (name === "set_shared_app_server_enabled" && snapshot) {
-      elements.sharedAppServerToggle.checked = snapshot.shared_app_server_enabled;
+      elements.sharedAppServerToggle.checked = snapshot.shared_app_server_requested ?? snapshot.shared_app_server_enabled;
     }
     if (!quiet) showNotice(error instanceof Error ? error.message : "操作失败", true);
   } finally {

@@ -7,6 +7,31 @@ import (
 	"time"
 )
 
+func TestManagementTemporarySharedFailureKeepsPreference(t *testing.T) {
+	service := newManagementService(t.TempDir())
+	cfg := defaultConfig()
+	cfg.SharedAppServerRequested = true
+	if err := writeJSONAtomic(service.configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.SharedAppServerRequested || snapshot.SharedAppServerEnabled {
+		t.Fatal("snapshot confused preference and availability")
+	}
+	// Explicit disable must persist even when the effective mode is already off.
+	_, _ = service.setSharedAppServerEnabled(false, time.Now())
+	cfg, err = loadOrCreateConfig(service.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SharedAppServerRequested || cfg.SharedAppServerEnabled {
+		t.Fatal("explicit disable retained shared preference")
+	}
+}
+
 func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 	dataDir := t.TempDir()
 	service := newManagementService(dataDir)

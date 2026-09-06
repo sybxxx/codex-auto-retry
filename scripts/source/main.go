@@ -73,6 +73,7 @@ func prepareSharedBackendAtStartup(ctx context.Context, configPath, dataDir stri
 	} else {
 		result.Reason = controllerFailureReason(DispatchResult{}, err)
 	}
+	_ = recordSharedUnavailable(dataDir, result.Reason)
 	failOpenResult := completeStartupFailOpen(ctx, configPath, dataDir, config)
 	result.Config = failOpenResult.Config
 	result.CleanupErr = failOpenResult.CleanupErr

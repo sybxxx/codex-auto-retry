@@ -105,6 +105,7 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     Paused = if ($status) { [bool]$status.paused } else { $false }
     ControllerState = if ($runtimePathRedirected) { 'runtime_path_redirected' } elseif (-not $runtimeRunning) { 'backend_service_not_running' } elseif ($status) { [string]$status.controller_state } else { $null }
     SharedAppServerEnabled = if ($runtimePathRedirected) { $false } elseif ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
+    SharedAppServerRequested = if ($config -and $config.PSObject.Properties['shared_app_server_requested']) { [bool]$config.shared_app_server_requested } elseif ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
     StartupMode = $startupMode
     StartupEntry = if ([string]::IsNullOrWhiteSpace($runValue)) { $null } else { $runValue }
     StartupApproved = $startupApproval.Status

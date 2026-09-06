@@ -120,6 +120,7 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 		return errStopRequested
 	}
 
+	d.processSharedRecovery(ctx, now)
 	controllerReady := d.controllerRestartReady(ctx, now)
 	d.mu.Lock()
 	if controllerReady {
@@ -362,6 +363,7 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 }
 
 func (d *daemon) failOpenSharedBackend(ctx context.Context, reason string) string {
+	_ = recordSharedUnavailable(d.dataDir, reason)
 	cleaner, supported := d.runner.(sharedBackendFailureHandler)
 	if !supported {
 		return reason
@@ -990,6 +992,7 @@ func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 		ActiveRetries:                       active,
 		Paused:                              d.paused,
 		SharedAppServerEnabled:              d.config.SharedAppServerEnabled,
+		SharedAppServerRequested:            d.config.SharedAppServerRequested,
 		ControllerState:                     d.controllerState,
 		LastError:                           d.lastError,
 		MemoryUsageMB:                       memoryBytesToMB(d.memoryUsageBytes),

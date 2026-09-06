@@ -256,6 +256,10 @@ function Set-ConfigSharedMode {
             $config | Add-Member -NotePropertyName shared_app_server_enabled -NotePropertyValue $Enabled
         }
         else { $config.shared_app_server_enabled = $Enabled }
+        if ($null -eq $config.PSObject.Properties['shared_app_server_requested']) {
+            $config | Add-Member -NotePropertyName shared_app_server_requested -NotePropertyValue $Enabled
+        }
+        else { $config.shared_app_server_requested = $Enabled }
         Write-CodexAutoRetryJsonAtomic -Path $configPath -Value $config
     }
 }
