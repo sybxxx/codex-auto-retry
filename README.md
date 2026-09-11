@@ -50,15 +50,15 @@ behavior remains independent of whether either settings surface is open.
   notification acknowledgement, and turn correlation prevent a duplicate
   continuation or duplicate Agent creation. Other child failures remain owned
   by the parent workflow.
-- Tracks two independent safety limits. `本次故障恢复` counts every automatic
+- Tracks two independent safety limits. `本次故障恢复` (`Recoveries This Outage`) counts every automatic
   recovery in one outage (15 by default, configurable from 1 to 1000).
-  `连续无进展` counts retries that produce neither a visible assistant reply
+  `连续无进展` (`Consecutive No Progress`) counts retries that produce neither a visible assistant reply
   nor a completed tool result (5 by default, configurable from 1 to 100). A
   successful completion or a new user turn clears both; visible progress clears
   only the consecutive no-progress count.
 - When an active goal reaches either limit through repeated empty replies, the
   watchdog retains the exhausted entry, changes that goal to `blocked`, and
-  shows `目标连续空回复达到上限，目标恢复已停止`. Controller failures retry
+  shows `目标连续空回复达到上限，目标恢复已停止` (`Goal consecutive empty-reply limit reached, goal recovery stopped`). Controller failures retry
   separately and do not consume another provider attempt; repeated local
   control failure eventually stops with its own explicit reason.
 - Supports fixed, linear, or doubling delays capped at a configurable maximum.
@@ -122,7 +122,7 @@ watchdog.
 
 ## Management Panel
 
-Ask Codex to `打开 Codex Auto Retry 管理面板` or select the matching plugin
+Ask Codex to `打开 Codex Auto Retry 管理面板` (`Open Codex Auto Retry Management Panel`) or select the matching plugin
 starter prompt. The panel opens inside the current Codex task and shows:
 
 - the watchdog state, watched locations, and last scan;
@@ -135,7 +135,7 @@ starter prompt. The panel opens inside the current Codex task and shows:
 - the watchdog retry-limit notification preference.
 
 Normal conversations use silent continuation first. The default fallback text
-is `继续` and is used only if the installed Codex version explicitly rejects
+is `继续` (`Continue`) and is used only if the installed Codex version explicitly rejects
 empty-input turns. Goal mode never uses this text: it still activates Codex's
 native interrupted goal. Saving the text takes effect without restarting the
 watchdog.
@@ -189,14 +189,14 @@ task navigation.
 ## Installation And Maintenance
 
 End users can use the self-contained Windows x64 release ZIP. After extracting
-it, double-click `安装.cmd`; the installer verifies every packaged file, locates
+it, double-click `安装.cmd` (the installer script); the installer verifies every packaged file, locates
 the Codex App-bundled CLI, installs the personal plugin, registers current-user
 startup, starts the watchdog, and verifies both Codex registration and the
 runtime heartbeat. It requires neither administrator rights nor Go or Node.js.
-`卸载.cmd` removes the active integration while preserving retry configuration
+`卸载.cmd` (the uninstaller script) removes the active integration while preserving retry configuration
 and state by default.
 
-`启动管理器.cmd` opens a standalone startup manager through a detached
+`启动管理器.cmd` (the startup manager script) opens a standalone startup manager through a detached
 Windows Script Host launcher, so double-clicking it does not leave a console
 window in front of the manager. It displays the exact
 startup command, watchdog process and heartbeat, shared-backend state, and
@@ -204,7 +204,7 @@ endpoint status, including the separate Windows `StartupApproved` state. The
 embedded Codex management panel reports the same sign-in approval state, so a
 present `Run` command cannot be mistaken for a startup entry that Windows has
 silently disabled. It can enable/disable startup, start/stop the service, safely
-disable the shared backend, or uninstall the integration. `安全停用.cmd` is a
+disable the shared backend, or uninstall the integration. `安全停用.cmd` (the safe-disable script) is a
 one-click break-glass action that disables shared mode and restores the official
 Codex backend. These tools do not require the Codex management panel to be open.
 
@@ -233,7 +233,7 @@ route, even when shared mode is enabled. Rollback leaves the previous worker
 stopped with shared mode disabled rather than restoring an unsafe route.
 
 For silent recovery, start the service, enable shared mode, fully exit Codex,
-then use `安全启动Codex.vbs` in the extracted package or `Launch Codex safely`
+then use `安全启动Codex.vbs` (Safe Launch Codex script) in the extracted package or `Launch Codex safely`
 in the startup manager. This checks the installed worker and shared backend,
 then passes the address only to that new Desktop process. An unavailable,
 outdated or unverified backend selects official mode instead. Existing Codex
