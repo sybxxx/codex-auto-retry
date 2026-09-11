@@ -79,7 +79,7 @@ Source code lives under `scripts/source`.
 | `jsonio.go` | Atomic JSON persistence. |
 | `logger.go` | Size-limited, privacy-safe operational logging. |
 | `lock_windows.go`, `lock_nonwindows.go`, `config_lock*.go` | Per-user single-instance lock and cross-process config sidecar lock. |
-| `ui/settings.ps1` | Embedded Windows Forms status and settings window launched from the tray icon. |
+| `ui/settings.ps1` | Embedded Windows Forms status and settings window with one-click Chinese/English localization toggle launched from the tray icon. |
 | `*_test.go` | Classification, parsing, privacy, migration, restart, mirroring, correlation, concurrency, controller bounds, shared-server ownership, and two-client recovery regression tests. |
 
 ## Embedded Panel Source
