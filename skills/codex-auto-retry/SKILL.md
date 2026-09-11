@@ -61,9 +61,12 @@ and exit. This is not a second watchdog or a separate retry engine.
   recovery with `codex_not_running`; restart it manually from the panel after
   Codex is open again. Other controller failures stop after three consecutive
   failures by default instead of refreshing the countdown forever.
-  `codex_restart_required` means the user must fully exit Codex and reopen it
-  through `安全启动Codex.vbs` or the startup manager's safe-launch button.
-  Ordinary shortcuts do not opt into shared routing.
+  `codex_restart_required` means an older Desktop build has no verified recovery
+  route and the user must fully exit Codex and reopen it through
+  `安全启动Codex.vbs` or the startup manager's safe-launch button. Current
+  Windows Desktop builds may instead report `official_ipc_ready`: the watchdog
+  has verified the official named-pipe router, discovered the task owner, and
+  can submit an empty-input recovery request without changing global routing.
   The tray settings window exposes the same safe-launch action when this state is
   detected. It waits up to two minutes for the current Desktop process to close,
   then starts the verified process-scoped launcher without terminating Codex.

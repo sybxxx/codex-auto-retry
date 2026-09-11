@@ -27,6 +27,7 @@ type sharedEnvironmentOwner interface {
 type sharedAppServerController struct {
 	server            sharedServer
 	checker           desktopTransportChecker
+	officialIPC       officialDesktopIPC
 	settingsForThread func(string, string) (ResumeSettings, error)
 	configPath        string
 }
@@ -70,6 +71,7 @@ func newSharedAppServerController(config Config, dataDir string, logger *safeLog
 			configuredExecutable: config.PowerShellExecutable,
 			expectedEndpoint:     server.Endpoint,
 		},
+		officialIPC:       newOfficialDesktopIPC(),
 		settingsForThread: findThreadResumeSettings,
 		configPath:        filepath.Join(dataDir, "config.json"),
 	}
@@ -91,6 +93,9 @@ func (c *sharedAppServerController) Prepare(ctx context.Context) error {
 		return err
 	}
 	if state == desktopLegacyStdio {
+		if c.officialIPCReady(ctx) {
+			return nil
+		}
 		return errCodexRestartRequired
 	}
 	return nil
@@ -115,6 +120,9 @@ func (c *sharedAppServerController) Readiness(ctx context.Context) (string, erro
 	case desktopStopped:
 		return "codex_not_running", nil
 	case desktopLegacyStdio:
+		if c.officialIPCReady(ctx) {
+			return "official_ipc_ready", nil
+		}
 		return "codex_restart_required", nil
 	case desktopUnknown:
 		return "codex_app_not_ready", nil
@@ -139,7 +147,7 @@ func (c *sharedAppServerController) RetryThreadStatus(ctx context.Context, threa
 	if !c.server.SupportsHome(codexHome) {
 		return "", &controllerReasonError{reason: "codex_home_not_shared"}
 	}
-	result, ready, err := c.preflight(ctx, false)
+	result, ready, transport, err := c.preflight(ctx, false)
 	if err != nil {
 		return "", err
 	}
@@ -148,6 +156,12 @@ func (c *sharedAppServerController) RetryThreadStatus(ctx context.Context, threa
 			return "", &controllerReasonError{reason: result.Reason}
 		}
 		return "", errSharedServerUnavailable
+	}
+	if transport == desktopOfficialIPC {
+		// The stdio app-server is intentionally not queried directly. Treat the
+		// owner-routed IPC channel as active so lifecycle reconciliation cannot
+		// create a duplicate turn after an acknowledged request.
+		return "active", nil
 	}
 	client, err := dialAppServerRPC(ctx, c.server.Endpoint())
 	if err != nil {
@@ -208,8 +222,50 @@ func (c *sharedAppServerController) Dispatch(
 	if !c.server.SupportsHome(codexHome) {
 		return retryLaterResult("codex_home_not_shared", parentNotified), nil
 	}
-	if result, ready, err := c.preflight(ctx, parentNotified); err != nil || !ready {
+	result, ready, transport, err := c.preflight(ctx, parentNotified)
+	if err != nil || !ready {
 		return result, err
+	}
+	if transport == desktopOfficialIPC {
+		if c.officialIPC == nil {
+			return retryLaterResult("codex_background_channel_unavailable", parentNotified), nil
+		}
+		if failureClass == classEmptyResponse && !parentNotified && recoveryEventIDPattern.MatchString(recoveryEventID) {
+			parentID, parentErr := findThreadParentID(codexHome, threadID)
+			if parentErr != nil {
+				return retryLaterResult("subagent_recovery_event_unavailable", parentNotified), nil
+			}
+			if parentID != "" {
+				resolver := c.settingsForThread
+				if resolver == nil {
+					resolver = findThreadResumeSettings
+				}
+				parentSettings, settingsErr := resolver(codexHome, parentID)
+				if settingsErr != nil {
+					return retryLaterResult("subagent_recovery_event_unavailable", parentNotified), nil
+				}
+				if err := c.officialIPC.NotifySubagentRecovery(ctx, parentID, threadID, recoveryEventID, parentSettings); err != nil {
+					if errors.Is(err, errCodexIPCOwnerMissing) {
+						return retryLaterResult("subagent_parent_owner_unavailable", parentNotified), nil
+					}
+					return retryLaterResult("subagent_parent_recovery_failed", parentNotified), nil
+				}
+				parentNotified = true
+			}
+		}
+		if err := c.officialIPC.StartTurn(ctx, threadID, settings); err != nil {
+			if errors.Is(err, errCodexIPCOwnerMissing) {
+				return retryLaterResult("codex_thread_owner_unavailable", parentNotified), nil
+			}
+			return retryLaterResult("codex_background_dispatch_failed", parentNotified), nil
+		}
+		action := actionConversationContinue
+		reason := "official_ipc_turn_started"
+		if goalLimitRestart {
+			action = actionGoalResume
+			reason = "official_ipc_goal_turn_started"
+		}
+		return DispatchResult{Outcome: outcomeDispatched, Action: action, Reason: reason, ParentNotified: parentNotified}, nil
 	}
 	client, err := dialAppServerRPC(ctx, c.server.Endpoint())
 	if err != nil {
@@ -342,8 +398,12 @@ func (c *sharedAppServerController) BlockGoal(ctx context.Context, threadID stri
 	if !c.server.SupportsHome(codexHome) {
 		return retryLaterResult("codex_home_not_shared", false), nil
 	}
-	if result, ready, err := c.preflight(ctx, false); err != nil || !ready {
+	result, ready, transport, err := c.preflight(ctx, false)
+	if err != nil || !ready {
 		return result, err
+	}
+	if transport == desktopOfficialIPC {
+		return retryLaterResult("codex_ipc_goal_control_unsupported", false), nil
 	}
 	client, err := dialAppServerRPC(ctx, c.server.Endpoint())
 	if err != nil {
@@ -390,33 +450,44 @@ func (c *sharedAppServerController) BlockGoal(ctx context.Context, threadID stri
 	}
 }
 
-func (c *sharedAppServerController) preflight(ctx context.Context, parentNotified bool) (DispatchResult, bool, error) {
+func (c *sharedAppServerController) preflight(ctx context.Context, parentNotified bool) (DispatchResult, bool, desktopTransportState, error) {
 	enabled, err := c.sharedServerEnabled()
 	if err != nil {
-		return DispatchResult{}, false, err
+		return DispatchResult{}, false, desktopUnknown, err
 	}
 	if !enabled {
-		return retryLaterResult("shared_app_server_disabled", parentNotified), false, nil
+		return retryLaterResult("shared_app_server_disabled", parentNotified), false, desktopUnknown, nil
 	}
 	if err := c.ensureSharedServer(ctx); err != nil {
-		return DispatchResult{}, false, err
+		return DispatchResult{}, false, desktopUnknown, err
 	}
 	state, err := c.checker.State(ctx)
 	if err != nil {
-		return DispatchResult{}, false, err
+		return DispatchResult{}, false, desktopUnknown, err
 	}
 	switch state {
 	case desktopStopped:
-		return retryLaterResult("codex_not_running", parentNotified), false, nil
+		return retryLaterResult("codex_not_running", parentNotified), false, state, nil
 	case desktopLegacyStdio:
-		return retryLaterResult("codex_restart_required", parentNotified), false, nil
+		if c.officialIPCReady(ctx) {
+			return DispatchResult{}, true, desktopOfficialIPC, nil
+		}
+		return retryLaterResult("codex_restart_required", parentNotified), false, state, nil
 	case desktopUnknown:
-		return retryLaterResult("codex_app_not_ready", parentNotified), false, nil
+		return retryLaterResult("codex_app_not_ready", parentNotified), false, state, nil
 	case desktopSharedServer:
-		return DispatchResult{}, true, nil
+		return DispatchResult{}, true, state, nil
 	default:
-		return DispatchResult{}, false, errSharedServerUnavailable
+		return DispatchResult{}, false, state, errSharedServerUnavailable
 	}
+}
+
+func (c *sharedAppServerController) officialIPCReady(ctx context.Context) bool {
+	if c == nil || c.officialIPC == nil {
+		return false
+	}
+	ready, err := c.officialIPC.Available(ctx)
+	return err == nil && ready
 }
 
 func (c *sharedAppServerController) ensureSharedServer(ctx context.Context) error {

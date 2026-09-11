@@ -86,15 +86,20 @@ the explicit launcher, existing-process, stale-shell and self-update boundaries.
    person superseded the automatic chain.
 8. The controller verifies that Codex Desktop is using the configured shared
    transport using its executable identity and established connection to the
-   exact shared port; absence of a stdio child alone proves nothing. An old
-   Desktop-owned stdio app-server produces the visible,
+   exact shared port; absence of a stdio child alone proves nothing. On current
+   Windows Desktop builds, an official stdio app-server is additionally paired
+   with the verified `\\.\pipe\codex-ipc` router. A thread-owner discovery and
+   targeted `thread-follower-start-turn` request are required before that path
+   is considered automatic recovery. Older builds still produce the visible,
    terminal `codex_restart_required` state instead of another countdown.
 9. A reverse reader finds the latest `turn_context` and
    `thread_settings_applied` records in that task's rollout and decodes only the
    allowlisted execution settings needed by `thread/resume`.
 10. The watchdog opens its own JSON-RPC WebSocket client, resumes an unloaded
     target before reading it, rechecks live task state, and calls
-    `thread/resume` with the persisted settings when needed.
+    `thread/resume` with the persisted settings when needed. For official
+    stdio, it uses the Desktop IPC owner route with an empty input and the
+    persisted settings instead of injecting a global endpoint.
 11. For a subagent empty reply, the controller derives the parent from the child
     thread. If the parent is unloaded, it locates that parent's rollout and
     restores its own allowlisted execution settings before injecting one
@@ -224,6 +229,11 @@ worker restarts.
   allowlisted settings are JSON values, not executable strings.
 - The controller uses only state read, loaded-list, resume, parent
   recovery-event injection, goal status, and turn-start methods.
+- The official IPC path is loopback named-pipe traffic with 4-byte little-endian
+  framing. It initializes as a separate client, discovers the exact thread
+  owner, targets only that owner, rejects discovery requests for itself, and
+  treats an unknown owner or timeout as a bounded controller failure. It never
+  writes `CODEX_APP_SERVER_WS_URL`.
 - Goal state is checked before hydration and again immediately before the
   mutating goal/turn action. A goal appearing, disappearing, pausing, or
   changing to a terminal or limited state during dispatch fails closed.
@@ -248,6 +258,12 @@ worker restarts.
   the original child's live status, and calls `turn/start` only on that child.
   It contains no `spawn_agent` or `thread/start` request and cannot create a
   replacement thread.
+- When the Desktop uses official stdio, the IPC bridge carries the same
+  deterministic parent event as an owner-routed developer response item. If
+  the parent owner does not advertise untrusted app-input support, the child is
+  not woken and the controller records a bounded, explicit failure. Goal-stop
+  mutation still requires the shared app-server API; the official IPC path
+  reports that limitation instead of looping silently.
 - Goal-limit closure uses a separate fixed program that cannot hydrate, resume,
   inject items, or start a turn.
 - There is deliberately no visible-UI or navigation fallback. The compatibility

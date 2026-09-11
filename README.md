@@ -84,9 +84,12 @@ Codex is open again. Other local controller failures stop after three consecutiv
 failures by default instead of refreshing a countdown forever. A task that
 still uses Codex's old per-process transport stops with
 `codex_restart_required` and asks for a full exit followed by the safe Codex launcher.
-The settings window labels this explicitly as “Codex 未接入共享后台” (Codex not
-connected to shared backend) and explains that the shared service may already be
-healthy while the current Desktop process is still using its official stdio backend.
+On current Windows Desktop builds, the watchdog also recognizes the official
+`\\.\pipe\codex-ipc` owner route. The settings window then reports “Codex 已接入
+官方恢复通道” and retries the exact task through the owning Desktop client
+without changing global environment variables. Older builds still show
+“Codex 未接入共享后台” and require the safe launcher once before recovery can
+be enabled.
 It also shows the independent Windows sign-in approval state, so a present startup
 command that Windows has disabled is visible instead of being mistaken for a
 healthy background service.

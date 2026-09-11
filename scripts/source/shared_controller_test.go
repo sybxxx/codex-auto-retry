@@ -45,6 +45,24 @@ func (c staticDesktopChecker) State(context.Context) (desktopTransportState, err
 	return c.state, c.err
 }
 
+type fakeOfficialDesktopIPC struct {
+	available bool
+	starts    []string
+	notices   []string
+}
+
+func (f *fakeOfficialDesktopIPC) Available(context.Context) (bool, error) { return f.available, nil }
+
+func (f *fakeOfficialDesktopIPC) StartTurn(_ context.Context, threadID string, _ ResumeSettings) error {
+	f.starts = append(f.starts, threadID)
+	return nil
+}
+
+func (f *fakeOfficialDesktopIPC) NotifySubagentRecovery(_ context.Context, parentID, childID, eventID string, _ ResumeSettings) error {
+	f.notices = append(f.notices, parentID+"/"+childID+"/"+eventID)
+	return nil
+}
+
 type fakeAppServerClient struct {
 	connection *websocket.Conn
 	mu         sync.Mutex
@@ -519,6 +537,30 @@ func TestSharedControllerRequiresOneCodexRestartForLegacyTransport(t *testing.T)
 	)
 	if err != nil || result.Outcome != outcomeRetryLater || result.Reason != "codex_restart_required" {
 		t.Fatalf("legacy transport did not produce a bounded restart state: result=%+v err=%v", result, err)
+	}
+}
+
+func TestSharedControllerUsesOfficialIPCForLegacyStdio(t *testing.T) {
+	threadID := "019fa94e-0103-7183-b405-36bd307b6dbc"
+	ipc := &fakeOfficialDesktopIPC{available: true}
+	controller := &sharedAppServerController{
+		server:      staticSharedServer{home: `C:\Users\test\.codex`},
+		checker:     staticDesktopChecker{state: desktopLegacyStdio},
+		officialIPC: ipc,
+	}
+	result, err := controller.Dispatch(
+		context.Background(), threadID, "继续", testResumeSettings(),
+		time.Now().UTC(), time.Time{}, "", false, false, classServer, `C:\Users\test\.codex`,
+	)
+	if err != nil || result.Outcome != outcomeDispatched || result.Reason != "official_ipc_turn_started" {
+		t.Fatalf("official IPC did not dispatch the retry: result=%+v err=%v", result, err)
+	}
+	if len(ipc.starts) != 1 || ipc.starts[0] != threadID {
+		t.Fatalf("official IPC start count=%v, want one start for %s", ipc.starts, threadID)
+	}
+	state, err := controller.Readiness(context.Background())
+	if err != nil || state != "official_ipc_ready" {
+		t.Fatalf("official IPC readiness=%q err=%v", state, err)
 	}
 }
 

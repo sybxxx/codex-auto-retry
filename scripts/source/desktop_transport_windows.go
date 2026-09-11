@@ -20,6 +20,7 @@ const (
 	desktopStopped      desktopTransportState = "stopped"
 	desktopLegacyStdio  desktopTransportState = "legacy_stdio"
 	desktopSharedServer desktopTransportState = "shared_server"
+	desktopOfficialIPC  desktopTransportState = "official_ipc"
 	desktopUnknown      desktopTransportState = "unknown"
 )
 

@@ -215,6 +215,8 @@ func capabilityForControllerState(state string, sharedEnabled bool) desktopCapab
 	switch state {
 	case "ready":
 		return desktopCapability{Transport: "shared_websocket", RecoveryMode: "shared_websocket", Automatic: true, Reason: "verified"}
+	case "official_ipc_ready":
+		return desktopCapability{Transport: "official_ipc", RecoveryMode: "official_ipc", Automatic: true, Reason: "verified"}
 	case "codex_restart_required":
 		return desktopCapability{Transport: "official_stdio", RecoveryMode: "safe_launcher_required", Reason: "official_stdio_not_externally_controllable"}
 	case "codex_not_running":

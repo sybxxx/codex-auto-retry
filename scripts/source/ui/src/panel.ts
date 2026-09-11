@@ -228,6 +228,10 @@ function renderService(next: ManagementSnapshot): void {
     label = "Codex 未接入共享后台";
     detail = "共享后台已启动，但当前 Codex 仍使用官方后台；请使用安全启动 Codex 入口";
     dot.classList.add("status-dot-warning");
+  } else if (next.running && next.controller_state === "official_ipc_ready") {
+    label = "Codex 已接入官方恢复通道";
+    detail = "新版 Codex 使用官方 IPC，自动恢复请求会转交当前任务所有者";
+    dot.classList.add("status-dot-positive");
   } else if (next.running && next.controller_state === "codex_not_running") {
     label = "Codex 已退出";
     detail = "相关任务已停止自动重试；启动 Codex 后可手动重新开始";
@@ -264,7 +268,7 @@ function renderService(next: ManagementSnapshot): void {
     label = "共享后台内存保护";
     detail = `共享后台已停止接管（${next.shared_app_server_memory_usage_mb ?? 0} MB/${next.shared_app_server_memory_limit_mb ?? 0} MB），未强制关闭 Codex`;
     dot.classList.add("status-dot-warning");
-  } else if (next.running && next.controller_state && !["ready", "starting"].includes(next.controller_state)) {
+  } else if (next.running && next.controller_state && !["ready", "starting", "official_ipc_ready"].includes(next.controller_state)) {
     label = "恢复通道异常";
     detail = `自动重试已停止继续空转：${controllerStateLabel(next.controller_state)}`;
     dot.classList.add("status-dot-danger");
@@ -543,6 +547,14 @@ function stoppedStateLabel(retry: ManagedRetry): string {
       return "Codex 已退出";
     case "codex_restart_required":
       return "等待安全启动 Codex";
+    case "codex_ipc_goal_control_unsupported":
+      return "官方 IPC 暂不支持目标停止";
+    case "subagent_recovery_event_unavailable":
+      return "子 Agent 恢复事件不可用";
+    case "subagent_parent_owner_unavailable":
+      return "父任务所有者不可用";
+    case "subagent_parent_recovery_failed":
+      return "父任务恢复事件失败";
     case "codex_home_not_shared":
       return "任务目录未接入";
     case "shared_app_server_port_conflict":
@@ -563,6 +575,11 @@ function stoppedStateLabel(retry: ManagedRetry): string {
 function controllerStateLabel(value: string): string {
   const labels: Record<string, string> = {
     codex_restart_required: "需要安全启动 Codex",
+    official_ipc_ready: "新版 Codex 官方 IPC 已接入",
+    codex_ipc_goal_control_unsupported: "官方 IPC 暂不支持目标停止，恢复已停止",
+    subagent_recovery_event_unavailable: "无法确认子 Agent 的恢复事件",
+    subagent_parent_owner_unavailable: "无法确认父任务所有者",
+    subagent_parent_recovery_failed: "父任务恢复事件提交失败",
     codex_not_running: "Codex 已退出，自动重试已停止",
     shared_app_server_disabled: "共享后台模式已关闭，Codex 使用官方后台",
     codex_home_not_shared: "任务目录未接入共享通道",

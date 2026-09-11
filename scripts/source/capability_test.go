@@ -12,6 +12,7 @@ func TestCapabilityForControllerState(t *testing.T) {
 		reason    string
 	}{
 		{state: "ready", shared: true, transport: "shared_websocket", recovery: "shared_websocket", automatic: true, reason: "verified"},
+		{state: "official_ipc_ready", shared: true, transport: "official_ipc", recovery: "official_ipc", automatic: true, reason: "verified"},
 		{state: "codex_restart_required", shared: true, transport: "official_stdio", recovery: "safe_launcher_required", reason: "official_stdio_not_externally_controllable"},
 		{state: "shared_app_server_disabled", shared: false, transport: "official_stdio", recovery: "none", reason: "shared_backend_disabled"},
 		{state: "codex_not_running", transport: "stopped", recovery: "none", reason: "codex_not_running"},

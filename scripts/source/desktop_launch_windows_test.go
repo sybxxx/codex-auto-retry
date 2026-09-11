@@ -99,7 +99,7 @@ func TestReadinessRetiresLegacyRouteWithoutKillingActiveBackend(t *testing.T) {
 
 func TestUnknownDesktopTransportCannotDispatch(t *testing.T) {
 	controller := &sharedAppServerController{server: staticSharedServer{}, checker: staticDesktopChecker{state: desktopUnknown}}
-	_, allowed, err := controller.preflight(context.Background(), false)
+	_, allowed, _, err := controller.preflight(context.Background(), false)
 	if allowed || err != nil {
 		t.Fatalf("unproven connection allowed dispatch: %v %v", allowed, err)
 	}

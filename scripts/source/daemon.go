@@ -712,7 +712,7 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 
 func controllerFailureNeedsAction(reason string) bool {
 	switch reason {
-	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_ownership_unknown", "shared_app_server_disabled", "shared_app_server_config_invalid", "shared_app_server_migration_deferred":
+	case "codex_not_running", "codex_restart_required", "codex_home_not_shared", "shared_app_server_port_reserved", "shared_app_server_port_conflict", "shared_app_server_environment_conflict", "shared_app_server_ownership_unknown", "shared_app_server_disabled", "shared_app_server_config_invalid", "shared_app_server_migration_deferred", "codex_ipc_goal_control_unsupported":
 		return true
 	default:
 		return false
