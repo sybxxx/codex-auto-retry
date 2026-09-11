@@ -61,6 +61,10 @@ type ManagementSnapshot struct {
 	SharedAppServerPort                 int            `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
 	SharedAppServerEnabled              bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
 	SharedAppServerRequested            bool           `json:"shared_app_server_requested" jsonschema:"whether the user wants shared recovery mode, including when temporarily unavailable"`
+	DesktopTransport                    string         `json:"desktop_transport" jsonschema:"official_stdio, shared_websocket, stopped, or unknown"`
+	RecoveryMode                        string         `json:"recovery_mode" jsonschema:"shared_websocket, safe_launcher_required, or none"`
+	AutomaticRecoverySupported          bool           `json:"automatic_recovery_supported" jsonschema:"whether the current Desktop transport accepts automatic recovery"`
+	RecoveryCapabilityReason            string         `json:"recovery_capability_reason" jsonschema:"privacy-safe capability reason"`
 	StartupApproved                     string         `json:"startup_approved" jsonschema:"Windows sign-in approval state for the CodexAutoRetry startup entry"`
 	Now                                 string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
 	LastScanAt                          string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
@@ -163,6 +167,8 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		SharedAppServerPort:          config.SharedAppServerPort,
 		SharedAppServerEnabled:       config.SharedAppServerEnabled,
 		SharedAppServerRequested:     config.SharedAppServerRequested,
+		DesktopTransport:             "unknown",
+		RecoveryMode:                 "none",
 		StartupApproved:              readStartupApprovalStatus(),
 		Now:                          now.Format(time.RFC3339Nano),
 		PendingRetries:               pending,
@@ -177,6 +183,20 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		snapshot.WatchedRoots = status.WatchedRoots
 		snapshot.LastError = status.LastError
 		snapshot.ControllerState = status.ControllerState
+		capability := capabilityForControllerState(status.ControllerState, status.SharedAppServerEnabled)
+		snapshot.DesktopTransport = status.DesktopTransport
+		if snapshot.DesktopTransport == "" {
+			snapshot.DesktopTransport = capability.Transport
+		}
+		snapshot.RecoveryMode = status.RecoveryMode
+		if snapshot.RecoveryMode == "" {
+			snapshot.RecoveryMode = capability.RecoveryMode
+		}
+		snapshot.AutomaticRecoverySupported = status.AutomaticRecoverySupported
+		snapshot.RecoveryCapabilityReason = status.RecoveryCapabilityReason
+		if snapshot.RecoveryCapabilityReason == "" {
+			snapshot.RecoveryCapabilityReason = capability.Reason
+		}
 		snapshot.MemoryUsageMB = status.MemoryUsageMB
 		if status.MemoryLimitMB > 0 {
 			snapshot.MemoryLimitMB = status.MemoryLimitMB

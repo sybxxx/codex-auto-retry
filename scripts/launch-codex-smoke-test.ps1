@@ -76,11 +76,21 @@ try {
     [IO.File]::WriteAllText($desktopExe, 'test fixture, never launched')
     $script:mockPackages = @([pscustomobject]@{ InstallLocation = $root; Version = '1.0' })
     Assert-LaunchTest ((Get-CodexDesktopExecutable) -eq $desktopExe) 'current user package exact executable'
+    Remove-Item -LiteralPath $desktopExe -Force
+    $codexExe = Join-Path $root 'app\Codex.exe'
+    [IO.File]::WriteAllText($codexExe, 'test fixture, never launched')
+    Assert-LaunchTest ((Get-CodexDesktopExecutable) -eq $codexExe) 'new Codex executable fallback'
+    Remove-Item -LiteralPath $codexExe -Force
+    [IO.File]::WriteAllText($desktopExe, 'test fixture, never launched')
     Assert-CodexDesktopStopped $desktopExe
     $script:mockDesktop = @([pscustomobject]@{ Name = 'ChatGPT.exe'; ExecutablePath = $desktopExe })
     $refused = $false
     try { Assert-CodexDesktopStopped $desktopExe } catch { $refused = $true }
     Assert-LaunchTest $refused 'existing desktop rejected without stopping it'
+    $waitRefused = $false
+    $waitClock = [Diagnostics.Stopwatch]::StartNew()
+    try { Wait-CodexDesktopStopped -TimeoutSeconds 1 } catch { $waitRefused = $true }
+    Assert-LaunchTest ($waitRefused -and $waitClock.Elapsed.TotalSeconds -lt 3) 'wait-for-exit is bounded and non-destructive'
     $script:mockDesktop = @([pscustomobject]@{ Name = 'Codex.exe'; ExecutablePath = $null })
     $refused = $false
     try { Assert-CodexDesktopStopped $desktopExe } catch { $refused = $true }

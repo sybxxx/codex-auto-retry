@@ -64,6 +64,9 @@ and exit. This is not a second watchdog or a separate retry engine.
   `codex_restart_required` means the user must fully exit Codex and reopen it
   through `安全启动Codex.vbs` or the startup manager's safe-launch button.
   Ordinary shortcuts do not opt into shared routing.
+  The tray settings window exposes the same safe-launch action when this state is
+  detected. It waits up to two minutes for the current Desktop process to close,
+  then starts the verified process-scoped launcher without terminating Codex.
 
 ## Embedded Management
 

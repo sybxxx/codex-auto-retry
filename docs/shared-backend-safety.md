@@ -15,6 +15,29 @@ The plugin has two deliberately separate modes:
 
 ## Process-Scoped Desktop Launch
 
+## Codex Capability Profiles
+
+The watchdog reports the capability it has actually proved in its status
+snapshot; a saved preference is not treated as a connection. The current
+Windows Codex App profile is:
+
+| Observed transport | Automatic recovery | Recovery path | Meaning |
+| --- | --- | --- | --- |
+| Official `stdio` | No | Safe process-scoped launcher | Codex is healthy, but an external watchdog cannot inject into its private stdio pipe. |
+| Verified plugin-owned WebSocket | Yes | Shared WebSocket RPC | The endpoint, process identity, command line, version marker, and handshake all passed. |
+| Stopped or unknown | No | None | The watchdog remains fail-closed until Codex or a verifiable connection is available. |
+
+The `desktop_transport`, `recovery_mode`, `automatic_recovery_supported`, and
+`recovery_capability_reason` fields are diagnostic only and are intentionally
+derived from live evidence. A Codex update that changes its process or
+transport shape therefore falls back to observation instead of being routed
+through an unproven compatibility path.
+
+Windows also stores startup approval separately from the `Run` command. The
+settings window, management panel, and status script show `enabled`, `disabled`,
+or `unknown` independently; the supervisor repairs only a disabled marker that
+matches the plugin-owned executable.
+
 Configuration version 11 separates the saved user preference
 `shared_app_server_requested` from the effective `shared_app_server_enabled`
 gate. Temporary failure disables only the latter. Explicit disable, uninstall
@@ -47,6 +70,10 @@ only the new Desktop process the verified endpoint. Missing, old, stopped or
 unhealthy services select the official backend instead. `-Official` explicitly
 selects that backend; `-CheckOnly` performs read-only preflight without opening
 Desktop or writing a result record.
+The tray settings window offers the same action when the worker reports
+`codex_restart_required`. That action waits up to 120 seconds for Desktop to
+close and then invokes this launcher; it never terminates an existing Codex
+process or writes a persistent endpoint.
 
 The launcher removes `CODEX_APP_SERVER_WS_URL` from the child environment before
 choosing a route, including stale inherited values. It does not change the

@@ -84,6 +84,12 @@ Codex is open again. Other local controller failures stop after three consecutiv
 failures by default instead of refreshing a countdown forever. A task that
 still uses Codex's old per-process transport stops with
 `codex_restart_required` and asks for a full exit followed by the safe Codex launcher.
+The settings window labels this explicitly as “Codex 未接入共享后台” (Codex not
+connected to shared backend) and explains that the shared service may already be
+healthy while the current Desktop process is still using its official stdio backend.
+It also shows the independent Windows sign-in approval state, so a present startup
+command that Windows has disabled is visible instead of being mistaken for a
+healthy background service.
 User cancellation, invalid requests, ordinary HTTP 400/404 errors, missing
 models, context length errors, policy failures, permission failures, and
 approval failures are not retried.
@@ -238,6 +244,10 @@ in the startup manager. This checks the installed worker and shared backend,
 then passes the address only to that new Desktop process. An unavailable,
 outdated or unverified backend selects official mode instead. Existing Codex
 instances are never stopped or focused by this launcher.
+The tray settings window also exposes a `安全启动 Codex` button when the
+controller detects that Desktop is still using the official backend. It waits up
+to two minutes for the current Codex process to close, then invokes the same
+verified process-scoped launcher; it never terminates Codex itself.
 
 Ordinary shortcuts remain unchanged and use the official backend after legacy
 routing is retired, regardless of whether Windows starts the plugin. Silent

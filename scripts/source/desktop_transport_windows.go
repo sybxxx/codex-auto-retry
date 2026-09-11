@@ -35,10 +35,10 @@ type powerShellDesktopTransportChecker struct {
 const desktopTransportScript = `$ErrorActionPreference = 'Stop'
 $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
 $main = @($all | Where-Object {
-    $_.Name -eq 'ChatGPT.exe' -and
+    ($_.Name -eq 'ChatGPT.exe' -or $_.Name -eq 'Codex.exe') -and
     $_.ExecutablePath -and
-    ($_.ExecutablePath -match '(?i)\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\ChatGPT\.exe$' -or
-     $_.ExecutablePath -match '(?i)\\OpenAI\\Codex\\ChatGPT\.exe$') -and
+    ($_.ExecutablePath -match '(?i)\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\(?:ChatGPT|Codex)\.exe$' -or
+     $_.ExecutablePath -match '(?i)\\OpenAI\\Codex\\(?:ChatGPT|Codex)\.exe$') -and
     (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
 })
 if ($main.Count -eq 0) {
@@ -61,15 +61,19 @@ $owned = @($all | Where-Object {
 $legacy = @($owned | Where-Object {
     $_.CommandLine -notmatch '(?:^|\s)--listen(?:=|\s)'
 })
-if ($legacy.Count -gt 0) {
+$connections = @(Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object {
+    $clientIds -contains [int]$_.OwningProcess -and
+    $_.RemoteAddress -eq '127.0.0.1' -and [int]$_.RemotePort -eq $expectedPort
+})
+# Newer Desktop builds may keep an auxiliary stdio app-server child while the
+# main client is already connected to the verified shared endpoint. Connection
+# evidence is stronger than the presence of that auxiliary child.
+if ($connections.Count -gt 0) {
+    [Console]::Out.Write('shared_server')
+} elseif ($legacy.Count -gt 0) {
     [Console]::Out.Write('legacy_stdio')
 } else {
-    $connections = @(Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object {
-        $clientIds -contains [int]$_.OwningProcess -and
-        $_.RemoteAddress -eq '127.0.0.1' -and [int]$_.RemotePort -eq $expectedPort
-    })
-    if ($connections.Count -gt 0) { [Console]::Out.Write('shared_server') }
-    else { [Console]::Out.Write('unknown') }
+    [Console]::Out.Write('unknown')
 }`
 
 func (c powerShellDesktopTransportChecker) State(ctx context.Context) (desktopTransportState, error) {

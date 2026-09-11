@@ -66,6 +66,10 @@ func TestManagementSnapshotIncludesIndependentCountdowns(t *testing.T) {
 		snapshot.PendingRetries != 1 || snapshot.ActiveRetries != 1 || len(snapshot.Retries) != 2 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
+	if snapshot.DesktopTransport != "official_stdio" || snapshot.RecoveryMode != "safe_launcher_required" ||
+		snapshot.AutomaticRecoverySupported || snapshot.RecoveryCapabilityReason != "official_stdio_not_externally_controllable" {
+		t.Fatalf("desktop capability was not surfaced: %+v", snapshot)
+	}
 	if snapshot.Retries[0].State != "running" || snapshot.Retries[0].RecoveryAttempt != 3 ||
 		snapshot.Retries[0].ConsecutiveRetry != 2 || snapshot.Retries[1].SecondsRemaining != 6 ||
 		snapshot.Retries[1].RecoveryAttempt != 4 || snapshot.Retries[1].ConsecutiveRetry != 1 {

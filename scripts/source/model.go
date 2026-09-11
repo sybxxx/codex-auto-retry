@@ -201,9 +201,45 @@ type DispatchResult struct {
 	ParentNotified bool            `json:"parent_notified,omitempty"`
 }
 
+// desktopCapability describes the transport the watchdog has actually proved.
+// Official stdio is observable but is not externally injectable on Windows;
+// only a verified shared WebSocket supports automatic recovery.
+type desktopCapability struct {
+	Transport    string
+	RecoveryMode string
+	Automatic    bool
+	Reason       string
+}
+
+func capabilityForControllerState(state string, sharedEnabled bool) desktopCapability {
+	switch state {
+	case "ready":
+		return desktopCapability{Transport: "shared_websocket", RecoveryMode: "shared_websocket", Automatic: true, Reason: "verified"}
+	case "codex_restart_required":
+		return desktopCapability{Transport: "official_stdio", RecoveryMode: "safe_launcher_required", Reason: "official_stdio_not_externally_controllable"}
+	case "codex_not_running":
+		return desktopCapability{Transport: "stopped", RecoveryMode: "none", Reason: "codex_not_running"}
+	case "codex_app_not_ready":
+		return desktopCapability{Transport: "unknown", RecoveryMode: "none", Reason: "desktop_connection_not_proven"}
+	case "shared_app_server_disabled":
+		return desktopCapability{Transport: "official_stdio", RecoveryMode: "none", Reason: "shared_backend_disabled"}
+	case "shared_app_server_config_invalid", "shared_app_server_port_conflict", "shared_app_server_port_reserved", "shared_app_server_environment_conflict", "shared_app_server_ownership_unknown":
+		if sharedEnabled {
+			return desktopCapability{Transport: "unknown", RecoveryMode: "none", Reason: state}
+		}
+		return desktopCapability{Transport: "official_stdio", RecoveryMode: "none", Reason: state}
+	default:
+		return desktopCapability{Transport: "unknown", RecoveryMode: "none", Reason: state}
+	}
+}
+
 type StatusSnapshot struct {
 	BuildSourceHash                     string    `json:"build_source_hash"`
 	DesktopLaunchMode                   string    `json:"desktop_launch_mode"`
+	DesktopTransport                    string    `json:"desktop_transport,omitempty"`
+	RecoveryMode                        string    `json:"recovery_mode,omitempty"`
+	AutomaticRecoverySupported          bool      `json:"automatic_recovery_supported"`
+	RecoveryCapabilityReason            string    `json:"recovery_capability_reason,omitempty"`
 	Version                             string    `json:"version"`
 	Running                             bool      `json:"running"`
 	PID                                 int       `json:"pid"`

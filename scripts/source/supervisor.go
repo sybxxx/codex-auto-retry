@@ -37,6 +37,12 @@ func runSupervisor(dataDir string, noTray bool) error {
 	if err != nil {
 		return err
 	}
+	// Repair only the matching plugin-owned startup marker. This keeps a
+	// disabled StartupApproved value from making the watchdog disappear after
+	// the next sign-in, while preserving unrelated startup entries.
+	if err := ensureStartupApproval(executable); err != nil {
+		appendSupervisorLog(dataDir, "startup approval repair failed category=registry")
+	}
 	stopPath := filepath.Join(dataDir, "supervisor.stop")
 	// A marker left by a previous clean session must not disable the next
 	// Windows sign-in. During this supervisor instance the worker writes a new

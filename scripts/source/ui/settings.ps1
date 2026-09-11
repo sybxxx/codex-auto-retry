@@ -18,6 +18,7 @@ $localCommandExitPortConflict = 3
 $script:localCommandProcess = $null
 $script:localCommandTimedOut = $false
 $script:localCommandInProgress = $false
+$script:safeLaunchInProgress = $false
 $script:memoryGuardTriggered = $false
 
 $configPath = Join-Path $DataDir 'config.json'
@@ -26,6 +27,7 @@ $statusPath = Join-Path $DataDir 'status.json'
 $statePath = Join-Path $DataDir 'state.json'
 $smokeClosePath = Join-Path $DataDir 'settings-smoke-close.signal'
 $uiLangPath = Join-Path $DataDir 'ui-language.json'
+$safeLauncherPath = Join-Path $env:USERPROFILE 'plugins\codex-auto-retry\scripts\launch-codex.ps1'
 
 function Get-SharedModeRequested($Config) {
     if (-not $Config) { return $false }
@@ -78,7 +80,11 @@ $script:i18n = @{
     'status_group'            = @{ zh = '当前状态'; en = 'Current Status' }
     'status_loading'          = @{ zh = '正在读取…'; en = 'Loading...' }
     'status_not_running'      = @{ zh = '后台服务未运行'; en = 'Service Not Running' }
-    'status_disconnected'     = @{ zh = '未接入共享后台'; en = 'Shared Backend Offline' }
+    'status_disconnected'     = @{ zh = 'Codex 未接入共享后台'; en = 'Codex Not Connected' }
+    'status_disconnected_hint' = @{ zh = '共享后台已启动；请使用安全启动入口重启 Codex。'; en = 'Shared backend is running; relaunch Codex with the safe launcher.' }
+    'startup_approval_enabled' = @{ zh = '登录启动已启用'; en = 'Sign-in startup enabled' }
+    'startup_approval_disabled' = @{ zh = '登录启动已禁用'; en = 'Sign-in startup disabled' }
+    'startup_approval_unknown' = @{ zh = '登录启动状态未知'; en = 'Sign-in startup unknown' }
     'status_exited'           = @{ zh = 'Codex 已退出，重试已停止'; en = 'Codex Exited (Stopped)' }
     'status_shared_temp_unavail' = @{ zh = '共享后台暂不可用'; en = 'Shared Backend Unavailable' }
     'status_shared_disabled'  = @{ zh = '共享后台已关闭'; en = 'Shared Backend Disabled' }
@@ -105,6 +111,12 @@ $script:i18n = @{
     'btn_retry_now'           = @{ zh = '立即重试'; en = 'Retry Now' }
     'btn_cancel_retry'        = @{ zh = '取消等待'; en = 'Cancel Wait' }
     'btn_restart_retry'       = @{ zh = '重新开始'; en = 'Restart' }
+    'btn_safe_launch'         = @{ zh = '安全启动 Codex'; en = 'Safe Launch Codex' }
+    'safe_launch_running'     = @{ zh = '正在等待 Codex 关闭并通过安全入口启动…'; en = 'Waiting for Codex to close, then launching safely...' }
+    'safe_launch_done'        = @{ zh = '已请求安全启动 Codex，请稍候刷新状态。'; en = 'Safe Codex launch requested; status will refresh shortly.' }
+    'safe_launch_failed'      = @{ zh = '安全启动失败，请确认 Codex 已完全退出。'; en = 'Safe launch failed; confirm that Codex is fully closed.' }
+    'safe_launch_missing'     = @{ zh = '找不到安全启动脚本，请重新安装插件。'; en = 'Safe launcher is missing; reinstall the plugin.' }
+    'safe_launch_disabled'    = @{ zh = '请先启用共享 Codex 后台。'; en = 'Enable the shared Codex backend first.' }
     'settings_group'          = @{ zh = '自动重试设置'; en = 'Auto Retry Settings' }
     'check_enabled'           = @{ zh = '启用自动重试'; en = 'Enable Auto Retry' }
     'check_shared'            = @{ zh = '启用共享 Codex 后台（健康检查）'; en = 'Enable Shared Codex Backend' }
@@ -213,6 +225,94 @@ function Start-LocalCommand {
         $script:localCommandProcess = $null
         if ($process) { $process.Dispose() }
     }
+}
+
+function Get-StartupApprovalStatus {
+    $key = $null
+    try {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+            'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run',
+            $false
+        )
+        if ($null -eq $key) { return 'unknown' }
+        $bytes = $key.GetValue('CodexAutoRetry', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($bytes -isnot [byte[]] -or $bytes.Length -lt 4 -or $bytes[1] -ne 0 -or $bytes[2] -ne 0 -or $bytes[3] -ne 0) { return 'unknown' }
+        if ($bytes[0] -eq 2) { return 'enabled' }
+        if ($bytes[0] -eq 3) { return 'disabled' }
+        return 'unknown'
+    } catch {
+        return 'unknown'
+    } finally {
+        if ($key) { $key.Close() }
+    }
+}
+
+function ConvertTo-ProcessArgument {
+    param([string]$Value)
+    if ($Value -notmatch '[\s"]') { return $Value }
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Start-SafeCodexLaunch {
+    if ($script:localCommandInProgress) { return }
+    $currentConfig = Read-JsonFile $configPath
+    if (-not (Get-SharedModeRequested $currentConfig)) {
+        $noticeLabel.Text = T 'safe_launch_disabled'
+        $noticeLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+        return
+    }
+    if (-not (Test-Path -LiteralPath $safeLauncherPath -PathType Leaf)) {
+        $noticeLabel.Text = T 'safe_launch_missing'
+        $noticeLabel.ForeColor = [System.Drawing.Color]::Firebrick
+        return
+    }
+    $powershellPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powershellPath -PathType Leaf)) { $powershellPath = 'powershell.exe' }
+    $arguments = @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', (ConvertTo-ProcessArgument $safeLauncherPath),
+        '-DataDir', (ConvertTo-ProcessArgument $DataDir),
+        '-WaitForExitSeconds', '120'
+    ) -join ' '
+    $script:localCommandInProgress = $true
+    $script:safeLaunchInProgress = $true
+    Set-SettingsBusy $true
+    $noticeLabel.Text = T 'safe_launch_running'
+    $noticeLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+    try {
+        $script:localCommandProcess = Start-Process -FilePath $powershellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    } catch {
+        $script:localCommandProcess = $null
+        $script:safeLaunchInProgress = $false
+        $script:localCommandInProgress = $false
+        Set-SettingsBusy $false
+        $noticeLabel.Text = T 'safe_launch_failed'
+        $noticeLabel.ForeColor = [System.Drawing.Color]::Firebrick
+    }
+}
+
+function Complete-SafeCodexLaunch {
+    if (-not $script:safeLaunchInProgress -or -not $script:localCommandProcess) { return }
+    $process = $script:localCommandProcess
+    try {
+        if (-not $process.HasExited) { return }
+        $exitCode = $process.ExitCode
+    } catch {
+        $exitCode = 1
+    }
+    $process.Dispose()
+    $script:localCommandProcess = $null
+    $script:safeLaunchInProgress = $false
+    $script:localCommandInProgress = $false
+    Set-SettingsBusy $false
+    if ($exitCode -eq 0) {
+        $noticeLabel.Text = T 'safe_launch_done'
+        $noticeLabel.ForeColor = [System.Drawing.Color]::SeaGreen
+    } else {
+        $noticeLabel.Text = T 'safe_launch_failed'
+        $noticeLabel.ForeColor = [System.Drawing.Color]::Firebrick
+    }
+    Update-RuntimeView
 }
 
 function New-Label {
@@ -341,12 +441,18 @@ $sharedCheck.Size = [System.Drawing.Size]::new(260, 24)
 $sharedCheck.Checked = Get-SharedModeRequested $config
 $sharedPortValue = New-Label ((T 'shared_port_prefix') + [int]$config.shared_app_server_port) 300 25 255 24
 $sharedPortValue.ForeColor = [System.Drawing.Color]::DimGray
+$safeLaunchButton = [System.Windows.Forms.Button]::new()
+$safeLaunchButton.Text = T 'btn_safe_launch'
+$safeLaunchButton.Location = [System.Drawing.Point]::new(300, 82)
+$safeLaunchButton.Size = [System.Drawing.Size]::new(255, 25)
+$safeLaunchButton.FlatStyle = 'Standard'
+$safeLaunchButton.Cursor = [System.Windows.Forms.Cursors]::Hand
 $notificationsCheck = [System.Windows.Forms.CheckBox]::new()
 $notificationsCheck.Text = T 'check_notifications'
 $notificationsCheck.Location = [System.Drawing.Point]::new(300, 52)
 $notificationsCheck.Size = [System.Drawing.Size]::new(255, 24)
 $notificationsCheck.Checked = [bool]$config.show_notifications
-$settingsGroup.Controls.AddRange(@($enabledCheck, $sharedCheck, $sharedPortValue, $notificationsCheck))
+$settingsGroup.Controls.AddRange(@($enabledCheck, $sharedCheck, $sharedPortValue, $safeLaunchButton, $notificationsCheck))
 
 $promptLabel = New-Label (T 'label_prompt') 18 85 180 22
 $settingsGroup.Controls.Add($promptLabel)
@@ -501,7 +607,7 @@ $form.Controls.AddRange(@($saveButton, $closeButton))
 $form.CancelButton = $closeButton
 
 $settingsInputControls = @(
-    $enabledCheck, $sharedCheck, $notificationsCheck, $promptBox,
+    $enabledCheck, $sharedCheck, $safeLaunchButton, $notificationsCheck, $promptBox,
     $recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox,
     $maxDelayBox, $incrementBox, $memoryBox
 )
@@ -550,7 +656,7 @@ function Get-StoppedStateText {
         if ($lang -eq 'en') { return 'Shared Backend Disabled' } else { return '共享后台已关闭' }
     }
     if ($Reason -eq 'codex_restart_required') {
-        if ($lang -eq 'en') { return 'Shared Backend Disconnected' } else { return '未接入共享后台' }
+        if ($lang -eq 'en') { return 'Codex Not Connected' } else { return 'Codex 未接入共享后台' }
     }
     if ($Reason -eq 'codex_home_not_shared') {
         if ($lang -eq 'en') { return 'Task Dir Not Shared' } else { return '任务目录未接入' }
@@ -751,6 +857,20 @@ function Update-RuntimeView {
     if ($status -and $status.last_scan_at) {
         try { $scanValue.Text = (T 'last_scan') + ([DateTimeOffset]::Parse([string]$status.last_scan_at).ToLocalTime().ToString('HH:mm:ss')) } catch { $scanValue.Text = '' }
     } else { $scanValue.Text = '' }
+    if ($status -and [string]$status.controller_state -eq 'codex_restart_required') {
+        if ($scanValue.Text) { $scanValue.Text += '  ·  ' }
+        $scanValue.Text += T 'status_disconnected_hint'
+    }
+    $startupApproval = Get-StartupApprovalStatus
+    if ($scanValue.Text) { $scanValue.Text += '  ·  ' }
+    $scanValue.Text += switch ($startupApproval) {
+        'enabled' { T 'startup_approval_enabled'; break }
+        'disabled' { T 'startup_approval_disabled'; break }
+        default { T 'startup_approval_unknown' }
+    }
+    $sharedRequested = Get-SharedModeRequested $currentConfig
+    $needsSafeLaunch = $status -and [string]$status.controller_state -in @('codex_restart_required', 'codex_not_running', 'codex_app_not_ready')
+    $safeLaunchButton.Enabled = -not $script:localCommandInProgress -and $sharedRequested -and $needsSafeLaunch
     Update-ActionButtons
 }
 
@@ -792,6 +912,7 @@ function Apply-Language {
     $settingsGroup.Text = T 'settings_group'
     $enabledCheck.Text = T 'check_enabled'
     $sharedCheck.Text = T 'check_shared'
+    $safeLaunchButton.Text = T 'btn_safe_launch'
     $notificationsCheck.Text = T 'check_notifications'
     $promptLabel.Text = T 'label_prompt'
     $recoveryLabel.Text = T 'label_recovery'
@@ -827,6 +948,7 @@ $taskList.add_SelectedIndexChanged({ Update-ActionButtons })
 $retryNowButton.add_Click({ Invoke-TaskAction 'retry_now' })
 $cancelRetryButton.add_Click({ Invoke-TaskAction 'cancel_retry' })
 $restartRetryButton.add_Click({ Invoke-TaskAction 'restart_retry' })
+$safeLaunchButton.add_Click({ Start-SafeCodexLaunch })
 $strategyBox.add_SelectedIndexChanged({ Update-DelayPreview })
 $initialDelayBox.add_ValueChanged({ Update-DelayPreview })
 $maxDelayBox.add_ValueChanged({ Update-DelayPreview })
@@ -926,6 +1048,7 @@ $timer.Interval = if ($SmokeTest) { 100 } else { 1000 }
 $smokeDeadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
 $timer.add_Tick({
     if (Test-SettingsMemoryLimit) { return }
+    Complete-SafeCodexLaunch
     if ($SmokeTest) {
         Update-RuntimeView
         if ((Test-Path -LiteralPath $smokeClosePath) -or [DateTimeOffset]::UtcNow -ge $smokeDeadline) {

@@ -980,9 +980,17 @@ func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 		pending = 0
 		active = 0
 	}
+	capability := capabilityForControllerState(d.controllerState, d.config.SharedAppServerEnabled)
+	if !running {
+		capability = capabilityForControllerState("codex_not_running", false)
+	}
 	status := StatusSnapshot{
 		BuildSourceHash:                     buildSourceHash,
 		DesktopLaunchMode:                   "process_scoped",
+		DesktopTransport:                    capability.Transport,
+		RecoveryMode:                        capability.RecoveryMode,
+		AutomaticRecoverySupported:          capability.Automatic,
+		RecoveryCapabilityReason:            capability.Reason,
 		Version:                             appVersion,
 		Running:                             running,
 		PID:                                 os.Getpid(),

@@ -52,6 +52,10 @@ type ManagementSnapshot = {
   paused: boolean;
   shared_app_server_enabled: boolean;
   shared_app_server_requested?: boolean;
+  desktop_transport?: "official_stdio" | "shared_websocket" | "stopped" | "unknown";
+  recovery_mode?: "shared_websocket" | "safe_launcher_required" | "none";
+  automatic_recovery_supported?: boolean;
+  recovery_capability_reason?: string;
   startup_approved: "enabled" | "disabled" | "unknown";
   retry_prompt: string;
   max_recovery_attempts: number;
@@ -221,8 +225,8 @@ function renderService(next: ManagementSnapshot): void {
     detail = `后台内存 ${next.memory_usage_mb ?? 0} MB，已超过上限 ${next.memory_limit_mb} MB`;
     dot.classList.add("status-dot-danger");
   } else if (next.running && next.controller_state === "codex_restart_required") {
-    label = "当前为官方后台";
-    detail = "尚未接入共享通道；普通重启不会切换，请使用安全启动 Codex 入口";
+    label = "Codex 未接入共享后台";
+    detail = "共享后台已启动，但当前 Codex 仍使用官方后台；请使用安全启动 Codex 入口";
     dot.classList.add("status-dot-warning");
   } else if (next.running && next.controller_state === "codex_not_running") {
     label = "Codex 已退出";
@@ -277,6 +281,9 @@ function renderService(next: ManagementSnapshot): void {
   }
   elements.serviceStatus.replaceChildren(dot, document.createTextNode(label));
   elements.serviceLine.textContent = detail;
+  if (next.running && next.automatic_recovery_supported === false && next.recovery_capability_reason === "official_stdio_not_externally_controllable") {
+    elements.serviceLine.textContent = `${detail}；当前为只监控模式，尚未发送自动恢复请求`;
+  }
   if (next.memory_guard_triggered) {
     elements.serviceLine.textContent = `${detail}；内存保护已触发（${next.memory_usage_mb ?? 0} MB/${next.memory_limit_mb} MB）`;
   }

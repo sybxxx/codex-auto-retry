@@ -185,12 +185,20 @@ try {
         throw 'Tray settings still contains an unbounded local-command wait.'
     }
     $reservedPortMessage = ([string][char]0x88AB) + ' Windows ' + ([char]0x4FDD) + ([char]0x7559)
-    if (-not $settingsSource.Contains('.WaitForExit(100)') -or
+    $boundedLocalWait = $settingsSource.Contains('.WaitForExit(100)') -or
+        ($settingsSource.Contains('Start-Sleep -Milliseconds 50') -and
+            $settingsSource.Contains('[System.Windows.Forms.Application]::DoEvents()'))
+    if (-not $boundedLocalWait -or
         -not $settingsSource.Contains('[System.Windows.Forms.Application]::DoEvents()') -or
         -not $settingsSource.Contains('$localCommandTimeoutMilliseconds') -or
         -not $settingsSource.Contains('$localCommandExitPortReserved') -or
         -not $settingsSource.Contains($reservedPortMessage)) {
         throw 'Tray settings does not keep local commands responsive and bounded.'
+    }
+    if (-not $settingsSource.Contains('Start-SafeCodexLaunch') -or
+        -not $settingsSource.Contains('WaitForExitSeconds') -or
+        -not $settingsSource.Contains('safe_launch_running')) {
+        throw 'Tray settings does not expose the bounded safe Codex launcher.'
     }
     $installerSource = [System.IO.File]::ReadAllText(
         (Join-Path $root 'payload\codex-auto-retry\scripts\install.ps1'),

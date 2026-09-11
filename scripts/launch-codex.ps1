@@ -2,7 +2,9 @@
 param(
     [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'),
     [switch]$Official,
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [ValidateRange(0, 300)]
+    [int]$WaitForExitSeconds = 0
 )
 
 Set-StrictMode -Version 2
@@ -108,10 +110,35 @@ function Get-CodexLaunchRoute {
 function Get-CodexDesktopExecutable {
     $packages = @(Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction Stop)
     foreach ($package in ($packages | Sort-Object Version -Descending)) {
-        $exe = Join-Path ([string]$package.InstallLocation) 'app\ChatGPT.exe'
-        if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+        foreach ($name in @('ChatGPT.exe', 'Codex.exe')) {
+            $exe = Join-Path ([string]$package.InstallLocation) ('app\' + $name)
+            if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+        }
     }
     throw 'Cannot find the current-user OpenAI.Codex package executable. Install or repair Codex first.'
+}
+
+function Wait-CodexDesktopStopped {
+    param([int]$TimeoutSeconds)
+    if ($TimeoutSeconds -le 0) { return }
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $running = @(Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe' OR Name = 'Codex.exe'" -ErrorAction Stop |
+                Where-Object {
+                    -not $_.ExecutablePath -or
+                    $_.Name -ieq 'ChatGPT.exe' -or
+                    [string]$_.ExecutablePath -match '(?i)\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\(?:ChatGPT|Codex)\.exe$' -or
+                    [string]$_.ExecutablePath -match '(?i)\\OpenAI\\Codex\\(?:ChatGPT|Codex)\.exe$'
+                })
+        }
+        catch {
+            throw 'Cannot confirm Codex is fully closed. Fully exit Codex and try again. No process was stopped.'
+        }
+        if ($running.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw 'Codex is still running. Fully exit Codex before using the safe launcher.'
 }
 
 function Invoke-CodexLaunchRecovery {
@@ -219,6 +246,7 @@ try {
     if (-not $CheckOnly) { $launchLock = Enter-CodexLaunchLock }
     $route = Get-CodexLaunchRoute -Runtime $DataDir -OfficialOnly:$Official
     $exe = Get-CodexDesktopExecutable
+    Wait-CodexDesktopStopped -TimeoutSeconds $WaitForExitSeconds
     Assert-CodexDesktopStopped -Executable $exe
     if ($CheckOnly) {
         [pscustomobject]@{ Mode = $route.Mode; Reason = $route.Reason; Executable = $exe; CanLaunch = $true }
