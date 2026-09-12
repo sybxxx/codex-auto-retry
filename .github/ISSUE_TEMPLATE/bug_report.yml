@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a reproducible problem with Codex Auto Retry
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, session files, conversation text, or private logs.
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      description: Use the version shown by the tray or management panel.
+      placeholder: 0.7.11
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and the expected behavior.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: List the smallest safe sequence that reproduces the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Safe diagnostics
+      description: Include status fields and error categories only. Remove paths, tokens, prompts, and response bodies.

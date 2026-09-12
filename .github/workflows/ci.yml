@@ -21,20 +21,24 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: scripts/source/go.mod
           cache-dependency-path: scripts/source/go.sum
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.x
           cache: npm
           cache-dependency-path: scripts/source/ui/package-lock.json
+
+      - name: Pin npm version
+        shell: pwsh
+        run: npm install --global npm@10.9.2
 
       - name: Build and validate binaries and panel
         shell: pwsh

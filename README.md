@@ -15,6 +15,7 @@ recovery remains independent of either interface being open. The latest Windows
 x64 release is available from the [GitHub Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) page.
 For contribution and vulnerability-reporting boundaries, see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+The project is maintained by `sybxxx` under the `TQY Local Tools` name.
 
 ## Why Codex Auto Retry?
 
