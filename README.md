@@ -10,6 +10,10 @@ behavior remains independent of whether either settings surface is open.
 
 - Watches the default Codex session store and optional Cockpit-managed Codex
   instances for recoverable provider failures.
+- Supports current Codex rollout names in both `thread-id.jsonl` and
+  `thread-id_turn-id.jsonl` form. The persistent thread ID is kept as the queue
+  key; an older queue written with the turn ID is migrated and duplicate entries
+  for the same task are merged on startup.
 - Rejoins the exact failed task through the Codex App process that is already
   running. Codex Desktop and the watchdog are two clients of one local shared
   app-server, so recovery does not open a task link, focus Codex, change the

@@ -564,6 +564,48 @@ func TestSharedControllerUsesOfficialIPCForLegacyStdio(t *testing.T) {
 	}
 }
 
+func TestSharedControllerUsesOfficialIPCToWakeParentAndContinueExactChild(t *testing.T) {
+	home := t.TempDir()
+	childID := "019fa94e-0103-7183-b405-36bd307b6dce"
+	parentID := "019fa94e-0103-7183-b405-36bd307b6dcf"
+	turnID := "019fa94e-0103-7183-b405-36bd307b6dd0"
+	rolloutDir := filepath.Join(home, "sessions", "2026", "09", "12")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(rolloutDir, "rollout-2026-09-12T00-00-00-"+childID+"_"+turnID+".jsonl")
+	metadata, _ := json.Marshal(map[string]any{
+		"type":   "session_meta",
+		"source": map[string]any{"subAgent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": parentID}}},
+	})
+	if err := os.WriteFile(rollout, append(metadata, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ipc := &fakeOfficialDesktopIPC{available: true}
+	controller := &sharedAppServerController{
+		server:      staticSharedServer{home: home},
+		checker:     staticDesktopChecker{state: desktopLegacyStdio},
+		officialIPC: ipc,
+		settingsForThread: func(string, string) (ResumeSettings, error) {
+			return testResumeSettings(), nil
+		},
+	}
+	eventID := "car-0123456789abcdef01234567"
+	result, err := controller.Dispatch(
+		context.Background(), childID, "继续", testResumeSettings(),
+		time.Now().UTC(), time.Time{}, eventID, false, false, classEmptyResponse, home,
+	)
+	if err != nil || result.Outcome != outcomeDispatched || result.Action != actionConversationContinue || !result.ParentNotified {
+		t.Fatalf("parent-owned official IPC recovery did not dispatch: result=%+v err=%v", result, err)
+	}
+	if len(ipc.notices) != 1 || ipc.notices[0] != parentID+"/"+childID+"/"+eventID {
+		t.Fatalf("parent recovery event=%v, want one deterministic notification", ipc.notices)
+	}
+	if len(ipc.starts) != 1 || ipc.starts[0] != childID {
+		t.Fatalf("child continuation=%v, want exactly the original child", ipc.starts)
+	}
+}
+
 func TestSharedControllerRepairsEnvironmentBeforeCheckingDesktopTransport(t *testing.T) {
 	server := &environmentAwareSharedServer{
 		staticSharedServer: staticSharedServer{home: `C:\Users\test\.codex`},

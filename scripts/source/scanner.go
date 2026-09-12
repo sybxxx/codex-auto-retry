@@ -12,7 +12,13 @@ import (
 	"time"
 )
 
-var threadIDPattern = regexp.MustCompile(`(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
+// Codex 0.153+ names rollouts as <thread-id>_<turn-id>.jsonl, while older
+// builds used <thread-id>.jsonl. The first UUID is the persistent thread ID;
+// the optional second UUID identifies only the turn that created the file.
+var (
+	threadIDPattern          = regexp.MustCompile(`(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\.jsonl$`)
+	rolloutThreadTurnPattern = regexp.MustCompile(`(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
+)
 
 type scannedEvent struct {
 	ThreadID    string
@@ -99,7 +105,7 @@ func migrateFileCursor(files map[string]FileCursor, path, threadID string, root 
 	newPath := strings.ToLower(filepath.Clean(path))
 	for oldPath, cursor := range files {
 		if strings.EqualFold(filepath.Clean(oldPath), filepath.Clean(path)) ||
-			!strings.HasSuffix(oldPath, strings.ToLower(threadID)+".jsonl") ||
+			!strings.EqualFold(threadIDFromPath(oldPath), threadID) ||
 			!filePathBelongsToRoot(oldPath, root) || oldPath == newPath {
 			continue
 		}
@@ -169,9 +175,8 @@ func readAppendedEvents(path string, offset int64, threadID string, root session
 }
 
 func threadKnownInFiles(files map[string]FileCursor, threadID string) bool {
-	needle := strings.ToLower(threadID) + ".jsonl"
 	for path := range files {
-		if strings.HasSuffix(path, needle) {
+		if strings.EqualFold(threadIDFromPath(path), threadID) {
 			return true
 		}
 	}
@@ -184,4 +189,12 @@ func threadIDFromPath(path string) string {
 		return ""
 	}
 	return strings.ToLower(match[1])
+}
+
+func rolloutIDsFromPath(path string) (string, string) {
+	match := rolloutThreadTurnPattern.FindStringSubmatch(filepath.Base(path))
+	if len(match) != 3 {
+		return "", ""
+	}
+	return strings.ToLower(match[1]), strings.ToLower(match[2])
 }

@@ -9,6 +9,44 @@ import (
 	"time"
 )
 
+func TestThreadIDFromPathUsesSessionIDForCurrentCodexRolloutNames(t *testing.T) {
+	threadID := "01a09113-348b-7381-bbba-3c7a3d8d0219"
+	turnID := "01a09370-a5fc-7d12-970d-544e9c43f612"
+	path := filepath.Join(`C:\Users\test\.codex\sessions\2026\09\12`,
+		"rollout-2026-09-12T10-27-08-"+threadID+"_"+turnID+".jsonl")
+	if got := threadIDFromPath(path); got != threadID {
+		t.Fatalf("current Codex rollout resolved to %q, want thread %q", got, threadID)
+	}
+	if got := threadIDFromPath("rollout-2026-09-12T10-27-08-" + threadID + ".jsonl"); got != threadID {
+		t.Fatalf("legacy Codex rollout resolved to %q, want thread %q", got, threadID)
+	}
+}
+
+func TestScanSessionsRoutesCurrentCodexRolloutEventsToSessionID(t *testing.T) {
+	home := t.TempDir()
+	sessions := filepath.Join(home, "sessions", "2026", "09", "12")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	threadID := "01a09113-348b-7381-bbba-3c7a3d8d0219"
+	turnID := "01a09370-a5fc-7d12-970d-544e9c43f612"
+	path := filepath.Join(sessions, "rollout-2026-09-12T10-27-08-"+threadID+"_"+turnID+".jsonl")
+	line := makeEventLine(t, "2026-09-12T02:27:22.627Z", "task_complete", turnID, "HTTP 503 Service Unavailable")
+	if err := os.WriteFile(path, line, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := newRuntimeState()
+	state.Initialized = true
+	root := sessionRoot{Sessions: filepath.Join(home, "sessions"), CodexHome: home}
+	events, err := scanSessions([]sessionRoot{root}, &state, time.Date(2026, 9, 12, 2, 28, 0, 0, time.UTC), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ThreadID != threadID || events[0].Event.TurnID != turnID {
+		t.Fatalf("current rollout event was routed as turn=%q instead of thread=%q: %+v", events[0].ThreadID, threadID, events)
+	}
+}
+
 func TestGoalEventUsesPayloadThreadInsteadOfCarrierFile(t *testing.T) {
 	carrierThreadID := "019f8944-588c-7e22-898b-cf7caa2f1f65"
 	path := filepath.Join(t.TempDir(), "rollout-2026-07-27T23-50-53-"+carrierThreadID+".jsonl")

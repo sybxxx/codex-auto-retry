@@ -49,6 +49,7 @@ func loadState(path string) (RuntimeState, error) {
 	if state.ProcessedEvents == nil {
 		state.ProcessedEvents = make(map[string]time.Time)
 	}
+	migrateCodex153ThreadIDs(&state)
 	state.Version = 5
 	for id, thread := range state.Threads {
 		if thread.RecoveryAttempts < 1 && thread.LegacyFailures > 0 {

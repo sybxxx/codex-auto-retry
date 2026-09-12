@@ -39,6 +39,9 @@ and exit. This is not a second watchdog or a separate retry engine.
   explicitly rejects empty-input turns.
 - Preserve each task's latest model, workspace, reasoning, personality,
   approval, and effective permission settings during background resume.
+- Current Codex builds may name a rollout `thread-id_turn-id.jsonl`; always use
+  the first UUID as the task ID. The watchdog migrates older turn-keyed state
+  and merges duplicate entries for the same task during startup.
 - Never open a task link, focus Codex, switch the task currently displayed,
   launch `codex exec resume`, or create a hidden external Codex task.
 - If one target task is already active, delay only that task. Other failed

@@ -56,6 +56,9 @@ the explicit launcher, existing-process, stale-shell and self-update boundaries.
 
 1. Codex writes a JSONL lifecycle event to a session rollout.
 2. The scanner reads only newly appended bytes using a persisted file cursor.
+   Current Codex builds can append the creating turn UUID after the persistent
+   thread UUID in the filename; the scanner and state loader retain only the
+   first UUID as the task key and migrate legacy turn-keyed queue entries.
 3. The event parser accepts `event_msg` records with payload type
    `task_started`, `task_complete`, `turn_aborted`, `user_message`, or
    `thread_goal_updated`. For a completion it derives only whether
