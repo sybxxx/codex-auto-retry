@@ -233,14 +233,23 @@ namespace CodexAutoRetrySmoke {
         if ($null -eq $disableButton -or $disableButton.Current.NativeWindowHandle -eq 0) {
             throw 'Startup manager action test could not find the Disable startup button.'
         }
-        if (-not [CodexAutoRetrySmoke.Native]::PostMessage(
-            [IntPtr]$disableButton.Current.NativeWindowHandle,
-            0x00F5,
-            [IntPtr]::Zero,
-            [IntPtr]::Zero
-        )) {
-            throw 'Startup manager action test could not click Disable startup.'
+        $invoked = $false
+        try {
+            $invokePattern = $disableButton.GetCurrentPattern(
+                [System.Windows.Automation.InvokePattern]::Pattern
+            )
+            $invokePattern.Invoke()
+            $invoked = $true
         }
+        catch {
+            $invoked = [CodexAutoRetrySmoke.Native]::PostMessage(
+                [IntPtr]$disableButton.Current.NativeWindowHandle,
+                0x00F5,
+                [IntPtr]::Zero,
+                [IntPtr]::Zero
+            )
+        }
+        if (-not $invoked) { throw 'Startup manager action test could not click Disable startup.' }
         $remainingValue = ''
         $actionDeadline = (Get-Date).AddSeconds(10)
         do {
