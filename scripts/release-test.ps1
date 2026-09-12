@@ -29,6 +29,33 @@ function Get-PeSubsystem {
     return [BitConverter]::ToUInt16($bytes, $optionalHeader + 68)
 }
 
+function Test-ReleasePathEquals {
+    param(
+        [Parameter(Mandatory = $true)][string]$Actual,
+        [Parameter(Mandatory = $true)][string]$Expected
+    )
+
+    try {
+        $actualPath = [IO.Path]::GetFullPath($Actual)
+        $expectedPath = [IO.Path]::GetFullPath($Expected)
+        foreach ($candidate in @($actualPath, $expectedPath)) {
+            $parent = Get-Item -LiteralPath (Split-Path -Parent $candidate) -ErrorAction SilentlyContinue
+            if ($null -eq $parent) { continue }
+            $canonical = Join-Path $parent.FullName (Split-Path -Leaf $candidate)
+            if ($candidate -eq $actualPath) { $actualPath = $canonical }
+            else { $expectedPath = $canonical }
+        }
+        return [string]::Equals(
+            $actualPath.TrimEnd('\'),
+            $expectedPath.TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
 try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
     Expand-Archive -LiteralPath $archive -DestinationPath $testRoot -Force
@@ -363,9 +390,9 @@ try {
     $installedMcpServer = $installedMcpConfig.mcpServers.'codex-auto-retry'
     $installedMcpArgs = @($installedMcpServer.args)
     $expectedMcpCommand = Join-Path $testLocalAppData 'CodexAutoRetry\codex-auto-retry-mcp.exe'
-    if (-not [string]::Equals([string]$installedMcpServer.command, $expectedMcpCommand, [System.StringComparison]::OrdinalIgnoreCase) -or
+    if (-not (Test-ReleasePathEquals -Actual ([string]$installedMcpServer.command) -Expected $expectedMcpCommand) -or
         $installedMcpArgs.Count -ne 1 -or [string]$installedMcpArgs[0] -ne 'mcp') {
-        throw 'Installed plugin did not replace the shell wrapper with the direct MCP launcher.'
+        throw "Installed plugin did not replace the shell wrapper with the direct MCP launcher. Actual command: $([string]$installedMcpServer.command); expected: $expectedMcpCommand; args: $($installedMcpArgs -join ',')"
     }
     }
 
