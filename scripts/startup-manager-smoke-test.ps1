@@ -241,9 +241,14 @@ namespace CodexAutoRetrySmoke {
         )) {
             throw 'Startup manager action test could not click Disable startup.'
         }
-        Start-Sleep -Seconds 2
-        $remainingProperty = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction SilentlyContinue
-        $remainingValue = if ($remainingProperty) { [string]$remainingProperty.$testRunName } else { '' }
+        $remainingValue = ''
+        $actionDeadline = (Get-Date).AddSeconds(10)
+        do {
+            $remainingProperty = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction SilentlyContinue
+            $remainingValue = if ($remainingProperty) { [string]$remainingProperty.$testRunName } else { '' }
+            if ([string]::IsNullOrWhiteSpace($remainingValue)) { break }
+            Start-Sleep -Milliseconds 250
+        } while ((Get-Date) -lt $actionDeadline)
         $actionWindow = Get-Process -Id $actionProcess.Id -ErrorAction SilentlyContinue
         $rootElement = [System.Windows.Automation.AutomationElement]::RootElement
         $topLevel = $rootElement.FindAll(
