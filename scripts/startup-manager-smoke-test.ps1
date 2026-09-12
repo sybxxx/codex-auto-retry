@@ -40,6 +40,44 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $testRunName = 'CodexAutoRetrySmoke_' + [guid]::NewGuid().ToString('N')
 $sentinelName = 'CodexAutoRetryUnrelatedSmoke_' + [guid]::NewGuid().ToString('N')
 $sentinelValue = 'C:\OtherSoftware\unrelated-startup.exe'
+
+function Test-SmokeOwnedStartupValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
+    )
+
+    $trimmed = $Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { return $false }
+    $executable = if ($trimmed.StartsWith('"')) {
+        $closingQuote = $trimmed.IndexOf('"', 1)
+        if ($closingQuote -le 1) { return $false }
+        $trimmed.Substring(1, $closingQuote - 1)
+    }
+    else {
+        ($trimmed -split '[\s\t]', 2)[0]
+    }
+
+    try {
+        $expectedFullPath = [IO.Path]::GetFullPath($ExpectedPath)
+        $actualFullPath = [IO.Path]::GetFullPath($executable)
+        $expectedItem = Get-Item -LiteralPath $expectedFullPath -ErrorAction SilentlyContinue
+        $actualItem = Get-Item -LiteralPath $actualFullPath -ErrorAction SilentlyContinue
+        if ($null -ne $expectedItem -and $null -ne $actualItem) {
+            $expectedFullPath = $expectedItem.FullName
+            $actualFullPath = $actualItem.FullName
+        }
+        return [string]::Equals(
+            $expectedFullPath.TrimEnd('\'),
+            $actualFullPath.TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
 . (Join-Path $PSScriptRoot 'startup-approval.ps1')
 Remove-OrphanedSmokeApprovalValues
 $before = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction SilentlyContinue
@@ -71,7 +109,7 @@ try {
     $enabled = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction Stop
     $enabledValue = [string]$enabled.$testRunName
     if ($enabledValue -notmatch '(?i)\bsupervise\b' -or
-        $enabledValue.IndexOf($fakeWatchdog, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        -not (Test-SmokeOwnedStartupValue -Value $enabledValue -ExpectedPath $fakeWatchdog)) {
         throw 'Startup manager did not write the supervised owned entry.'
     }
     if ((Get-CodexAutoRetryStartupApproval -RunName $testRunName).Status -ne 'enabled') {
@@ -87,7 +125,7 @@ try {
     $enabled = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction Stop
     $enabledValue = [string]$enabled.$testRunName
     if ($enabledValue -notmatch '(?i)\bsupervise\b' -or
-        $enabledValue.IndexOf($fakeWatchdog, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        -not (Test-SmokeOwnedStartupValue -Value $enabledValue -ExpectedPath $fakeWatchdog)) {
         throw 'Startup manager changed the supervised owned entry during an update.'
     }
     $disabledBytes = [byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
