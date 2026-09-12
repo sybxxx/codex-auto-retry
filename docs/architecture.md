@@ -235,8 +235,10 @@ worker restarts.
 - The official IPC path is loopback named-pipe traffic with 4-byte little-endian
   framing. It initializes as a separate client, discovers the exact thread
   owner, targets only that owner, rejects discovery requests for itself, and
-  treats an unknown owner or timeout as a bounded controller failure. It never
-  writes `CODEX_APP_SERVER_WS_URL`.
+  treats an unknown owner or timeout as a bounded controller failure. Its
+  `collaborationMode.settings` mirrors the persisted model and reasoning effort;
+  current Desktop rejects the request before dispatch when that nested object
+  is omitted. It never writes `CODEX_APP_SERVER_WS_URL`.
 - Goal state is checked before hydration and again immediately before the
   mutating goal/turn action. A goal appearing, disappearing, pausing, or
   changing to a terminal or limited state during dispatch fails closed.

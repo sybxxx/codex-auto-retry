@@ -160,8 +160,15 @@ func officialIPCStartRequest(threadID string, settings ResumeSettings) map[strin
 		"multiAgentMode":        "explicitRequestOnly",
 		"summary":               settings.Summary,
 		"personality":           settings.Personality,
-		"collaborationMode":     map[string]any{"mode": "default"},
-		"outputSchema":          nil,
+		"collaborationMode": map[string]any{
+			"mode": "default",
+			"settings": map[string]any{
+				"model":                  settings.Model,
+				"reasoning_effort":       settings.Effort,
+				"developer_instructions": nil,
+			},
+		},
+		"outputSchema": nil,
 	}
 	return request
 }

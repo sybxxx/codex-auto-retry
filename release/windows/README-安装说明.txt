@@ -1,4 +1,4 @@
-Codex Auto Retry 0.7.10 - Windows x64 安装说明
+Codex Auto Retry 0.7.11 - Windows x64 安装说明
 ================================================
 
 适用环境
@@ -18,7 +18,7 @@ Codex Auto Retry 0.7.10 - Windows x64 安装说明
 6. 启用共享后台后，完整退出 Codex，再双击“安全启动Codex.vbs”，或在启动管理器点“Launch Codex safely”。普通快捷方式不会接入共享恢复通道。
 7. 在 Codex App 中新建一个任务，即可加载内嵌管理面板。
 
-0.7.10 兼容新版 Codex 的 `thread-id_turn-id.jsonl` 会话文件名。旧版本把回合 ID 误当任务 ID 产生的待重试记录，会在启动时迁移到正确任务并合并重复项。
+0.7.11 兼容新版 Codex 的 `thread-id_turn-id.jsonl` 会话文件名，并补齐官方 IPC 恢复请求所需的协作模式设置。旧版本把回合 ID 误当任务 ID产生的待重试记录，会在启动时迁移到正确任务并合并重复项。
 
 启动管理与紧急停用
 ------------------

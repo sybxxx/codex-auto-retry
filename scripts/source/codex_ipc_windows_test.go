@@ -23,6 +23,14 @@ func TestOfficialIPCStartRequestIsSilentAndKeepsThreadSettings(t *testing.T) {
 	if request["cwd"] != settings.CWD || request["model"] != settings.Model || request["effort"] != settings.Effort {
 		t.Fatalf("thread settings were not preserved: %+v", request)
 	}
+	mode, ok := request["collaborationMode"].(map[string]any)
+	if !ok || mode["mode"] != "default" {
+		t.Fatalf("collaboration mode was not preserved: %#v", request["collaborationMode"])
+	}
+	modeSettings, ok := mode["settings"].(map[string]any)
+	if !ok || modeSettings["model"] != settings.Model || modeSettings["reasoning_effort"] != settings.Effort {
+		t.Fatalf("collaboration mode settings were incomplete: %#v", mode["settings"])
+	}
 	sandbox, ok := request["sandboxPolicy"].(map[string]any)
 	if !ok || sandbox["type"] != "dangerFullAccess" {
 		t.Fatalf("sandbox policy was not mapped safely: %#v", request["sandboxPolicy"])

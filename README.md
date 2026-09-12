@@ -18,6 +18,9 @@ behavior remains independent of whether either settings surface is open.
   running. Codex Desktop and the watchdog are two clients of one local shared
   app-server, so recovery does not open a task link, focus Codex, change the
   task currently on screen, or create a hidden `codex exec resume` task.
+- The official IPC recovery request preserves the current collaboration-mode
+  model and reasoning settings. Without these fields, current Codex Desktop
+  rejects the request before starting a turn; version 0.7.11 includes them.
 - Restores the failed task with its latest working directory, workspace roots,
   model and provider, service tier, reasoning settings, personality, approval
   routing, and effective permission profile instead of applying the App's
