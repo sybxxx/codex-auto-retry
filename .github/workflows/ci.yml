@@ -63,7 +63,7 @@ jobs:
           $version = ([string]$manifest.version -split '\+', 2)[0]
           $output = Join-Path $env:RUNNER_TEMP 'codex-auto-retry-release'
           & .\scripts\build-release.ps1 -SkipBuild -OutputDirectory $output
-          if ($LASTEXITCODE -ne 0) { throw 'Release packaging failed.' }
+          if (-not $?) { throw 'Release packaging failed.' }
           $archive = Join-Path $output ("Codex-Auto-Retry-$version-windows-x64.zip")
           & .\scripts\release-test.ps1 -ArchivePath $archive
-          if ($LASTEXITCODE -ne 0) { throw 'Release integrity validation failed.' }
+          if (-not $?) { throw 'Release integrity validation failed.' }
