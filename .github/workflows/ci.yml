@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows validation
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: scripts/source/go.mod
+          cache-dependency-path: scripts/source/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: scripts/source/ui/package-lock.json
+
+      - name: Build and validate binaries and panel
+        shell: pwsh
+        run: .\scripts\build.ps1
+
+      - name: Run race tests
+        working-directory: scripts/source
+        run: go test -race ./... -count=1
+
+      - name: Run focused protocol smoke tests
+        shell: pwsh
+        run: |
+          .\scripts\mcp-smoke-test.ps1
+          .\scripts\path-safety-smoke-test.ps1
+          .\scripts\startup-approval-smoke-test.ps1
+          .\scripts\supervisor-smoke-test.ps1
+
+      - name: Build and verify release archive
+        shell: pwsh
+        run: |
+          $manifest = Get-Content .\.codex-plugin\plugin.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $version = ([string]$manifest.version -split '\+', 2)[0]
+          $output = Join-Path $env:RUNNER_TEMP 'codex-auto-retry-release'
+          & .\scripts\build-release.ps1 -SkipBuild -OutputDirectory $output
+          if ($LASTEXITCODE -ne 0) { throw 'Release packaging failed.' }
+          $archive = Join-Path $output ("Codex-Auto-Retry-$version-windows-x64.zip")
+          & .\scripts\release-test.ps1 -ArchivePath $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Release integrity validation failed.' }

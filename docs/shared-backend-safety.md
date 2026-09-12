@@ -15,6 +15,10 @@ The plugin has two deliberately separate modes:
 
 ## Process-Scoped Desktop Launch
 
+The safe launcher is used only when an explicit shared WebSocket route is
+needed. Current Desktop builds can keep their official stdio backend and still
+accept recovery through the verified `codex-ipc` owner route described below.
+
 ## Codex Capability Profiles
 
 The watchdog reports the capability it has actually proved in its status
@@ -23,7 +27,8 @@ Windows Codex App profile is:
 
 | Observed transport | Automatic recovery | Recovery path | Meaning |
 | --- | --- | --- | --- |
-| Official `stdio` | No | Safe process-scoped launcher | Codex is healthy, but an external watchdog cannot inject into its private stdio pipe. |
+| Official `stdio` with verified `codex-ipc` owner route | Yes | Official IPC owner-routed `thread-follower-start-turn` | Current Desktop exposes a loopback named-pipe router. The watchdog discovers the exact thread owner and submits an empty-input recovery request without changing global routing. |
+| Official `stdio` without verified IPC | No | Safe process-scoped launcher | Codex is healthy, but an external watchdog cannot inject into its private stdio pipe. |
 | Verified plugin-owned WebSocket | Yes | Shared WebSocket RPC | The endpoint, process identity, command line, version marker, and handshake all passed. |
 | Stopped or unknown | No | None | The watchdog remains fail-closed until Codex or a verifiable connection is available. |
 
@@ -84,9 +89,11 @@ A bounded launch mutex prevents concurrent safe-launch clicks. The current-user
 OpenAI.Codex package supplies the executable path, not a saved versioned path.
 
 Ordinary Codex launches no longer depend on the watchdog after old plugin-owned
-persistent routing has been retired. Such launches use the official backend
-and do not support this plugin's silent recovery. A missing/disabled Windows
-startup approval can therefore disable retries without making Codex unbootable.
+persistent routing has been retired. They use the official backend; current
+Desktop builds may still support silent recovery through their verified
+`codex-ipc` owner route, while older builds require the safe launcher or remain
+monitor-only. A missing/disabled Windows startup approval can therefore disable
+retries without making Codex unbootable.
 Foreign persistent user routes are preserved, not claimed to be safe or owned.
 After migration, existing shells may still carry their old environment until
 they restart or the user signs out. The safe launcher sanitizes its child copy.

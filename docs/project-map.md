@@ -71,7 +71,7 @@ Source code lives under `scripts/source`.
 | `codex_app_mcp_windows.go` | Reads the bundled Desktop `codex_app` definition without modifying it, normalizes it into a TOML app-server override, and computes the migration hash. |
 | `shared_mode_windows.go` | Owns the transactional opt-in endpoint backup/restore, deferred cleanup while Desktop is live, registry broadcast, health gate, and plugin-owned server shutdown without touching API keys. |
 | `startup_approval_windows.go`, `startup_approval_nonwindows.go` | Read the independent Windows sign-in approval state for the management snapshot without mutating startup configuration. |
-| `desktop_transport_windows.go` | Read-only detection of stopped, old Desktop-owned stdio, or shared-server Codex transport. |
+| `desktop_transport_windows.go` | Read-only detection of stopped, official stdio, verified official IPC, or shared-server Codex transport. |
 | `shared_controller.go` | Settings-preserving unloaded task and parent resume, live task/goal rechecks, deterministic parent notification, exact-child continuation, goal recovery/blocking, and silent normal continuation. |
 | `roots.go` | Default Codex, optional Cockpit, and explicitly configured session-root discovery. |
 | `state.go` | Persistent cursors, pending and awaiting retries, turn correlation, migration, deduplication, and pruning. |

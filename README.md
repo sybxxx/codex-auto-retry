@@ -1,10 +1,50 @@
 # Codex Auto Retry
 
-Codex Auto Retry is a personal Codex plugin with a local Windows watchdog. Once
-installed, the watchdog runs globally at Windows sign-in; the plugin does not
-need to be mentioned in each Codex task. The plugin also exposes an embedded
-Codex management panel and a Windows notification-area controller. Retry
-behavior remains independent of whether either settings surface is open.
+[![CI](https://github.com/sybxxx/codex-auto-retry/actions/workflows/ci.yml/badge.svg)](https://github.com/sybxxx/codex-auto-retry/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/sybxxx/codex-auto-retry?label=latest%20release)](https://github.com/sybxxx/codex-auto-retry/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+Codex Auto Retry is an open-source reliability and automatic recovery tool for
+Codex on Windows. It watches Codex task lifecycle events and safely resumes the
+exact task after recoverable provider, network, rate-limit, timeout, or empty-
+response failures while preserving its working context and runtime settings.
+
+It runs as a local Windows watchdog and does not require a per-task prompt. The
+watchdog provides a tray controller and an embedded Codex management panel, but
+recovery remains independent of either interface being open. The latest Windows
+x64 release is available from the [GitHub Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) page.
+For contribution and vulnerability-reporting boundaries, see
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
+## Why Codex Auto Retry?
+
+Long-running Codex work can be interrupted after tools have already run or a
+provider has accepted a request. Codex Auto Retry is designed to continue that
+same task without creating a replacement conversation, replaying completed
+side effects, changing the task on screen, or leaving a dead global endpoint.
+
+- **Exact-task recovery**: resumes the original Codex thread and keeps its
+  working directory, model/provider, permissions, and reasoning settings.
+- **Bounded operation**: separates recovery and no-progress limits, applies a
+  time circuit breaker, and stops with an explicit reason when a local channel
+  is unavailable.
+- **Current Desktop compatibility**: supports current rollout filenames and the
+  official Windows IPC owner route, with the plugin-owned WebSocket as an
+  optional verified path.
+- **Fail-open safety**: shared backend mode is opt-in; normal Codex startup uses
+  its official backend when the optional recovery path is unavailable.
+- **Privacy-conscious state**: retry decisions retain lifecycle metadata only;
+  conversation text, tool contents, credentials, and response bodies are not
+  stored for recovery.
+
+## Quick Start
+
+1. Download the latest Windows x64 ZIP from [Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest).
+2. Extract it to a normal local folder and fully close Codex.
+3. Run `安装.cmd`. The installer verifies the package and starts the watchdog.
+4. Open Codex and create a new task so the embedded management panel can be
+   discovered. See [Windows installation notes](release/windows/README-安装说明.txt)
+   for shared backend and safe-launch behavior.
 
 ## Behavior
 
