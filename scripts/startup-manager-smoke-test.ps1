@@ -59,10 +59,13 @@ try {
         # This unrelated value must survive every manager operation. It guards
         # against provider writes that recreate the entire Run key.
         $runRegistryKey.SetValue($sentinelName, $sentinelValue, [Microsoft.Win32.RegistryValueKind]::String)
-        $runRegistryKey.SetValue($testRunName, ('"' + $fakeWatchdog + '" supervise'), [Microsoft.Win32.RegistryValueKind]::String)
     }
     finally { $runRegistryKey.Close() }
     Restore-CodexAutoRetryStartupApproval -RunName $testRunName -Bytes ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    # Let the manager create the owned value before exercising the update path.
+    # Writing the value in one PowerShell process and immediately reading it in
+    # another can race registry propagation on hosted Windows runners.
     $enableOutput = (& powershell.exe @args 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) { throw "Startup manager could not enable the owned test entry.`n$enableOutput" }
     $enabled = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction Stop
@@ -76,6 +79,16 @@ try {
     }
     if ([string](Get-ItemPropertyValue -Path $runKey -Name $sentinelName -ErrorAction Stop) -ne $sentinelValue) {
         throw 'Startup manager removed an unrelated Run startup value while enabling.'
+    }
+
+    # A second enable must accept and preserve the existing plugin-owned value.
+    $enableOutput = (& powershell.exe @args 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw "Startup manager could not update the owned test entry.`n$enableOutput" }
+    $enabled = Get-ItemProperty -Path $runKey -Name $testRunName -ErrorAction Stop
+    $enabledValue = [string]$enabled.$testRunName
+    if ($enabledValue -notmatch '(?i)\bsupervise\b' -or
+        $enabledValue.IndexOf($fakeWatchdog, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw 'Startup manager changed the supervised owned entry during an update.'
     }
     $disabledBytes = [byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     Restore-CodexAutoRetryStartupApproval -RunName $testRunName -Bytes $disabledBytes
