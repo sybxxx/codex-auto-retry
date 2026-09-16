@@ -3,441 +3,223 @@
 [![CI](https://github.com/sybxxx/codex-auto-retry/actions/workflows/ci.yml/badge.svg)](https://github.com/sybxxx/codex-auto-retry/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/sybxxx/codex-auto-retry?label=latest%20release)](https://github.com/sybxxx/codex-auto-retry/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue.svg)](#)
 
-Codex Auto Retry is an open-source reliability and automatic recovery tool for
-Codex on Windows. It watches Codex task lifecycle events and safely resumes the
-exact task after recoverable provider, network, rate-limit, timeout, or empty-
-response failures while preserving its working context and runtime settings.
+[English] | [中文说明](README_zh.md)
 
-It runs as a local Windows watchdog and does not require a per-task prompt. The
-watchdog provides a tray controller and an embedded Codex management panel, but
-recovery remains independent of either interface being open. The latest Windows
-x64 release is available from the [GitHub Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) page.
-For contribution and vulnerability-reporting boundaries, see
-[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
-The project is maintained by `sybxxx` under the `TQY Local Tools` name.
+Codex Auto Retry is an open-source reliability and automatic recovery tool for Codex on Windows. It monitors Codex task lifecycle events and safely resumes the exact interrupted task after recoverable provider, network, rate-limit, timeout, or empty-response failures while preserving working context, permissions, and runtime settings.
+
+It runs as a local Windows watchdog service and does not require a per-task prompt. The watchdog provides a notification-area tray controller and an embedded Codex management panel (via MCP), while recovery remains independent of either interface being open. The latest Windows x64 release is available from the [GitHub Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) page.
+
+For contribution boundaries and vulnerability disclosure, see [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
+---
+
+## Table of Contents
+
+- [Why Codex Auto Retry?](#why-codex-auto-retry)
+- [Quick Start](#quick-start)
+- [Recovery Behavior](#recovery-behavior)
+  - [Exact-Task & Silent Continuation](#exact-task--silent-continuation)
+  - [Goal Mode & Pause Protection](#goal-mode--pause-protection)
+  - [Subagent Deterministic Recovery](#subagent-deterministic-recovery)
+  - [Dual Safety Limits & Backoff Strategies](#dual-safety-limits--backoff-strategies)
+  - [Retryable & Non-Retryable Fault Boundaries](#retryable--non-retryable-fault-boundaries)
+- [User Interfaces](#user-interfaces)
+  - [Windows Tray Controller](#windows-tray-controller)
+  - [Embedded Management Panel (MCP)](#embedded-management-panel-mcp)
+- [Safety and Privacy](#safety-and-privacy)
+- [Installation and Maintenance](#installation-and-maintenance)
+- [Fail-Open Shared Backend Safety](#fail-open-shared-backend-safety)
+- [Limitations](#limitations)
+- [Maintainer](#maintainer)
+
+---
 
 ## Why Codex Auto Retry?
 
-Long-running Codex work can be interrupted after tools have already run or a
-provider has accepted a request. Codex Auto Retry is designed to continue that
-same task without creating a replacement conversation, replaying completed
-side effects, changing the task on screen, or leaving a dead global endpoint.
+Long-running Codex work can be interrupted after tools have already executed or after a provider has accepted a request. Codex Auto Retry is designed to continue that same task without creating a replacement conversation, replaying completed side effects, changing the task on screen, or leaving a dead global endpoint.
 
-- **Exact-task recovery**: resumes the original Codex thread and keeps its
-  working directory, model/provider, permissions, and reasoning settings.
-- **Bounded operation**: separates recovery and no-progress limits, applies a
-  time circuit breaker, and stops with an explicit reason when a local channel
-  is unavailable.
-- **Current Desktop compatibility**: supports current rollout filenames and the
-  official Windows IPC owner route, with the plugin-owned WebSocket as an
-  optional verified path.
-- **Fail-open safety**: shared backend mode is opt-in; normal Codex startup uses
-  its official backend when the optional recovery path is unavailable.
-- **Privacy-conscious state**: retry decisions retain lifecycle metadata only;
-  conversation text, tool contents, credentials, and response bodies are not
-  stored for recovery.
+| Dimension | Without Codex Auto Retry | With Codex Auto Retry |
+| :--- | :--- | :--- |
+| **Transient Failures** | Task aborts; requires manual restart or prompt resubmission | **Automatically detected & resumed with bounded backoff** |
+| **Conversation Context** | Often requires starting a new thread; lost history & context | **Exact-task resumption; preserves full history & parameters** |
+| **Tool Side Effects** | Re-sending prompts risks replaying completed file/DB changes | **Continues in-place; completed tools are never re-executed** |
+| **User Disruption** | Error popups steal focus and interrupt ongoing thought | **Silent background recovery; zero stolen focus or screen changes** |
+| **Runaway Protection** | Manual retries can enter infinite loops or drain API quota | **Dual safety limits (outage & consecutive) + circuit breakers** |
+
+### Key Capabilities
+
+- **Exact-task recovery**: Resumes the original Codex thread and keeps its working directory, model/provider, permissions, and reasoning settings.
+- **Bounded operation**: Separates recovery and no-progress limits, applies a time circuit breaker, and stops with an explicit reason when a local channel is unavailable.
+- **Current Desktop compatibility**: Supports current rollout filenames and the official Windows IPC owner route (`\\.\pipe\codex-ipc`), with the plugin-owned WebSocket as an optional verified path.
+- **Fail-open safety**: Shared backend mode is opt-in; normal Codex startup uses its official backend when the optional recovery path is unavailable.
+- **Privacy-conscious state**: Retry decisions retain lifecycle metadata only; conversation text, tool contents, credentials, and response bodies are not stored for recovery.
+
+---
 
 ## Quick Start
 
-1. Download the latest Windows x64 ZIP from [Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest).
-2. Extract it to a normal local folder and fully close Codex.
-3. Run `安装.cmd`. The installer verifies the package and starts the watchdog.
-4. Open Codex and create a new task so the embedded management panel can be
-   discovered. See [Windows installation notes](release/windows/README-安装说明.txt)
-   for shared backend and safe-launch behavior.
+1. **Download**: Grab the latest Windows x64 ZIP from [Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest).
+2. **Extract**: Extract it to a standard local folder (do not run directly from inside the archive preview).
+3. **Install**: Fully close Codex, then double-click `安装.cmd`. The installer verifies the package and starts the watchdog service.
+4. **Verify**: Open Codex and create a new task. The watchdog will automatically detect active tasks. You can also say `打开 Codex Auto Retry 管理面板` to open the embedded control panel.
+5. See [Windows installation notes](release/windows/README-安装说明.txt) for route verification, shared backend details, and safe-launch behavior.
 
-## Behavior
+---
 
-- Watches the default Codex session store and optional Cockpit-managed Codex
-  instances for recoverable provider failures.
-- Supports current Codex rollout names in both `thread-id.jsonl` and
-  `thread-id_turn-id.jsonl` form. The persistent thread ID is kept as the queue
-  key; an older queue written with the turn ID is migrated and duplicate entries
-  for the same task are merged on startup.
-- Rejoins the exact failed task through the Codex App process that is already
-  running. Codex Desktop and the watchdog are two clients of one local shared
-  app-server, so recovery does not open a task link, focus Codex, change the
-  task currently on screen, or create a hidden `codex exec resume` task.
-- The official IPC recovery request preserves the current collaboration-mode
-  model and reasoning settings. Without these fields, current Codex Desktop
-  rejects the request before starting a turn; version 0.7.11 includes them.
-- Restores the failed task with its latest working directory, workspace roots,
-  model and provider, service tier, reasoning settings, personality, approval
-  routing, and effective permission profile instead of applying the App's
-  defaults.
-- In goal mode, uses Codex's native goal state and activates only a blocked
-  goal that can be attributed to the same provider failure. Codex then creates
-  the continuation turn itself. If an active goal creates another turn
-  immediately after an empty reply, that turn is adopted into the same bounded
-  recovery chain instead of being mistaken for new manual work.
-- Treats a user or AI pause, including a goal waiting for review, as
-  authoritative for goal recovery. A pause during the failed turn, countdown,
-  or controller startup cancels recovery; only an explicit later `active` goal
-  update clears the goal hold. If the pause predates a later user-started
-  conversation turn, a provider failure in that later turn may be silently
-  continued while the goal remains paused and unchanged.
-- Never converts completed, usage-limited, budget-limited, or unknown goal
-  states into a normal-conversation `continue` turn.
-- In a normal conversation, starts an empty-input continuation in that same
-  task. The original request and completed tool results stay in context, while
-  no new user-message bubble is added and the composer draft is untouched.
-- Uses the configured retry text only as a narrow compatibility fallback when
-  Codex explicitly rejects empty-input turns. It never rolls back and resends
-  the failed turn, which avoids intentionally replaying completed side effects.
-- If the failed task is already running, keeps its retry queued and tries again
-  later instead of canceling it.
-- Keeps separate retry state for every task and can dispatch up to four due
-  tasks independently by default.
-- For an empty reply from an internal subagent, appends one deterministic
-  recovery event to its parent and silently continues the exact existing child
-  thread. An unloaded parent is first restored with its own persisted task
-  settings, rather than current App defaults. The parent receives the recovery
-  event, while the watchdog remains the sole wake-up owner for that event. The
-  event explicitly forbids a replacement child; live child state, persisted
-  notification acknowledgement, and turn correlation prevent a duplicate
-  continuation or duplicate Agent creation. Other child failures remain owned
-  by the parent workflow.
-- Tracks two independent safety limits. `本次故障恢复` (`Recoveries This Outage`) counts every automatic
-  recovery in one outage (15 by default, configurable from 1 to 1000).
-  `连续无进展` (`Consecutive No Progress`) counts retries that produce neither a visible assistant reply
-  nor a completed tool result (5 by default, configurable from 1 to 100). A
-  successful completion or a new user turn clears both; visible progress clears
-  only the consecutive no-progress count.
-- When an active goal reaches either limit through repeated empty replies, the
-  watchdog retains the exhausted entry, changes that goal to `blocked`, and
-  shows `目标连续空回复达到上限，目标恢复已停止` (`Goal consecutive empty-reply limit reached, goal recovery stopped`). Controller failures retry
-  separately and do not consume another provider attempt; repeated local
-  control failure eventually stops with its own explicit reason.
-- Supports fixed, linear, or doubling delays capped at a configurable maximum.
-  Linear waits add a configurable number of seconds each time. Increasing
-  waits follow the consecutive no-progress count, so visible progress starts
-  the delay sequence over. It correlates the new
-  `task_started` turn ID with its matching `task_complete`. An unrelated
-  successful turn cannot falsely mark a retry as recovered.
+## Recovery Behavior
 
-The watchdog retries network failures, timeouts, rate limits, HTTP 5xx
-responses, the structured CC Switch `cc_switch_upstream_error` wrapper when
-its `upstream_status` is 400 and the cause is `Upstream request failed`,
-interrupted streams, successful completions with no final model reply, and
-temporarily unavailable authentication services within the
-configured dual limits. Ambiguous or
-persistent authentication failures may have a lower safety limit. Unknown
-provider failures keep their separate recovery safety budget but still use the
-configured consecutive no-progress limit. If Codex App exits, the watchdog
-stops the affected retry immediately without consuming another provider
-attempt, so it does not keep a countdown running against a closed application.
-The stopped task is shown with its reason and can be restarted manually after
-Codex is open again. Other local controller failures stop after three consecutive
-failures by default instead of refreshing a countdown forever. A task that
-still uses Codex's old per-process transport stops with
-`codex_restart_required` and asks for a full exit followed by the safe Codex launcher.
-On current Windows Desktop builds, the watchdog also recognizes the official
-`\\.\pipe\codex-ipc` owner route. The settings window then reports “Codex 已接入
-官方恢复通道” and retries the exact task through the owning Desktop client
-without changing global environment variables. Older builds still show
-“Codex 未接入共享后台” and require the safe launcher once before recovery can
-be enabled.
-It also shows the independent Windows sign-in approval state, so a present startup
-command that Windows has disabled is visible instead of being mistaken for a
-healthy background service.
-User cancellation, invalid requests, ordinary HTTP 400/404 errors, missing
-models, context length errors, policy failures, permission failures, and
-approval failures are not retried.
+### Exact-Task & Silent Continuation
 
-Runtime state is written atomically. A temporary Windows sharing violation from
-an indexer, security scanner, or settings reader is retried for several seconds;
-if it still cannot be replaced, the watchdog keeps its in-memory state, reports
-`state_write_deferred`, and retries persistence on the next scan instead of
-exiting and removing the tray icon.
+- **In-Process Resumption**: Rejoins the exact failed task through the Codex App process that is already running. Codex Desktop and the watchdog are two clients of one local shared app-server, so recovery does not open a task link, focus Codex, change the task currently on screen, or create a hidden `codex exec resume` task.
+- **Thread Settings Integrity**: The official IPC recovery request preserves the current collaboration-mode model and reasoning settings (required by modern Codex Desktop). It restores the failed task with its latest working directory, workspace roots, model, provider, service tier, reasoning settings, personality, approval routing, and effective permission profile instead of applying generic App defaults.
+- **Clean Dialogue**: In a normal conversation, it starts an empty-input continuation in that same task. The original request and completed tool results stay in context, while no new user-message bubble is added and the composer draft is untouched.
+- **Fallback Compatibility**: Uses the configured fallback retry text (default: `继续` / `Continue`) only as a narrow compatibility fallback when Codex explicitly rejects empty-input turns. It never rolls back and resends the failed turn, preventing duplicate tool execution.
+- **Rollout Schema Support**: Supports current Codex rollout names in both `thread-id.jsonl` and `thread-id_turn-id.jsonl` forms. The persistent thread ID is kept as the queue key; older turn-keyed state is migrated and duplicate entries for the same task are merged on startup.
+- **Concurrency**: Keeps separate retry state for every task and can dispatch up to four due tasks independently by default. If a failed task is already running, its retry remains queued and will re-check later instead of canceling.
 
-The state file has hard bounds of 20,000 processed events, 2,000 file cursors,
-and 500 inactive task records, and is rejected above 8 MB. The 5 MB operational
-log rotates into at most three backups. A single automatic recovery chain also
-has a 30-minute elapsed-time circuit breaker. These limits prevent a retry storm
-from growing memory, state, or logs without bound.
+### Goal Mode & Pause Protection
 
-## Windows Tray Controller
+- **Native Goal State**: In goal mode, uses Codex's native goal state and activates only a blocked goal that can be attributed to the same provider failure. Codex then creates the continuation turn itself.
+- **Turn Adoption**: If an active goal creates another turn immediately after an empty reply, that turn is adopted into the same bounded recovery chain instead of being mistaken for new manual work.
+- **Authoritative Pauses**: Treats a user or AI pause (including a goal waiting for user review) as authoritative. A pause during the failed turn, countdown, or controller startup cancels recovery; only an explicit later `active` goal update clears the goal hold.
+- **Pre-existing Pause Isolation**: If the pause predates a later user-started conversation turn, a provider failure in that later turn may be silently continued while the goal remains paused and unchanged.
+- **Fail-Closed Goals**: Never converts completed, usage-limited, budget-limited, or unknown goal states into a normal-conversation `continue` turn.
 
-The watchdog owns one notification-area icon; it does not install or start a
-second background application. Hovering the icon shows whether retry is
-running, paused, waiting, active, or stopped, including the nearest live
-countdown. If Windows Explorer restarts, the watchdog automatically registers
-the icon again and restores its current state. Double-clicking opens the
-graphical settings window. The right-click menu opens settings, pauses or
-resumes dispatch, and exits the watchdog.
+### Subagent Deterministic Recovery
 
-The graphical window shows current waiting and active tasks, plus a short-lived
-exhausted record immediately after a limit is reached, using only privacy-safe
-task IDs. Older stopped records remain durable but are not counted as current
-retry work. It edits the fallback retry text, both retry limits,
-fixed, linear, or doubling waits, first/fixed delay, linear increment, maximum delay, and the watchdog's
-retry-limit notification.
-An exhausted task can be restarted with a fresh attempt budget. These settings
-are shared with the embedded Codex panel and take effect without restarting the
-watchdog.
+- **Exact Existing Child Continuation**: For an empty reply from an internal subagent, appends one deterministic recovery event to its parent and silently continues the exact existing child thread.
+- **Parent State Restoration**: An unloaded parent is first restored with its own persisted task settings before event injection.
+- **Sole Wake-Up Owner**: The watchdog remains the sole wake-up owner for that event. The event explicitly forbids creating a replacement child; live child state, persisted notification acknowledgement, and turn correlation prevent duplicate continuation or duplicate Agent creation. Other child failures remain owned by the parent workflow.
 
-## Management Panel
+### Dual Safety Limits & Backoff Strategies
 
-Ask Codex to `打开 Codex Auto Retry 管理面板` (`Open Codex Auto Retry Management Panel`) or select the matching plugin
-starter prompt. The panel opens inside the current Codex task and shows:
+To prevent runaway retry loops and excessive resource consumption, two independent safety limits are enforced:
 
-- the watchdog state, watched locations, and last scan;
-- every pending or active retry, including a live countdown per task;
-- controls to retry a pending task now or cancel it before it starts;
-- exhausted tasks and a control to restart their attempt budget;
-- a persistent pause switch for new retry dispatches; and
-- the editable fallback retry text, limited to 500 characters;
-- the per-fault recovery limit, consecutive no-progress limit, and wait strategy; and
-- the watchdog retry-limit notification preference.
+1. **`本次故障恢复` (`Recoveries This Outage`)**: Bounds all automatic recovery attempts during a single persistent outage (default: 15, configurable from 1 to 1000).
+2. **`连续无进展` (`Consecutive No Progress`)**: Bounds consecutive retries that produce neither a visible assistant reply nor a completed tool result (default: 5, configurable from 1 to 100).
 
-Normal conversations use silent continuation first. The default fallback text
-is `继续` (`Continue`) and is used only if the installed Codex version explicitly rejects
-empty-input turns. Goal mode never uses this text: it still activates Codex's
-native interrupted goal. Saving the text takes effect without restarting the
-watchdog.
+- **Reset Rules**: A successful completion or a new user turn clears both counters; visible progress clears only the consecutive no-progress count.
+- **Exhaustion Handling**: When an active goal reaches either limit through repeated empty replies, the watchdog retains the exhausted entry, marks that goal as `blocked`, and notifies: `目标连续空回复达到上限，目标恢复已停止` (*Goal consecutive empty-reply limit reached, goal recovery stopped*).
+- **Backoff Strategies**: Supports fixed, linear, or doubling (exponential) delays capped at a configurable maximum. Linear waits add a configurable number of seconds each time. Increasing waits follow the consecutive no-progress count, so visible progress resets the delay sequence.
+- **Turn Correlation**: Correlates the new `task_started` turn ID with its matching `task_complete`. An unrelated successful turn cannot falsely mark a retry as recovered.
 
-The panel refreshes approximately every five seconds and computes countdowns
-locally between refreshes. It never opens itself, focuses Codex, or navigates to
-another task. Closing the panel has no effect on the global watchdog.
+### Retryable & Non-Retryable Fault Boundaries
 
-## Safety And Privacy
+- **Retryable Faults**:
+  - Network failures, connection resets, and request timeouts;
+  - HTTP 5xx server errors;
+  - Rate limits and temporary capacity exhaustion;
+  - Structured CC Switch `cc_switch_upstream_error` wrappers (when `upstream_status` is 400 and cause is `Upstream request failed`);
+  - Interrupted streams;
+  - "Empty responses" (HTTP 200 returned but no final model output generated);
+  - Temporarily unavailable authentication services (within a lower, bounded safety limit).
+- **Non-Retryable Faults (Fail-Closed)**:
+  - User cancellation or abort;
+  - Client-side invalid requests and ordinary HTTP 400/404 errors;
+  - Missing model declarations;
+  - Context length / token limit exceeded errors;
+  - Policy, permission, and approval rejections.
+- **Process Exit Safeguard**: If Codex App exits, the watchdog stops the affected retry immediately without consuming another provider attempt, preventing countdowns against a closed application.
 
-The event scanner accepts lifecycle records plus privacy-bounded progress and
-correlation markers. For a completion it retains only
-whether `last_agent_message` was present and non-empty, never its contents. A
-completion with no explicit error and no final reply is treated as a temporary
-empty-response failure. An abort remains authoritative even if a delayed
-completion for that same turn is written afterward. For goal updates it retains only the
-target task ID, status, and lifecycle timestamps; the event can be routed correctly even
-when Codex persists it in another task's rollout. It never reads the goal
-objective or searches conversation text for words such as "review". An
-assistant message or completed tool-result item contributes only a boolean
-"this retry made visible progress" marker; its content is never decoded or
-stored. A dedicated `user_message` lifecycle record contributes only a
-content-free "explicit user input" marker associated with the currently
-started turn, so real user work supersedes an adopted native goal turn. User
-role context items written by an automatic goal turn are ignored. The only
-message text parsed is the watchdog's own fixed, schema-checked subagent
-recovery marker; it retains only parent, child, and deterministic event IDs.
-Immediately
-before recovery, a separate settings reader decodes only an allowlisted subset
-of the latest `turn_context` and
-`thread_settings_applied` records: working directory, workspace roots, model
-and provider, service tier, reasoning effort and summary, personality, approval
-policy and reviewer, and effective permission mode. It discards every other
-field and never forwards or logs developer instructions, conversation
-messages, assistant output text, tool input, tool output, credentials, provider
-URLs, or response bodies.
+---
 
-Optional shared recovery uses one local app-server bound only to `127.0.0.1`.
-It is disabled by default. Installation retires legacy plugin-owned routing
-without overwriting foreign user values. Shared mode validates the owned server
-but never sets the current-user endpoint: the safe launcher passes it only to a
-new Desktop child process. Thus a disabled or missing watchdog does not leave a
-persistent dead port for ordinary Codex launches after migration. The watchdog
-uses only the structured `thread/read`, `thread/resume`,
-`thread/inject_items`, `thread/goal/get`, `thread/goal/set`, and `turn/start`
-methods used by Codex. It validates ownership of the loopback server before
-using it and never routes local recovery traffic through an HTTP proxy. It
-does not automate the mouse, keyboard, clipboard, composer, window focus, or
-task navigation.
+## User Interfaces
 
-## Installation And Maintenance
+### Windows Tray Controller
 
-End users can use the self-contained Windows x64 release ZIP. After extracting
-it, double-click `安装.cmd` (the installer script); the installer verifies every packaged file, locates
-the Codex App-bundled CLI, installs the personal plugin, registers current-user
-startup, starts the watchdog, and verifies both Codex registration and the
-runtime heartbeat. It requires neither administrator rights nor Go or Node.js.
-`卸载.cmd` (the uninstaller script) removes the active integration while preserving retry configuration
-and state by default.
+The watchdog runs as a single lightweight background process with a notification-area icon in Windows.
 
-`启动管理器.cmd` (the startup manager script) opens a standalone startup manager through a detached
-Windows Script Host launcher, so double-clicking it does not leave a console
-window in front of the manager. It displays the exact
-startup command, watchdog process and heartbeat, shared-backend state, and
-endpoint status, including the separate Windows `StartupApproved` state. The
-embedded Codex management panel reports the same sign-in approval state, so a
-present `Run` command cannot be mistaken for a startup entry that Windows has
-silently disabled. It can enable/disable startup, start/stop the service, safely
-disable the shared backend, or uninstall the integration. `安全停用.cmd` (the safe-disable script) is a
-one-click break-glass action that disables shared mode and restores the official
-Codex backend. These tools do not require the Codex management panel to be open.
+<!-- Screenshot placeholder: Tray controller -->
+<!-- ![Windows Tray Controller](assets/tray.png) -->
 
-The supervisor, watchdog worker, and MCP management server are installed under
-`%LOCALAPPDATA%\CodexAutoRetry`. The supervisor starts the worker and keeps it
-available after an unexpected worker exit. The MCP server starts on demand through Codex and exits with
-its Codex connection. The release installer gives Codex the executable's direct
-absolute path, and both plugin binaries use the Windows GUI subsystem. The
-watchdog also starts the shared Codex app-server inside one hidden inherited
-console, so Playwright, Node REPL, code-mode, and shell subprocesses reuse that
-hidden console instead of opening separate Windows Terminal windows. An upgrade
-from the older detached launch waits until Codex is fully closed, terminates only
-that owned app-server process tree, and starts the corrected server before the
-next launch. The Windows sign-in entry always starts the lightweight
-`supervise` command rather than the worker's old direct `run` command. A worker
-restart adopts a healthy owned endpoint instead of deleting it under a live
-Codex process; an unhealthy or disabled endpoint is cleaned only after
-ownership checks and, when needed, after Codex closes. Runtime state, heartbeat,
-configuration, controls, and
-privacy-safe logs remain in the same local directory. Plugin management
-commands live in `skills/codex-auto-retry/SKILL.md`.
+- **Hover Tooltip**: Displays the current status (running, paused, waiting, active, stopped) and live countdown for the nearest pending retry.
+- **Explorer Restart Recovery**: If Windows Explorer restarts, the watchdog automatically re-registers the tray icon and restores current state.
+- **Double-Click**: Opens the graphical settings window.
+- **Right-Click Context Menu**: Allows quick pausing/resuming of dispatch, opening settings, or exiting the watchdog.
 
-The installer requires Codex to be fully closed and retires only old
-plugin-owned `CODEX_APP_SERVER_WS_URL` values. It never publishes a persistent
-route, even when shared mode is enabled. Rollback leaves the previous worker
-stopped with shared mode disabled rather than restoring an unsafe route.
+The settings window allows configuring:
+- Recovery limits (`Recoveries This Outage` and `Consecutive No Progress`);
+- Delay curves (fixed, linear increment, or doubling backoff, with custom initial and max caps);
+- Fallback retry text (up to 500 characters);
+- Watchdog notification preferences;
+- One-click Chinese/English localization toggle.
 
-For silent recovery, start the service, enable shared mode, fully exit Codex,
-then use `安全启动Codex.vbs` (Safe Launch Codex script) in the extracted package or `Launch Codex safely`
-in the startup manager. This checks the installed worker and shared backend,
-then passes the address only to that new Desktop process. An unavailable,
-outdated or unverified backend selects official mode instead. Existing Codex
-instances are never stopped or focused by this launcher.
-The tray settings window also exposes a `安全启动 Codex` button when the
-controller detects that Desktop is still using the official backend. It waits up
-to two minutes for the current Codex process to close, then invokes the same
-verified process-scoped launcher; it never terminates Codex itself.
+<p align="center">
+  <img src="assets/settings_en.png" alt="Codex Auto Retry Settings Window (English)" width="520" />
+</p>
 
-Ordinary shortcuts remain unchanged and use the official backend after legacy
-routing is retired, regardless of whether Windows starts the plugin. Silent
-recovery is unavailable on that official connection. A different user-owned
-persistent route is preserved and reported as a conflict, not silently deleted.
-The launcher's `-Official` option clears inherited routing only in its child;
-`-CheckOnly` checks without launching. Reboot and packaged-app self-update
-acceptance boundaries are documented in `docs/shared-backend-safety.md`.
+### Embedded Management Panel (MCP)
 
-At process startup, the worker checks the recorded shared-server state, live
-process identity, creation time, and WebSocket endpoint before it can adopt or
-launch a backend. If a reboot or interrupted shutdown left shared mode enabled
-but the owned backend is missing or dead, it persists a fail-open transition,
-restores only the plugin-owned endpoint, and refuses to create a replacement
-backend during that ambiguous startup. The only exception is first-time shared
-mode setup when there is no state, endpoint, or ownership backup yet. A
-`shared-fail-open.json` marker makes the transition recoverable on the next
-start if the previous write was interrupted.
+Users can open the management panel directly inside Codex by asking:
+> `打开 Codex Auto Retry 管理面板` *(Open Codex Auto Retry Management Panel)*
 
-If both ownership records are missing or unreadable while a user endpoint is
-still present, the worker fails closed and reports that endpoint ownership is
-unknown. It does not delete a value that might belong to another tool or claim
-that the official backend is active; clear the value deliberately before
-starting shared mode again.
+<p align="center">
+  <img src="assets/panel.png" alt="Codex Embedded Management Panel (MCP)" width="620" />
+</p>
 
-After installing or updating the plugin, open a new Codex task so the updated
-MCP tools and embedded panel are discovered. The background watchdog itself is
-restarted and verified by the installer immediately.
+Built with vanilla TypeScript and embedded into the Go MCP binary via Go `embed`, the panel requires no Node.js runtime and performs zero external network requests. It displays:
+- Watchdog health, monitored session directories, and timestamp of last scan;
+- Active and pending retry queues with real-time countdown timers;
+- Immediate retry (`Retry Now`) and cancellation controls;
+- Exhausted task list with a one-click attempt budget reset button;
+- Global pause/resume toggle.
 
-Do not run the final runtime installation from a Codex tool shell when Windows
-redirects `%LOCALAPPDATA%` into the Codex package `LocalCache`. That redirected
-copy is visible to the tool process but not to Explorer or Windows sign-in, so
-it is not a valid global watchdog installation. Both the release deployer and
-runtime installer detect this condition before changing plugin, startup, or
-environment state and tell the user to run the installer from Explorer or a
-normal desktop PowerShell. `scripts/status.ps1` reports
-`RuntimePathRedirected=true` and `runtime_path_redirected` instead of claiming
-that the redirected copy is installed.
+---
 
-Maintainers build a release with `scripts/build-release.ps1` and verify the
-resulting archive with `scripts/release-test.ps1`. Release output must be kept
-outside the plugin source tree; the builder accepts `-OutputDirectory` for that
-purpose.
+## Safety and Privacy
 
-See `docs/project-map.md` for module ownership and `docs/architecture.md` for
-the recovery state machine, safety boundaries, and verification model.
+- **Zero Content Logging**: The scanner processes only lifecycle records and boolean progress flags. Conversation messages, user prompts, assistant outputs, tool inputs/outputs, credentials, and response bodies are **never decoded, logged, or stored**.
+- **Settings Reader Allowlist**: Immediately before recovery, a strict allowlist decodes only essential context (`working_directory`, `workspace_roots`, `model`, `provider`, `service_tier`, `reasoning_effort`, `personality`, `approval_policy`, and `permission_mode`). All other fields are discarded.
+- **Atomic Persistence**: Runtime state is written atomically. Windows file sharing violations (from virus scanners or indexers) are retried gracefully without crashing.
+- **Resource Caps**: The state file enforces hard limits of 20,000 processed events, 2,000 file cursors, and 500 inactive task records, with a maximum file size cap of 8 MB. Operational logs rotate at 5 MB (keeping up to 3 backups). Individual automatic recovery chains feature a 30-minute hard circuit breaker.
 
-## Limitations
+---
 
-A permanently expired or revoked login still requires authentication. Codex
-App must be running for a retry to start. If an App update removes or changes
-the local app-server protocol, recovery fails closed at the bounded controller
-limit and remains visibly restartable; it never falls back to opening or
-focusing a task.
+## Installation and Maintenance
 
-The tray controller requires Windows 10 or 11. Closing it through the tray menu
-stops automatic retry intentionally until the next Windows sign-in or
-reinstall/start; the supervisor honors that one-shot stop marker.
+### End-User Installation
 
-If the failed rollout does not contain valid settings records, recovery also
-remains queued instead of resuming the task with replacement defaults.
+1. Download and extract the self-contained Windows x64 release ZIP.
+2. Fully close Codex App, then double-click `安装.cmd`.
+3. The installer verifies file hashes via SHA-256, registers current-user startup, deploys the local watchdog under `%LOCALAPPDATA%\CodexAutoRetry`, and registers the Codex plugin.
+4. Neither administrator rights nor Go/Node.js dependencies are required.
 
-The `ChatGPT finished a turn` popup is emitted by Codex App before this watchdog
-can classify a completion as an empty-response failure. It therefore cannot be
-selectively withdrawn only for false completions. Codex App's own **Settings >
-General > Notifications > Turn completion notifications > Never** option is the
-reliable way to suppress it, but that option also suppresses legitimate turn
-completion notifications. Permission and question notifications remain
-separate Codex settings. The notification checkbox in this plugin controls only
-the watchdog alert shown when a retry limit is reached.
+### Administrative & Break-Glass Tools
 
-Third-party license notices for the WebSocket transport, MCP SDKs, and embedded
-panel libraries are in
-`THIRD_PARTY_NOTICES.md`.
+- `启动管理器.cmd`: Launches a windowed startup manager (without leaving a command console) showing exact startup commands, supervisor status, heartbeat, and Windows `StartupApproved` status.
+- `安全停用.cmd`: One-click emergency script that immediately disables shared mode, clears plugin-owned registry values, and restores Codex to official direct execution.
+- `卸载.cmd`: Cleanly uninstalls the watchdog and plugin while preserving user settings and logs by default. Run `.\uninstall-release.ps1 -RemoveData` to perform a full cleanup.
+
+<p align="center">
+  <img src="assets/startup_manager.png" alt="Codex Auto Retry Startup Manager" width="560" />
+</p>
+
+---
 
 ## Fail-Open Shared Backend Safety
 
-The shared Codex app-server is opt-in. A fresh install defaults
-`shared_app_server_enabled` to `false` and does not write the global
-`CODEX_APP_SERVER_WS_URL`, so a broken plugin cannot redirect Codex away from
-its official backend. The watchdog reports that recovery is disabled and
-stops queued retries with a visible reason instead of spinning forever.
+The watchdog is built with a **Fail-Open** guarantee:
 
-Enable the shared mode only after the health check passes. The embedded
-management panel and the tray settings window can enable it explicitly; the
-management tool is `set_shared_app_server_enabled`, and the Windows installer
-accepts `-EnableSharedAppServer`. All paths require a loopback endpoint, a successful
-WebSocket handshake, a versioned executable, and a process whose path and
-command line match the plugin-owned state. `CODEX_API_KEY` is never read for
-mutation and is never removed.
+- **Opt-In Shared Mode**: A fresh install defaults `shared_app_server_enabled` to `false` and does not set global system environment variables.
+- **Modern Official IPC**: On recent Windows Desktop versions of Codex, the watchdog detects the official `\\.\pipe\codex-ipc` named-pipe router, allowing direct in-place retry without modifying global environments or redirecting ports.
+- **Legacy Fallback Route**: For older Codex Desktop versions requiring a local loopback server, the launcher verifies ownership, checks loopback health, and dynamically assigns a free port near `49621` if conflicts occur.
+- **Safe Recovery**: If the watchdog crashes or encounters an invalid state, it fails open, allowing Codex to start normally with its official backend without hanging.
 
-The default loopback port is `49621`. Before Codex is started, the watchdog
-actually binds the port once to detect Windows-excluded ranges and occupied
-ports. If the preferred port is occupied by an unknown or stale listener, the
-health check chooses and persists a nearby free loopback port instead of killing
-that process. The settings window reports the selected port and keeps the
-shared mode disabled only when no safe port can be found.
+---
 
-An install or upgrade without `-EnableSharedAppServer` explicitly puts the
-runtime back into fail-open mode. It restores the recorded endpoint, removes
-dead plugin-owned shared-server state, and also
-clears a legacy endpoint only when the old plugin state proves ownership;
-unrelated user values are preserved.
+## Limitations
 
-If an explicitly enabled shared backend later fails during watchdog startup,
-the watchdog persists the fail-open decision. It never kills a live shared
-server while Codex may still be using it; cleanup is retried by the worker after
-Codex closes, and the endpoint remains owned until that safe boundary.
+- **Authentication**: Permanently revoked or expired logins cannot be bypassed; user re-authentication is required.
+- **Runtime Requirement**: Codex App must be open for retries to dispatch.
+- **OS Support**: Tray controller and IPC routes require Windows 10 or Windows 11 (x64).
+- **Completion Notifications**: The `ChatGPT finished a turn` notification is emitted by Codex App before an empty-response failure can be classified. To suppress it, use Codex's native **Settings > General > Notifications > Turn completion notifications > Never** setting.
 
-The shared launch mirrors the bundled Desktop `codex_app` MCP definition so the
-WebSocket app-server sees the same server shape as the official Desktop launch.
-The plugin reads that JSON definition without editing it, removes only the
-plugin-marketplace `type` field that older app-server versions do not accept,
-normalizes relative paths, and records a hash so a Codex update can trigger an
-owned-server migration. If the server still reports an invalid `codex_app`
-transport, the watchdog disables shared mode, restores the official endpoint,
-and stops the affected retry rather than leaving Codex connected to a broken
-local backend.
+---
 
-The tray form stays responsive while this check runs and stops waiting after
-35 seconds. A failed or timed-out check leaves Codex on its previous backend
-and does not save the shared-mode switch.
+## Maintainer
 
-If startup or an upgrade is broken, run `scripts/safe-disable.ps1`. This
-break-glass script is independent of the watchdog: it removes only the plugin's
-startup entry, persists shared mode as disabled, stops only plugin-owned processes, restores only the endpoint
-recorded in `environment-backup.json`, broadcasts the environment change, and
-leaves chats, state, logs, and user-owned credentials intact.
+Maintained by [`sybxxx`](https://github.com/sybxxx) under the **TQY Local Tools** project.
 
-The watchdog also fails open when `config.json` is unreadable at startup or
-shutdown. It does not overwrite that file; it uses the ownership-verified
-`shared-server.json` record to recover the actual loopback endpoint, restores
-the environment backup, stops the matching plugin-owned server, and exits for
-explicit repair. This prevents a damaged configuration from leaving Codex
-connected to a dead plugin port.
-
-The optional shared app-server is monitored without being force-killed. Its
-default private-memory warning limit is 4096 MB; exceeding it disables shared
-mode and defers cleanup until Codex closes. The status panel reports the sample
-and the action. Numeric retry settings above 100 recovery attempts or 20
-consecutive no-progress retries remain available for compatibility but show a
-visible safety warning.
+Licensed under the [MIT License](LICENSE).
