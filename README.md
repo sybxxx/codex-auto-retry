@@ -220,6 +220,6 @@ The watchdog is built with a **Fail-Open** guarantee:
 
 ## Maintainer
 
-Maintained by [`sybxxx`](https://github.com/sybxxx) under the **TQY Local Tools** project.
+Maintained by [`sybxxx`](https://github.com/sybxxx) (TQY Local Tools).
 
 Licensed under the [MIT License](LICENSE).

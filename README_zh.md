@@ -219,6 +219,6 @@ Codex Auto Retry 是一款专为 Windows 平台 Codex 打造的开源可靠性�
 
 ## 维护者与开源协议
 
-本项目由 [`sybxxx`](https://github.com/sybxxx) 在 **TQY Local Tools** 项目名下进行维护。
+本项目由 [`sybxxx`](https://github.com/sybxxx)（TQY Local Tools）独立维护。
 
-项目采用 [MIT 开源许可证](LICENSE)。
+项目采用 [MIT 开源许可证](LICENSE).
