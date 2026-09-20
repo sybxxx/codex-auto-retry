@@ -144,9 +144,19 @@ home, and live command line all still match, the new watchdog adopts that state
 and updates only its plugin version marker. It does not treat its own server as
 an external port conflict.
 
-While shared mode is enabled, readiness is also checked periodically when no
-retry is queued. A plugin-owned server that exits is restarted after the same
+While shared mode is enabled and official IPC is not selected, shared readiness
+is checked periodically even when no retry is queued. A plugin-owned server
+that exits is restarted after the same
 ownership and WebSocket health checks; an unowned listener is never terminated.
+
+Verified official IPC is independent of shared mode. When Desktop uses its
+official stdio backend, IPC preparation and dispatch do not start or repair a
+shared server or publish environment routing. Readiness probes continue with
+shared mode off. Only eligible, recent pre-dispatch stops can automatically
+rejoin their existing retry chain after transport recovery; budgets, deadlines,
+pause/cancellation and duplicate protection remain in force. Turning shared mode
+off alone does not pause IPC retries. The global retry pause and service stop
+controls still stop new dispatches; safe-disable still stops the owned worker.
 
 The same readiness boundary samples the owned server's private memory. The
 default monitor limit is 4096 MB. An over-limit sample records

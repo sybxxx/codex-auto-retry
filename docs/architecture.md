@@ -39,8 +39,10 @@ Three recovery channels were evaluated:
    `CODEX_APP_SERVER_WS_URL` only in a new Desktop child process via the explicit
    safe launcher. Enabling shared mode never publishes a user environment value.
    The watchdog becomes another client of that same server.
-   With shared mode disabled, Codex remains on its official backend and the
-   watchdog fails closed without writing the global endpoint.
+   With shared mode disabled, Codex remains on its official backend. The
+   controller checks for an official stdio Desktop and verifies its owner-routed
+   IPC before considering shared-server startup. IPC does not require the shared
+   switch or a healthy shared server; absent a verified route, recovery fails closed.
 
 The third option preserves native behavior while removing the shared visible
 UI surface that caused both reported failures.
@@ -245,13 +247,29 @@ worker restarts.
 - It contains no renderer evaluation, DevTools port, task deeplink, routing
   call, window activation, UI Automation,
   mouse, keyboard, clipboard, or composer access.
-- A closed App waits without consuming either provider or controller counters.
+- A closed App stops the affected retry and requires manual restart of that retry.
   A restart requirement and permanent local configuration conflict stop
   immediately; other controller failures stop at a configurable small limit.
-- When shared mode is enabled, the daemon re-probes the owned app-server on a
+- When shared mode is enabled and the official IPC route is not selected, the
+  daemon re-probes the owned app-server on a
   bounded interval even with an empty retry queue. An exited or unresponsive
   owned server is restarted through the same ownership checks; an occupied or
   unowned port remains fail-open.
+- Official IPC readiness is re-probed at most once per ten seconds even with
+  shared mode disabled; each probe has a fifteen-second deadline. Config reload
+  and successful dispatch/lifecycle checks preserve `official_ipc_ready`.
+- `transport_recovery.go` checks whether a stopped chain can rejoin the queue.
+  Pre-dispatch `shared_app_server_disabled` stops set `transport_blocked=true` only
+  when no ambiguous dispatch, parent notification or goal-limit restart is pending.
+  Explicit false markers survive persistence and never use the legacy fallback.
+  Recent legacy zero-attempt stops without a marker can also rejoin if the last started turn is
+  the exact failed turn and no retry was dispatched after its failure.
+  New starts, aborts and goal changes are scanned before reopening; queued user
+  controls win before dispatch. Active/awaiting work, historical entries, held
+  or terminal goals and the original thirty-minute deadline prevent reopening.
+  Counters are preserved, both stored and current limits apply, and the marker
+  survives worker restart. Closed-App, exhausted and ambiguous controller stops
+  are not reopened. A failed scan cannot authorize automatic reopening.
 - The daemon samples the owned app-server's private memory without terminating
   it. The 4 GB default monitor limit disables shared mode and defers cleanup
   while Desktop is live; it never force-kills Codex. The watchdog's own memory

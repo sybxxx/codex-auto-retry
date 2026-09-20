@@ -289,7 +289,12 @@ plugin-owned `CODEX_APP_SERVER_WS_URL` values. It never publishes a persistent
 route, even when shared mode is enabled. Rollback leaves the previous worker
 stopped with shared mode disabled rather than restoring an unsafe route.
 
-For silent recovery, start the service, enable shared mode, fully exit Codex,
+On supported Desktop builds, the watchdog uses verified official IPC for silent
+recovery even when shared mode is disabled. Disabling shared mode does not pause
+automatic retries; use the automatic-retry pause control to stop dispatches.
+
+For the optional shared WebSocket route, start the service, enable shared mode,
+fully exit Codex,
 then use `安全启动Codex.vbs` (Safe Launch Codex script) in the extracted package or `Launch Codex safely`
 in the startup manager. This checks the installed worker and shared backend,
 then passes the address only to that new Desktop process. An unavailable,
@@ -302,7 +307,8 @@ verified process-scoped launcher; it never terminates Codex itself.
 
 Ordinary shortcuts remain unchanged and use the official backend after legacy
 routing is retired, regardless of whether Windows starts the plugin. Silent
-recovery is unavailable on that official connection. A different user-owned
+recovery on that connection requires a verified official IPC route. A different
+user-owned
 persistent route is preserved and reported as a conflict, not silently deleted.
 The launcher's `-Official` option clears inherited routing only in its child;
 `-CheckOnly` checks without launching. Reboot and packaged-app self-update

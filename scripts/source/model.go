@@ -118,6 +118,7 @@ type StoppedRetry struct {
 	MaxConsecutive      int          `json:"max_consecutive_retries"`
 	Reason              string       `json:"reason"`
 	Historical          bool         `json:"historical,omitempty"`
+	TransportBlocked    *bool        `json:"transport_blocked,omitempty"`
 }
 
 type ThreadState struct {
@@ -203,7 +204,7 @@ type DispatchResult struct {
 
 // desktopCapability describes the transport the watchdog has actually proved.
 // Official stdio is observable but is not externally injectable on Windows;
-// only a verified shared WebSocket supports automatic recovery.
+// a verified shared WebSocket or owner-routed official IPC supports recovery.
 type desktopCapability struct {
 	Transport    string
 	RecoveryMode string

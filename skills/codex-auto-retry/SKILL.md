@@ -68,8 +68,15 @@ and exit. This is not a second watchdog or a separate retry engine.
   route and the user must fully exit Codex and reopen it through
   `安全启动Codex.vbs` or the startup manager's safe-launch button. Current
   Windows Desktop builds may instead report `official_ipc_ready`: the watchdog
-  has verified the official named-pipe router, discovered the task owner, and
-  can submit an empty-input recovery request without changing global routing.
+  has verified the official named-pipe router. Dispatch must still discover the
+  exact task owner before submitting an empty-input recovery request, without
+  changing global routing.
+  Verified official IPC works independently of the shared-backend switch. Use
+  the automatic-retry pause control, not the shared-mode switch, to pause retries.
+  A recent pre-dispatch `shared_app_server_disabled` stop can rejoin the same
+  chain when a verified route returns, without resetting either retry budget or
+  the thirty-minute deadline. Historical/expired stops, new user turns, aborts,
+  held goals, closed-App stops and ambiguous dispatches are not auto-reopened.
   The tray settings window exposes the same safe-launch action when this state is
   detected. It waits up to two minutes for the current Desktop process to close,
   then starts the verified process-scoped launcher without terminating Codex.

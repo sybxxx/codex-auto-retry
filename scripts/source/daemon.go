@@ -123,9 +123,6 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 	d.processSharedRecovery(ctx, now)
 	controllerReady := d.controllerRestartReady(ctx, now)
 	d.mu.Lock()
-	if controllerReady {
-		d.reopenRestartRequiredLocked(now)
-	}
 	d.reloadConfigLocked()
 	roots := discoverSessionRoots(d.config)
 	baseline := !d.state.Initialized
@@ -151,6 +148,11 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 			continue
 		}
 		d.handleEventLocked(item, now)
+	}
+	// Apply observed starts, cancellations and goal changes before reopening.
+	// Queued user controls below still take precedence over dispatch.
+	if controllerReady && scanErr == nil {
+		d.reopenRestartRequiredLocked(now)
 	}
 	d.refreshControlsLocked(now)
 	d.expireUnacknowledgedLocked(now)
@@ -309,26 +311,9 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 		return false
 	}
 	d.mu.Lock()
-	// A stale failure state must clear even after every stopped task was
-	// resolved; keying the probe off the queue alone left
-	// "codex_restart_required" displayed forever once no retry was waiting.
-	// Shared mode is a resident service boundary, not only a retry dependency.
-	// Keep probing it even when the retry queue is empty so an app-server that
-	// exits after login is recreated before Codex receives a dead endpoint.
-	needsProbe := d.config.SharedAppServerEnabled ||
-		d.controllerState == "codex_restart_required" ||
-		d.controllerState == "codex_not_running" ||
-		d.controllerState == "shared_app_server_config_invalid"
-	if !needsProbe {
-		for _, thread := range d.state.Threads {
-			if thread.Stopped != nil && (thread.Stopped.Reason == "codex_restart_required" ||
-				thread.Stopped.Reason == "codex_not_running") {
-				needsProbe = true
-				break
-			}
-		}
-	}
-	if !needsProbe || (!d.lastControllerProbe.IsZero() && now.Sub(d.lastControllerProbe) < 10*time.Second) {
+	// Official IPC can become available independently of shared mode and queue
+	// contents. Keep the bounded probe alive even after a fail-open transition.
+	if !d.lastControllerProbe.IsZero() && now.Sub(d.lastControllerProbe) < 10*time.Second {
 		d.mu.Unlock()
 		return false
 	}
@@ -349,7 +334,12 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 		d.mu.Unlock()
 		return false
 	}
-	state := runner.ControllerState(ctx)
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	state := runner.ControllerState(probeCtx)
+	cancel()
+	if !sharedEnabled && state == "ready" {
+		state = "shared_app_server_disabled"
+	}
 	if sharedEnabled && controllerFailureNeedsFailOpen(state) {
 		state = d.failOpenSharedBackend(ctx, state)
 	}
@@ -359,7 +349,7 @@ func (d *daemon) controllerRestartReady(ctx context.Context, now time.Time) bool
 	}
 	d.controllerState = state
 	d.mu.Unlock()
-	return state == "ready"
+	return state == "ready" || state == "official_ipc_ready"
 }
 
 func (d *daemon) failOpenSharedBackend(ctx context.Context, reason string) string {
@@ -380,28 +370,40 @@ func (d *daemon) failOpenSharedBackend(ctx context.Context, reason string) strin
 }
 
 func (d *daemon) reopenRestartRequiredLocked(now time.Time) {
+	if d.paused {
+		return
+	}
 	for threadID, thread := range d.state.Threads {
 		stopped := thread.Stopped
-		if stopped == nil || stopped.Reason != "codex_restart_required" {
+		if !canReopenTransportRetry(thread, now) {
+			continue
+		}
+		if _, active := d.active[threadID]; active {
 			continue
 		}
 		attempt := stopped.Attempts + 1
 		consecutive := stopped.ConsecutiveRetries + 1
-		if attempt > stopped.MaxAttempts || consecutive > stopped.MaxConsecutive {
+		recoveryLimit, consecutiveLimit := retryLimits(stopped.Class, d.config)
+		recoveryLimit = min(recoveryLimit, stopped.MaxAttempts)
+		consecutiveLimit = min(consecutiveLimit, stopped.MaxConsecutive)
+		if attempt > recoveryLimit || consecutive > consecutiveLimit {
 			continue
 		}
 		thread.Stopped = nil
+		if thread.RecoveryStartedAt.IsZero() {
+			thread.RecoveryStartedAt = stopped.FailedAt
+		}
 		thread.RecoveryAttempts = attempt
 		thread.ConsecutiveRetries = consecutive
 		thread.Pending = &PendingRetry{
 			EventKey: stopped.EventKey, FailedTurnID: stopped.FailedTurnID, FailedAt: stopped.FailedAt,
 			OriginTurnStartedAt: stopped.OriginTurnStartedAt,
 			Class:               stopped.Class, DueAt: now, CodexHome: stopped.CodexHome, RolloutPath: stopped.RolloutPath,
-			Attempt: attempt, MaxAttempts: stopped.MaxAttempts,
-			ConsecutiveRetry: consecutive, MaxConsecutive: stopped.MaxConsecutive,
+			Attempt: attempt, MaxAttempts: recoveryLimit,
+			ConsecutiveRetry: consecutive, MaxConsecutive: consecutiveLimit,
 		}
 		d.state.Threads[threadID] = thread
-		d.logger.Printf("retry reopened thread=%s reason=codex_restart_completed", shortThreadID(threadID))
+		d.logger.Printf("retry reopened thread=%s reason=transport_ready previous_reason=%s", shortThreadID(threadID), stopped.Reason)
 	}
 }
 
@@ -528,7 +530,7 @@ func (d *daemon) reconcileAwaitingLifecycle(ctx context.Context, now time.Time) 
 			d.mu.Unlock()
 			continue
 		}
-		d.controllerState = "ready"
+		d.recordControllerSuccessLocked()
 		awaiting.DispatchFailures = 0
 		if retryThreadIsActive(status) {
 			awaiting.LifecycleChecks = 0
@@ -691,6 +693,9 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 	if pending == nil {
 		return
 	}
+	transportBlocked := reason == "shared_app_server_disabled" && pending.DispatchFailures == 0 &&
+		!pending.ParentNotified && !pending.GoalLimitRestart && !pending.FailedAt.IsZero() &&
+		!thread.LastAutoRetryAt.After(pending.FailedAt)
 	thread.Pending = nil
 	thread.Awaiting = nil
 	thread.GoalStop = nil
@@ -703,7 +708,8 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 		Class:               pending.Class, StoppedAt: now, CodexHome: pending.CodexHome, RolloutPath: pending.RolloutPath,
 		Attempts: thread.RecoveryAttempts, MaxAttempts: pending.MaxAttempts,
 		ConsecutiveRetries: thread.ConsecutiveRetries, MaxConsecutive: pending.MaxConsecutive,
-		Reason: reason,
+		Reason:           reason,
+		TransportBlocked: &transportBlocked,
 	}
 	d.state.Threads[threadID] = thread
 	d.lastError = reason
@@ -774,13 +780,13 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	if d.paused {
 		return jobs
 	}
-	if !d.config.SharedAppServerEnabled || d.controllerState == "shared_app_server_disabled" ||
-		d.controllerState == "shared_app_server_config_invalid" {
-		// The fail-open mode deliberately has no recovery transport. Do not
+	if d.controllerState != "official_ipc_ready" && (!d.config.SharedAppServerEnabled ||
+		d.controllerState == "shared_app_server_disabled" || d.controllerState == "shared_app_server_config_invalid") {
+		// No verified recovery transport is available. Do not
 		// promote a due item to AwaitingRetry: doing so looks like a retry was
 		// started and then failed, even though Codex never received a request.
 		stopReason := "shared_app_server_disabled"
-		if controllerFailureNeedsFailOpen(d.controllerState) {
+		if controllerFailureNeedsFailOpen(d.controllerState) || d.controllerState == "codex_not_running" {
 			stopReason = d.controllerState
 		}
 		for threadID, thread := range d.state.Threads {
@@ -813,6 +819,10 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 			continue
 		}
 		if _, active := d.active[threadID]; active {
+			continue
+		}
+		if !thread.RecoveryStartedAt.IsZero() && now.Sub(thread.RecoveryStartedAt) > maxAutomaticRecoveryDuration {
+			d.stopPendingForControllerLocked(threadID, thread, now, "recovery_time_limit")
 			continue
 		}
 		candidates = append(candidates, candidate{threadID: threadID, pending: *thread.Pending})
@@ -913,6 +923,10 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 	if result.ParentNotified {
 		thread.Awaiting.ParentNotified = true
 	}
+	if err == nil && result.Outcome == outcomeDispatched &&
+		(result.Reason == "official_ipc_turn_started" || result.Reason == "official_ipc_goal_turn_started") {
+		d.controllerState = "official_ipc_ready"
+	}
 	if err != nil || result.Outcome == outcomeRetryLater {
 		reason := controllerFailureReason(result, err)
 		d.controllerState = reason
@@ -921,11 +935,11 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		// User or turn activity is temporary. A matching task_started event will
 		// still cancel or acknowledge this retry on the next scan; until then the
 		// failed task remains independently queued.
-		d.controllerState = "ready"
+		d.recordControllerSuccessLocked()
 		thread.Awaiting.DispatchFailures = 0
 		d.rescheduleAwaitingWithPolicyLocked(job.ThreadID, thread, finishedAt, controllerFailureReason(result, nil), false)
 	} else if result.Outcome == outcomeNotApplicable {
-		d.controllerState = "ready"
+		d.recordControllerSuccessLocked()
 		thread.RecoveryAttempts = 0
 		thread.ConsecutiveRetries = 0
 		thread.CurrentTurnProgress = false
@@ -942,7 +956,7 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		d.state.Threads[job.ThreadID] = thread
 		d.logger.Printf("retry skipped thread=%s reason=%s", shortThreadID(job.ThreadID), result.Reason)
 	} else {
-		d.controllerState = "ready"
+		d.recordControllerSuccessLocked()
 		thread.Awaiting.Action = result.Action
 		thread.Awaiting.DispatchFailures = 0
 		thread.Awaiting.StartDeadline = finishedAt.Add(time.Duration(d.config.StartAckTimeoutSeconds) * time.Second)

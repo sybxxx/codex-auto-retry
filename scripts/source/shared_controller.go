@@ -78,72 +78,37 @@ func newSharedAppServerController(config Config, dataDir string, logger *safeLog
 }
 
 func (c *sharedAppServerController) Prepare(ctx context.Context) error {
-	enabled, err := c.sharedServerEnabled()
+	state, err := c.Readiness(ctx)
 	if err != nil {
 		return err
 	}
-	if !enabled {
+	if state == "shared_app_server_disabled" {
 		return errSharedAppServerDisabled
 	}
-	if err := c.ensureSharedServer(ctx); err != nil {
-		return err
-	}
-	state, err := c.checker.State(ctx)
-	if err != nil {
-		return err
-	}
-	if state == desktopLegacyStdio {
-		if c.officialIPCReady(ctx) {
-			return nil
-		}
+	if state == "codex_restart_required" {
 		return errCodexRestartRequired
 	}
 	return nil
 }
 
 func (c *sharedAppServerController) Readiness(ctx context.Context) (string, error) {
-	enabled, err := c.sharedServerEnabled()
+	result, ready, transport, err := c.preflight(ctx, false)
 	if err != nil {
 		return "", err
 	}
-	if !enabled {
-		return "shared_app_server_disabled", nil
+	if !ready {
+		return result.Reason, nil
 	}
-	if err := c.ensureSharedServer(ctx); err != nil {
-		return "", err
+	if transport == desktopOfficialIPC {
+		return "official_ipc_ready", nil
 	}
-	state, err := c.checker.State(ctx)
-	if err != nil {
-		return "", err
-	}
-	switch state {
-	case desktopStopped:
-		return "codex_not_running", nil
-	case desktopLegacyStdio:
-		if c.officialIPCReady(ctx) {
-			return "official_ipc_ready", nil
-		}
-		return "codex_restart_required", nil
-	case desktopUnknown:
-		return "codex_app_not_ready", nil
-	case desktopSharedServer:
-		return "ready", nil
-	default:
-		return "", errSharedServerUnavailable
-	}
+	return "ready", nil
 }
 
 // RetryThreadStatus performs a read-only lifecycle probe. It never resumes an
 // unloaded thread and never starts a turn; that matters because this path is
 // used to recover state left behind by a previous watchdog process.
 func (c *sharedAppServerController) RetryThreadStatus(ctx context.Context, threadID, codexHome string) (string, error) {
-	enabled, err := c.sharedServerEnabled()
-	if err != nil {
-		return "", err
-	}
-	if !enabled {
-		return "", &controllerReasonError{reason: "shared_app_server_disabled"}
-	}
 	if !c.server.SupportsHome(codexHome) {
 		return "", &controllerReasonError{reason: "codex_home_not_shared"}
 	}
@@ -212,13 +177,6 @@ func (c *sharedAppServerController) Dispatch(
 	failureClass FailureClass,
 	codexHome string,
 ) (DispatchResult, error) {
-	enabled, err := c.sharedServerEnabled()
-	if err != nil {
-		return DispatchResult{}, err
-	}
-	if !enabled {
-		return retryLaterResult("shared_app_server_disabled", parentNotified), nil
-	}
 	if !c.server.SupportsHome(codexHome) {
 		return retryLaterResult("codex_home_not_shared", parentNotified), nil
 	}
@@ -388,13 +346,6 @@ func (c *sharedAppServerController) Dispatch(
 }
 
 func (c *sharedAppServerController) BlockGoal(ctx context.Context, threadID string, settings *ResumeSettings, codexHome string) (DispatchResult, error) {
-	enabled, err := c.sharedServerEnabled()
-	if err != nil {
-		return DispatchResult{}, err
-	}
-	if !enabled {
-		return retryLaterResult("shared_app_server_disabled", false), nil
-	}
 	if !c.server.SupportsHome(codexHome) {
 		return retryLaterResult("codex_home_not_shared", false), nil
 	}
@@ -455,13 +406,25 @@ func (c *sharedAppServerController) preflight(ctx context.Context, parentNotifie
 	if err != nil {
 		return DispatchResult{}, false, desktopUnknown, err
 	}
+	// Prove the Desktop transport before touching the optional shared server.
+	// Official IPC must keep working when shared mode is off or unhealthy.
+	state, err := c.checker.State(ctx)
+	if err != nil {
+		return DispatchResult{}, false, desktopUnknown, err
+	}
+	if state == desktopLegacyStdio && c.officialIPCReady(ctx) {
+		return DispatchResult{}, true, desktopOfficialIPC, nil
+	}
 	if !enabled {
+		if state == desktopStopped {
+			return retryLaterResult("codex_not_running", parentNotified), false, state, nil
+		}
 		return retryLaterResult("shared_app_server_disabled", parentNotified), false, desktopUnknown, nil
 	}
 	if err := c.ensureSharedServer(ctx); err != nil {
 		return DispatchResult{}, false, desktopUnknown, err
 	}
-	state, err := c.checker.State(ctx)
+	state, err = c.checker.State(ctx)
 	if err != nil {
 		return DispatchResult{}, false, desktopUnknown, err
 	}

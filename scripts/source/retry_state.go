@@ -51,7 +51,7 @@ func (d *daemon) reloadConfigLocked() {
 		d.lastSharedAppServerMemoryCheck = time.Time{}
 	}
 	if !config.SharedAppServerEnabled {
-		if !controllerFailureNeedsFailOpen(d.controllerState) {
+		if d.controllerState == "ready" || d.controllerState == "starting" {
 			d.controllerState = "shared_app_server_disabled"
 		}
 	} else if d.controllerState == "shared_app_server_disabled" {
