@@ -199,6 +199,16 @@ stops so the damaged configuration can be repaired explicitly; Codex is not
 left pointed at a dead plugin endpoint.
 
 Installation requires Desktop to be fully closed, even in official mode.
+The one-click launcher passes `-WaitForCodexExit`, which invokes the read-only
+gate in `close-codex.ps1` before lock creation, journal recovery or runtime writes.
+Its native Retry/Cancel prompt has a five-minute total waiting budget and at most
+twenty prompts. Each Retry performs another process query (five-second operation
+timeout); query errors are shown as unknown, never treated as closed. Cancel or
+dialog timeout exits with code 2, which the launcher labels as cancellation, not
+installation failure. No process is closed or signalled. Automation without the
+switch retains immediate rejection; `-DryRun` remains prompt-free. The existing
+post-lock and runtime guards still catch Desktop being reopened later.
+
 Release CLI calls use `native-command.ps1`: .NET drains stdout and stderr
 separately, preserving the real exit code on Windows PowerShell 5.1. Captures
 are capped at 4,194,304/32,768 characters. CLI discovery selects a native EXE

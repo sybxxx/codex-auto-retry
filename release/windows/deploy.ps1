@@ -8,13 +8,15 @@ param(
     [switch]$SkipCodexCheck,
     [switch]$SkipPluginRegistration,
     [switch]$SkipRuntimeInstall,
-    [switch]$EnableSharedAppServer
+    [switch]$EnableSharedAppServer,
+    [switch]$WaitForCodexExit
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'common.ps1')
 . (Join-Path $PSScriptRoot 'upgrade-runtime.ps1')
+. (Join-Path $PSScriptRoot 'close-codex.ps1')
 
 function Write-Step {
     param([string]$Message)
@@ -22,19 +24,7 @@ function Write-Step {
 }
 
 function Test-CodexDesktopRunning {
-    try {
-        $main = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-            ($_.Name -eq 'ChatGPT.exe' -or ($_.Name -eq 'Codex.exe' -and
-                $_.ExecutablePath -match '\\app\\Codex\.exe$')) -and
-            (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
-        })
-        return $main.Count -gt 0
-    }
-    catch {
-        # An inability to inspect Desktop is not permission to mutate a shared
-        # endpoint. Upgrade fails closed when process inspection is unavailable.
-        return $true
-    }
+    return (Get-InstallerDesktopState) -ne 'closed'
 }
 
 function Test-SharedBackendInUse {
@@ -550,6 +540,13 @@ if ($DryRun) {
         CodexCli = $cli
     }
     return
+}
+
+# Interactive one-click installs wait before creating a lock or touching any
+# installed files. Automation keeps the existing immediate, fail-closed gate.
+if ($WaitForCodexExit -and -not (Wait-CodexInstallerExit)) {
+    Write-Step 'Installation cancelled. No plugin or runtime changes were made.'
+    exit 2
 }
 
 New-Item -ItemType Directory -Force -Path $runtimePath | Out-Null

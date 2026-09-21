@@ -60,6 +60,7 @@ jobs:
         shell: powershell
         run: |
           .\scripts\installer-cli-smoke-test.ps1
+          .\scripts\installer-close-smoke-test.ps1
           .\scripts\upgrade-rollback-smoke-test.ps1
 
       - name: Build and verify release archive

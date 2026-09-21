@@ -34,7 +34,7 @@ if ($versionSource -notmatch 'const\s+appVersion\s*=\s*"([^"]+)"' -or $matches[1
     throw 'The watchdog appVersion and plugin base version do not match.'
 }
 
-foreach ($required in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1', $startupManagerVbs, $safeCodexLauncher, $installLauncher, $uninstallLauncher, $startupManagerLauncher, $safeDisableLauncher, $installReadme)) {
+foreach ($required in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'close-codex.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1', $startupManagerVbs, $safeCodexLauncher, $installLauncher, $uninstallLauncher, $startupManagerLauncher, $safeDisableLauncher, $installReadme)) {
     if (-not (Test-Path -LiteralPath (Join-Path $releaseTemplate $required) -PathType Leaf)) {
         throw "Release template file is missing: $required"
     }
@@ -64,7 +64,7 @@ try {
     New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
     Write-Host '[Release] Staging one-click installer...'
-    foreach ($file in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1', $startupManagerVbs, $safeCodexLauncher, $installLauncher, $uninstallLauncher, $startupManagerLauncher, $safeDisableLauncher, $installReadme)) {
+    foreach ($file in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'close-codex.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1', $startupManagerVbs, $safeCodexLauncher, $installLauncher, $uninstallLauncher, $startupManagerLauncher, $safeDisableLauncher, $installReadme)) {
         Copy-Item -LiteralPath (Join-Path $releaseTemplate $file) -Destination (Join-Path $packageRoot $file) -Force
     }
 

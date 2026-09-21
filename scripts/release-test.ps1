@@ -76,6 +76,7 @@ try {
         'common.ps1',
         'native-command.ps1',
         'upgrade-runtime.ps1',
+        'close-codex.ps1',
         $installReadme,
         'release-manifest.json',
         'SHA256SUMS.txt',
@@ -151,7 +152,7 @@ try {
         throw 'MCP executable must use the Windows GUI subsystem.'
     }
 
-    foreach ($script in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1')) {
+    foreach ($script in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'close-codex.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1')) {
         $tokens = $null
         $errors = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $script), [ref]$tokens, [ref]$errors)

@@ -296,6 +296,13 @@ plugin-owned `CODEX_APP_SERVER_WS_URL` values. It never publishes a persistent
 route, even when shared mode is enabled. Rollback leaves the previous worker
 stopped with shared mode disabled rather than restoring an unsafe route.
 
+The one-click installer prompts you in Chinese if Codex is still running.
+Save your work, fully exit Codex (including the tray), then select **Retry** to
+recheck and continue. **Cancel**, closing the prompt, or a five-minute timeout
+ends installation without changing the installed plugin/runtime. It never
+force-closes Codex. Direct `deploy.ps1` calls keep their non-interactive safety
+check unless `-WaitForCodexExit` is supplied. User cancellation returns exit code 2.
+
 The installer now checks plugin-list support before replacement and verifies
 the exact installed plugin version afterwards. Warnings on stderr do not turn
 successful CLI commands into failures. Errors report an exit code and a safe

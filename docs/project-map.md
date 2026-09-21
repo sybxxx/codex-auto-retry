@@ -28,6 +28,7 @@
 | `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds both Windows executables with the GUI subsystem. |
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
 | `release/windows/native-command.ps1` | Bounded native CLI execution with separate stdout/stderr, actual exit codes and privacy-safe error categories. |
+| `release/windows/close-codex.ps1`, `scripts/installer-close-smoke-test.ps1` | Read-only pre-install Desktop gate with bounded Retry/Cancel prompts, cancellation exit-code handling, and isolated regressions. Never terminates Codex. |
 | `release/windows/upgrade-runtime.ps1` | Outer installer runtime and startup snapshots; hash-checked rollback without reverting retry data or restarting an old worker. |
 | `scripts/installer-cli-smoke-test.ps1`, `scripts/upgrade-rollback-smoke-test.ps1` | Windows PowerShell 5.1 warning/exit/timeout regressions and isolated release transaction success, rollback and interrupted-recovery checks. |
 | `scripts/release-test.ps1` | Extracts a release, verifies every checksum and required file, parses installer scripts, and runs path-safety plus mutation-free installer/uninstaller checks. |
