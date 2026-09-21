@@ -572,9 +572,9 @@ func (d *daemon) advanceInactiveAwaitingLocked(threadID string, thread ThreadSta
 		nextConsecutive = 1
 	}
 	if nextAttempt > awaiting.MaxAttempts || nextConsecutive > awaiting.MaxConsecutive {
-		completedAttempts := completedRetryCount(nextAttempt, awaiting.MaxAttempts)
-		completedConsecutive := completedRetryCount(nextConsecutive, awaiting.MaxConsecutive)
-		reason := retryStopReason(nextAttempt, awaiting.MaxAttempts, nextConsecutive, awaiting.MaxConsecutive)
+		completedAttempts := completedRetryCount(nextAttempt)
+		completedConsecutive := completedRetryCount(nextConsecutive)
+		reason := retryStopReasonForClass(awaiting.Class, d.config, nextAttempt, awaiting.MaxAttempts, nextConsecutive, awaiting.MaxConsecutive)
 		if awaiting.Class == classEmptyResponse && thread.GoalStatus == "active" {
 			reason = goalEmptyResponseStopReason
 		}
@@ -674,8 +674,8 @@ func (d *daemon) stopAwaitingForControllerLocked(threadID string, thread ThreadS
 	thread.Pending = nil
 	thread.Awaiting = nil
 	thread.GoalStop = nil
-	thread.RecoveryAttempts = completedRetryCount(awaiting.Attempt, awaiting.MaxAttempts)
-	thread.ConsecutiveRetries = completedRetryCount(awaiting.ConsecutiveRetry, awaiting.MaxConsecutive)
+	thread.RecoveryAttempts = completedRetryCount(awaiting.Attempt)
+	thread.ConsecutiveRetries = completedRetryCount(awaiting.ConsecutiveRetry)
 	thread.Stopped = &StoppedRetry{
 		EventKey: awaiting.EventKey, FailedTurnID: awaiting.FailedTurnID, FailedAt: awaiting.FailedAt,
 		OriginTurnStartedAt: awaiting.OriginTurnStartedAt,
@@ -699,8 +699,8 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 	thread.Pending = nil
 	thread.Awaiting = nil
 	thread.GoalStop = nil
-	thread.RecoveryAttempts = completedRetryCount(pending.Attempt, pending.MaxAttempts)
-	thread.ConsecutiveRetries = completedRetryCount(pending.ConsecutiveRetry, pending.MaxConsecutive)
+	thread.RecoveryAttempts = completedRetryCount(pending.Attempt)
+	thread.ConsecutiveRetries = completedRetryCount(pending.ConsecutiveRetry)
 	thread.CurrentTurnProgress = false
 	thread.Stopped = &StoppedRetry{
 		EventKey: pending.EventKey, FailedTurnID: pending.FailedTurnID, FailedAt: pending.FailedAt,

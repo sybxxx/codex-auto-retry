@@ -28,6 +28,7 @@ type setRetrySettingsInput struct {
 	RetryPrompt           string `json:"retry_prompt" jsonschema:"fallback text used only when silent continuation is unsupported, from 1 to 500 characters"`
 	MaxConsecutiveRetries int    `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress, from 1 to 100"`
 	MaxRecoveryAttempts   int    `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle, from 1 to 1000"`
+	AuthMaxAttempts       *int   `json:"auth_max_attempts,omitempty" jsonschema:"additional ceiling for authentication errors, from 1 to 1000; omit to preserve the current value; both global limits still apply"`
 	InitialDelaySeconds   int    `json:"initial_delay_seconds" jsonschema:"fixed delay or first increasing delay, from 1 to 3600 seconds"`
 	MaxDelaySeconds       int    `json:"max_delay_seconds" jsonschema:"maximum increasing delay, from 1 to 86400 seconds"`
 	DelayIncrementSeconds int    `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry, from 1 to 3600 seconds"`
@@ -135,6 +136,7 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 			RetryPrompt:           input.RetryPrompt,
 			MaxConsecutiveRetries: input.MaxConsecutiveRetries,
 			MaxRecoveryAttempts:   input.MaxRecoveryAttempts,
+			AuthMaxAttempts:       input.AuthMaxAttempts,
 			InitialDelaySeconds:   input.InitialDelaySeconds,
 			MaxDelaySeconds:       input.MaxDelaySeconds,
 			DelayIncrementSeconds: input.DelayIncrementSeconds,

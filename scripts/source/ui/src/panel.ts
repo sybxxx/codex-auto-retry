@@ -59,6 +59,7 @@ type ManagementSnapshot = {
   startup_approved: "enabled" | "disabled" | "unknown";
   retry_prompt: string;
   max_recovery_attempts: number;
+  auth_max_attempts?: number;
   max_consecutive_retries: number;
   initial_delay_seconds: number;
   max_delay_seconds: number;
@@ -115,6 +116,7 @@ const elements = {
   promptError: required<HTMLElement>("prompt-error"),
   savePrompt: required<HTMLButtonElement>("save-prompt"),
   maxRecoveryAttempts: required<HTMLInputElement>("max-recovery-attempts"),
+  authMaxAttempts: required<HTMLInputElement>("auth-max-attempts"),
   maxConsecutiveRetries: required<HTMLInputElement>("max-consecutive-retries"),
   memoryLimit: required<HTMLInputElement>("memory-limit-mb"),
   delayStrategies: requiredAll<HTMLInputElement>('input[name="delay-strategy"]'),
@@ -184,6 +186,7 @@ function render(next: ManagementSnapshot): void {
   if (!keepSettingsDraft) {
     elements.retryPrompt.value = next.retry_prompt;
     elements.maxRecoveryAttempts.value = String(next.max_recovery_attempts);
+    elements.authMaxAttempts.value = String(next.auth_max_attempts ?? 6);
     elements.maxConsecutiveRetries.value = String(next.max_consecutive_retries);
     elements.memoryLimit.value = String(next.memory_limit_mb);
     elements.initialDelay.value = String(next.initial_delay_seconds);
@@ -491,6 +494,9 @@ function actionLabel(value?: string): string {
 }
 
 function stopReasonLabel(retry: ManagedRetry): string {
+  if (retry.stop_reason === "auth_attempt_limit") {
+    return "触发登录异常专用上限";
+  }
   if (retry.stop_reason === "codex_not_running") {
     return "Codex 已退出，自动重试已停止";
   }
@@ -541,6 +547,8 @@ function stopReasonLabel(retry: ManagedRetry): string {
 
 function stoppedStateLabel(retry: ManagedRetry): string {
   switch (retry.stop_reason) {
+    case "auth_attempt_limit":
+      return "登录异常专用上限";
     case "shared_app_server_disabled":
       return "共享后台已关闭";
     case "codex_not_running":
@@ -611,11 +619,14 @@ function updatePromptState(): void {
   const maxDelay = Number(elements.maxDelay.value);
   const delayIncrement = Number(elements.delayIncrement.value);
   const recoveryAttempts = Number(elements.maxRecoveryAttempts.value);
+  const authAttempts = Number(elements.authMaxAttempts.value);
   const consecutiveRetries = Number(elements.maxConsecutiveRetries.value);
   const memoryLimit = Number(elements.memoryLimit.value);
   let settingsError = "";
   if (!Number.isInteger(recoveryAttempts) || recoveryAttempts < 1 || recoveryAttempts > 1000) {
     settingsError = "本次故障恢复上限应为 1 到 1000";
+  } else if (!Number.isInteger(authAttempts) || authAttempts < 1 || authAttempts > 1000) {
+    settingsError = "登录异常恢复上限应为 1 到 1000";
   } else if (!Number.isInteger(consecutiveRetries) || consecutiveRetries < 1 || consecutiveRetries > 100) {
     settingsError = "连续无进展重试上限应为 1 到 100";
   } else if (!Number.isInteger(memoryLimit) || memoryLimit < 128 || memoryLimit > 65536) {
@@ -641,6 +652,7 @@ function currentSettings(): string {
   return JSON.stringify({
     retry_prompt: elements.retryPrompt.value,
     max_recovery_attempts: Number(elements.maxRecoveryAttempts.value),
+    auth_max_attempts: Number(elements.authMaxAttempts.value),
     max_consecutive_retries: Number(elements.maxConsecutiveRetries.value),
     memory_limit_mb: Number(elements.memoryLimit.value),
     initial_delay_seconds: Number(elements.initialDelay.value),
@@ -655,6 +667,7 @@ function serializedSettings(value: ManagementSnapshot): string {
   return JSON.stringify({
     retry_prompt: value.retry_prompt,
     max_recovery_attempts: value.max_recovery_attempts,
+    auth_max_attempts: value.auth_max_attempts ?? 6,
     max_consecutive_retries: value.max_consecutive_retries,
     memory_limit_mb: value.memory_limit_mb,
     initial_delay_seconds: value.initial_delay_seconds,
@@ -779,6 +792,7 @@ elements.pauseToggle.addEventListener("change", () => void callTool("set_auto_re
 });
 elements.retryPrompt.addEventListener("input", updatePromptState);
 elements.maxRecoveryAttempts.addEventListener("input", updatePromptState);
+elements.authMaxAttempts.addEventListener("input", updatePromptState);
 elements.maxConsecutiveRetries.addEventListener("input", updatePromptState);
 elements.memoryLimit.addEventListener("input", updatePromptState);
 for (const option of elements.delayStrategies) option.addEventListener("change", updatePromptState);

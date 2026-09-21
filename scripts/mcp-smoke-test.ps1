@@ -202,6 +202,7 @@ try {
         retry_prompt = $updatedPrompt
         max_consecutive_retries = 100
         max_recovery_attempts = 1000
+        auth_max_attempts = 40
         initial_delay_seconds = 9
         max_delay_seconds = 120
         delay_increment_seconds = 7
@@ -209,6 +210,7 @@ try {
         show_notifications = $false
     }
     if ($settings.structuredContent.max_consecutive_retries -ne 100 -or
+        $settings.structuredContent.auth_max_attempts -ne 40 -or
         $settings.structuredContent.max_recovery_attempts -ne 1000 -or
         $settings.structuredContent.initial_delay_seconds -ne 9 -or
         $settings.structuredContent.max_delay_seconds -ne 120 -or

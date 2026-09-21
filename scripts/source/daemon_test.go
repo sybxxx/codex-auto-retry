@@ -441,7 +441,7 @@ func TestDaemonLoweringRetryLimitStopsAnOverBudgetPendingRetry(t *testing.T) {
 	}
 	d.reloadConfigLocked()
 	thread := d.state.Threads[threadID]
-	if thread.Pending != nil || thread.Stopped == nil || thread.Stopped.Attempts != 3 ||
+	if thread.Pending != nil || thread.Stopped == nil || thread.Stopped.Attempts != 4 ||
 		thread.Stopped.MaxAttempts != 3 {
 		t.Fatalf("lowered retry limit did not stop the over-budget retry cleanly: %+v", thread)
 	}

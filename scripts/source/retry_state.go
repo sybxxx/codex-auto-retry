@@ -85,11 +85,11 @@ func (d *daemon) stopPendingRetryLocked(threadID string, thread ThreadState, now
 	}
 	thread.Pending = nil
 	thread.Awaiting = nil
-	completedAttempts := completedRetryCount(pending.Attempt, pending.MaxAttempts)
-	completedConsecutive := completedRetryCount(pending.ConsecutiveRetry, pending.MaxConsecutive)
+	completedAttempts := completedRetryCount(pending.Attempt)
+	completedConsecutive := completedRetryCount(pending.ConsecutiveRetry)
 	thread.RecoveryAttempts = completedAttempts
 	thread.ConsecutiveRetries = completedConsecutive
-	reason := retryStopReason(pending.Attempt, pending.MaxAttempts, pending.ConsecutiveRetry, pending.MaxConsecutive)
+	reason := retryStopReasonForClass(pending.Class, d.config, pending.Attempt, pending.MaxAttempts, pending.ConsecutiveRetry, pending.MaxConsecutive)
 	if pending.Class == classEmptyResponse && thread.GoalStatus == "active" {
 		reason = goalEmptyResponseStopReason
 	}
@@ -410,9 +410,9 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 	recoveryLimit, consecutiveLimit := retryLimitsForDecision(decision, d.config)
 	timeLimitExceeded := now.Sub(thread.RecoveryStartedAt) > maxAutomaticRecoveryDuration
 	if timeLimitExceeded || recoveryAttempt > recoveryLimit || consecutiveRetry > consecutiveLimit {
-		completedAttempts := completedRetryCount(recoveryAttempt, recoveryLimit)
-		completedConsecutive := completedRetryCount(consecutiveRetry, consecutiveLimit)
-		reason := retryStopReason(recoveryAttempt, recoveryLimit, consecutiveRetry, consecutiveLimit)
+		completedAttempts := completedRetryCount(recoveryAttempt)
+		completedConsecutive := completedRetryCount(consecutiveRetry)
+		reason := retryStopReasonForClass(decision.Class, d.config, recoveryAttempt, recoveryLimit, consecutiveRetry, consecutiveLimit)
 		if timeLimitExceeded {
 			reason = "recovery_time_limit"
 		}
@@ -508,15 +508,24 @@ func retryLimits(class FailureClass, config Config) (int, int) {
 	return retryLimitsForDecision(decision, config)
 }
 
-func completedRetryCount(nextAttempt, limit int) int {
+func completedRetryCount(nextAttempt int) int {
+	// The displayed count is historical progress, not the current class limit.
+	// A provider error may be reclassified mid-chain; never clamp old attempts
+	// down to the newly selected limited budget.
 	completed := nextAttempt - 1
 	if completed < 0 {
 		completed = 0
 	}
-	if completed > limit {
-		completed = limit
-	}
 	return completed
+}
+
+func retryStopReasonForClass(class FailureClass, config Config, attempt, limit, consecutive, consecutiveLimit int) string {
+	if class == classAuthLimited &&
+		((attempt > limit && limit < config.MaxRecoveryAttempts && limit == config.AuthMaxAttempts) ||
+			(consecutive > consecutiveLimit && consecutiveLimit < config.MaxConsecutiveRetries && consecutiveLimit == config.AuthMaxAttempts)) {
+		return "auth_attempt_limit"
+	}
+	return retryStopReason(attempt, limit, consecutive, consecutiveLimit)
 }
 
 func retryStopReason(recoveryAttempt, recoveryLimit, consecutiveRetry, consecutiveLimit int) string {

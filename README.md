@@ -122,7 +122,14 @@ its `upstream_status` is 400 and the cause is `Upstream request failed`,
 interrupted streams, successful completions with no final model reply, and
 temporarily unavailable authentication services within the
 configured dual limits. Ambiguous or
-persistent authentication failures may have a lower safety limit. Unknown
+persistent authentication failures use the editable **Auth Error Limit**
+(`auth_max_attempts`, default 6, range 1-1000), available in both settings panels.
+The smaller of this extra ceiling and each global limit applies. Temporary
+`auth_unavailable` failures do not use this extra ceiling. Stopped counters keep
+their actual accumulated values even if a later error lowers the applicable
+limit, so `19/6` means 19 retries occurred before the six-attempt auth ceiling
+became applicable. Already-truncated historical state is not reconstructed.
+Unknown
 provider failures keep their separate recovery safety budget but still use the
 configured consecutive no-progress limit. If Codex App exits, the watchdog
 stops the affected retry immediately without consuming another provider

@@ -125,6 +125,7 @@ $script:i18n = @{
     'label_prompt'            = @{ zh = '后备重试文字'; en = 'Fallback Retry Prompt' }
     'label_recovery'          = @{ zh = '本次故障恢复上限'; en = 'Outage Recovery Limit' }
     'label_consecutive'       = @{ zh = '连续无进展重试上限'; en = 'No-Progress Limit' }
+    'label_auth_limit'         = @{ zh = '登录异常恢复上限'; en = 'Auth Error Limit' }
     'label_memory'            = @{ zh = '内存保护上限（MB）'; en = 'Memory Limit (MB)' }
     'label_strategy'          = @{ zh = '等待策略'; en = 'Wait Strategy' }
     'strategy_exponential'    = @{ zh = '翻倍递增'; en = 'Exponential' }
@@ -469,9 +470,11 @@ $recoveryLabel = New-Label (T 'label_recovery') 18 176 145 22
 $recoveryBox = New-NumberBox 168 173 1 1000 ([int]$config.max_recovery_attempts) 120
 $consecutiveLabel = New-Label (T 'label_consecutive') 310 176 128 22
 $consecutiveBox = New-NumberBox 438 173 1 100 ([int]$config.max_consecutive_retries) 120
+$authLabel = New-Label (T 'label_auth_limit') 310 302 128 22
+$authBox = New-NumberBox 438 299 1 1000 ([int]$config.auth_max_attempts) 120
 $memoryLabel = New-Label (T 'label_memory') 18 302 145 22
 $memoryBox = New-NumberBox 168 299 128 65536 ([int]$config.memory_limit_mb) 120
-$settingsGroup.Controls.AddRange(@($recoveryLabel, $recoveryBox, $consecutiveLabel, $consecutiveBox, $memoryLabel, $memoryBox))
+$settingsGroup.Controls.AddRange(@($recoveryLabel, $recoveryBox, $consecutiveLabel, $consecutiveBox, $authLabel, $authBox, $memoryLabel, $memoryBox))
 
 $strategyLabel = New-Label (T 'label_strategy') 18 218 145 22
 $strategyBox = [System.Windows.Forms.ComboBox]::new()
@@ -528,6 +531,7 @@ function Assert-SettingsLayout {
     foreach ($pair in @(
         @($recoveryLabel, $recoveryBox, (T 'label_recovery')),
         @($consecutiveLabel, $consecutiveBox, (T 'label_consecutive')),
+        @($authLabel, $authBox, (T 'label_auth_limit')),
         @($memoryLabel, $memoryBox, (T 'label_memory')),
         @($strategyLabel, $strategyBox, (T 'label_strategy')),
         @($initialDelayLabel, $initialDelayBox, (T 'label_initial_delay')),
@@ -538,7 +542,7 @@ function Assert-SettingsLayout {
             throw ((T 'layout_overlap_err') + [string]$pair[2])
         }
     }
-    foreach ($box in @($recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox, $maxDelayBox, $incrementBox)) {
+    foreach ($box in @($recoveryBox, $consecutiveBox, $authBox, $memoryBox, $strategyBox, $initialDelayBox, $maxDelayBox, $incrementBox)) {
         if ($box.Left -lt 0 -or $box.Right -gt $settingsGroup.ClientSize.Width) {
             throw (T 'layout_bounds_err')
         }
@@ -609,7 +613,7 @@ $form.CancelButton = $closeButton
 $settingsInputControls = @(
     $enabledCheck, $sharedCheck, $safeLaunchButton, $notificationsCheck, $promptBox,
     $recoveryBox, $consecutiveBox, $strategyBox, $initialDelayBox,
-    $maxDelayBox, $incrementBox, $memoryBox
+    $maxDelayBox, $incrementBox, $authBox, $memoryBox
 )
 
 function Set-SettingsBusy {
@@ -649,6 +653,9 @@ function Get-StateText {
 function Get-StoppedStateText {
     param([string]$Reason)
     $lang = $script:currentLanguage
+    if ($Reason -eq 'auth_attempt_limit') {
+        if ($lang -eq 'en') { return 'Auth Limit' } else { return '登录异常专用上限' }
+    }
     if ($Reason -eq 'codex_not_running') {
         if ($lang -eq 'en') { return 'Codex Exited' } else { return 'Codex 已退出' }
     }
@@ -917,6 +924,7 @@ function Apply-Language {
     $promptLabel.Text = T 'label_prompt'
     $recoveryLabel.Text = T 'label_recovery'
     $consecutiveLabel.Text = T 'label_consecutive'
+    $authLabel.Text = T 'label_auth_limit'
     $strategyLabel.Text = T 'label_strategy'
     $maxDelayLabel.Text = T 'label_max_delay'
     $incrementLabel.Text = T 'label_increment'
@@ -971,6 +979,7 @@ $saveButton.add_Click({
         retry_prompt = $prompt
         max_recovery_attempts = [int]$recoveryBox.Value
         max_consecutive_retries = [int]$consecutiveBox.Value
+        auth_max_attempts = [int]$authBox.Value
         initial_delay_seconds = [int]$initialDelayBox.Value
         max_delay_seconds = [int]$maxDelayBox.Value
         delay_increment_seconds = [int]$incrementBox.Value

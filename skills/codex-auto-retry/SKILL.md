@@ -276,6 +276,12 @@ the fallback prompt or app-server error bodies.
   stopped with an explicit goal-block failure reason.
 - Lower limited budgets may apply to generic 401/403 authentication failures
   and unknown errors.
+  `auth_max_attempts` is editable in both panels and via `set_retry_settings`
+  (1-1000, default 6; omitted API values preserve the current setting).
+  Both global ceilings still apply. `auth_attempt_limit` identifies this extra
+  guard, whereas temporary `auth_unavailable` failures use the global limits.
+  Historical counts can exceed a newly applied ceiling (for example 19/6);
+  do not interpret the denominator as the number of attempts actually made.
 - No retry: user cancellation, invalid request or payload, ordinary HTTP 400/404
   errors, missing model,
   context limit, policy, approval, or permission failures.

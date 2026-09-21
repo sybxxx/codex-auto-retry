@@ -249,8 +249,8 @@ func (c Config) validate() error {
 	if c.StartAckTimeoutSeconds < 10 || c.StartAckTimeoutSeconds > 300 {
 		return errors.New("start_ack_timeout_seconds must be between 10 and 300")
 	}
-	if c.AuthMaxAttempts < 1 || c.UnknownMaxAttempts < 1 {
-		return errors.New("limited retry counts must be positive")
+	if c.AuthMaxAttempts < 1 || c.AuthMaxAttempts > maxRecoveryAttemptsLimit || c.UnknownMaxAttempts < 1 {
+		return fmt.Errorf("auth_max_attempts must be between 1 and %d; unknown_max_attempts must be positive", maxRecoveryAttemptsLimit)
 	}
 	if strings.TrimSpace(c.RetryPrompt) == "" {
 		return errors.New("retry_prompt must not be empty")

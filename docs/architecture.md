@@ -316,7 +316,15 @@ increment, while doubling multiplies by two; both are capped by the maximum and
 follow the no-progress counter, so useful progress restarts the wait sequence.
 
 Generic 401/403 authentication errors have a conservative budget that can lower
-both configured limits. Unknown provider errors keep a separate recovery safety
+both configured limits. `auth_max_attempts` defaults to 6 and is editable (1-1000)
+in native settings, the embedded panel and the settings API. Older API clients
+may omit it to preserve the saved value; explicit invalid values reject the
+whole settings update. A binding class-specific ceiling produces
+`auth_attempt_limit`; lower global ceilings retain their own stop reasons.
+Stopping never clamps historical counters to a newly lowered limit. This applies
+to reclassification, configuration reload and inactive-turn reconciliation;
+already-truncated old records are not guessed or rewritten.
+Unknown provider errors keep a separate recovery safety
 budget, but continue to use the configured consecutive no-progress limit so an
 internal classifier ceiling cannot be displayed as the user's setting. Invalid
 payloads, context limits, missing models, policy errors, approval failures,

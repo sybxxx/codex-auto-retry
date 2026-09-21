@@ -46,6 +46,7 @@ type ManagementSnapshot struct {
 	RetryPrompt                         string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
 	MaxConsecutiveRetries               int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
 	MaxRecoveryAttempts                 int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
+	AuthMaxAttempts                     int            `json:"auth_max_attempts" jsonschema:"maximum retries for limited authentication failures"`
 	InitialDelaySeconds                 int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
 	MaxDelaySeconds                     int            `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
 	DelayIncrementSeconds               int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
@@ -156,6 +157,7 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		RetryPrompt:                  config.RetryPrompt,
 		MaxConsecutiveRetries:        config.MaxConsecutiveRetries,
 		MaxRecoveryAttempts:          config.MaxRecoveryAttempts,
+		AuthMaxAttempts:              config.AuthMaxAttempts,
 		InitialDelaySeconds:          config.InitialDelaySeconds,
 		MaxDelaySeconds:              config.MaxDelaySeconds,
 		DelayIncrementSeconds:        config.DelayIncrementSeconds,
@@ -297,6 +299,7 @@ type RetrySettings struct {
 	RetryPrompt           string `json:"retry_prompt"`
 	MaxConsecutiveRetries int    `json:"max_consecutive_retries"`
 	MaxRecoveryAttempts   int    `json:"max_recovery_attempts"`
+	AuthMaxAttempts       *int   `json:"auth_max_attempts,omitempty"`
 	InitialDelaySeconds   int    `json:"initial_delay_seconds"`
 	MaxDelaySeconds       int    `json:"max_delay_seconds"`
 	DelayIncrementSeconds int    `json:"delay_increment_seconds"`
@@ -351,6 +354,9 @@ func applyRetrySettings(config *Config, settings RetrySettings) {
 	config.RetryPrompt = settings.RetryPrompt
 	config.MaxConsecutiveRetries = settings.MaxConsecutiveRetries
 	config.MaxRecoveryAttempts = settings.MaxRecoveryAttempts
+	if settings.AuthMaxAttempts != nil {
+		config.AuthMaxAttempts = *settings.AuthMaxAttempts
+	}
 	config.InitialDelaySeconds = settings.InitialDelaySeconds
 	config.MaxDelaySeconds = settings.MaxDelaySeconds
 	if settings.DelayIncrementSeconds != 0 || settings.DelayStrategy == delayStrategyLinear {

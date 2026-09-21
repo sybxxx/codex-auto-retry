@@ -380,7 +380,7 @@ func retryLimitStoppedCount(retries []ManagedRetry) int {
 			continue
 		}
 		switch retry.StopReason {
-		case "recovery_attempt_limit", "consecutive_retry_limit", "retry_limit":
+		case "recovery_attempt_limit", "consecutive_retry_limit", "retry_limit", "auth_attempt_limit":
 			count++
 		}
 	}
