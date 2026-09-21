@@ -199,6 +199,29 @@ stops so the damaged configuration can be repaired explicitly; Codex is not
 left pointed at a dead plugin endpoint.
 
 Installation requires Desktop to be fully closed, even in official mode.
+Release CLI calls use `native-command.ps1`: .NET drains stdout and stderr
+separately, preserving the real exit code on Windows PowerShell 5.1. Captures
+are capped at 4,194,304/32,768 characters. CLI discovery selects a native EXE
+and has a ten-second deadline, plugin-list
+verification thirty seconds, registration sixty seconds, and runtime installation
+three minutes. Only read-only list failures categorized as connection errors or
+timeouts are retried once. Warning-only output does not invalidate JSON. Printed
+diagnostics are limited to exit codes and predefined categories; raw output is
+not logged. The target marketplace is checked before mutation; first installs
+without a marketplace use the unfiltered read-only list instead.
+
+The outer release transaction captures runtime EXEs/settings and the named Run/
+StartupApproved values in `runtime-backup` before replacement. Final plugin
+verification requires the exact cachebuster version, not merely an enabled
+plugin with the same name. Rollback stops the new worker, retires owned routing,
+verifies backup hashes, restores both source and runtime, and re-registers and
+verifies the old plugin. It preserves concurrent foreign startup changes, retry
+data and configuration; it never starts the old worker or republishes routing.
+Failure to complete rollback keeps the journal and backups. A reopened Desktop
+defers rollback. Interrupted-journal recovery uses the same restoration routine.
+`installer-cli-smoke-test.ps1` and `upgrade-rollback-smoke-test.ps1` cover these
+paths with child command fixtures and isolated files/mocked registry/processes.
+
 It is transactional. Candidate binaries are staged and hashed before
 the installed files are replaced. Configuration, startup registration,
 environment ownership, and the previous binaries are captured; a failed

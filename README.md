@@ -296,6 +296,14 @@ plugin-owned `CODEX_APP_SERVER_WS_URL` values. It never publishes a persistent
 route, even when shared mode is enabled. Rollback leaves the previous worker
 stopped with shared mode disabled rather than restoring an unsafe route.
 
+The installer now checks plugin-list support before replacement and verifies
+the exact installed plugin version afterwards. Warnings on stderr do not turn
+successful CLI commands into failures. Errors report an exit code and a safe
+category, never raw output or credentials. If final verification fails, rollback
+restores the previous plugin and runtime files together and leaves retries
+stopped. If rollback cannot finish, its journal and backups remain for the next
+installer run after Codex is closed.
+
 On supported Desktop builds, the watchdog uses verified official IPC for silent
 recovery even when shared mode is disabled. Disabling shared mode does not pause
 automatic retries; use the automatic-retry pause control to stop dispatches.

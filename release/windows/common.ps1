@@ -2,6 +2,7 @@
 param()
 
 Set-StrictMode -Version 2
+. (Join-Path $PSScriptRoot 'native-command.ps1')
 
 function Get-FullPath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -123,23 +124,12 @@ function Get-CodexCliCandidates {
 function Invoke-CodexCli {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [ValidateRange(100, 300000)][int]$TimeoutMilliseconds = 60000
     )
 
-    $output = ''
-    $exitCode = 1
-    try {
-        $output = (& $Path @Arguments 2>&1 | Out-String)
-        if ($null -ne $LASTEXITCODE) { $exitCode = [int]$LASTEXITCODE } else { $exitCode = 0 }
-    }
-    catch {
-        $output = $_.Exception.Message
-        $exitCode = 1
-    }
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        Output = $output
-    }
+    Initialize-ReleaseCommandRunner
+    return [CodexAutoRetry.ReleaseCommand]::Run($Path, $Arguments, $TimeoutMilliseconds)
 }
 
 function Find-CodexCli {
@@ -149,7 +139,8 @@ function Find-CodexCli {
     )
 
     foreach ($candidate in (Get-CodexCliCandidates -PreferredPath $PreferredPath -LocalAppDataRoot $LocalAppDataRoot)) {
-        $probe = Invoke-CodexCli -Path $candidate -Arguments @('plugin', '--help')
+        if ([IO.Path]::GetExtension($candidate) -ne '.exe') { continue }
+        $probe = Invoke-CodexCli -Path $candidate -Arguments @('plugin', '--help') -TimeoutMilliseconds 10000
         if ($probe.ExitCode -eq 0 -and $probe.Output -match 'Manage Codex plugins') {
             return $candidate
         }

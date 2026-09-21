@@ -56,6 +56,12 @@ jobs:
           .\scripts\startup-approval-smoke-test.ps1
           .\scripts\supervisor-smoke-test.ps1
 
+      - name: Validate installer on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          .\scripts\installer-cli-smoke-test.ps1
+          .\scripts\upgrade-rollback-smoke-test.ps1
+
       - name: Build and verify release archive
         shell: pwsh
         run: |

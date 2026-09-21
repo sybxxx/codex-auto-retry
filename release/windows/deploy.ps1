@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'upgrade-runtime.ps1')
 
 function Write-Step {
     param([string]$Message)
@@ -248,11 +249,11 @@ function Install-Runtime {
     $script = Join-Path $PluginPath 'scripts\install.ps1'
     $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $script)
     if ($EnableSharedAppServer) { $arguments += '-EnableSharedAppServer' }
-    $output = (& powershell.exe @arguments 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-        throw "The watchdog installer failed. Exit code: $LASTEXITCODE`n$($output.Trim())"
+    $result = Invoke-CodexCli -Path (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Arguments $arguments -TimeoutMilliseconds 180000
+    if ($result.ExitCode -ne 0) {
+        throw "The watchdog installer failed (exit=$($result.ExitCode), category=$(Get-ReleaseCommandFailure $result))."
     }
-    return $output
+    return $result.Output
 }
 
 function Stop-RuntimeForUpgrade {
@@ -262,7 +263,7 @@ function Stop-RuntimeForUpgrade {
     $mcp = Join-Path $RuntimePath 'codex-auto-retry-mcp.exe'
     $stopSignal = Join-Path $RuntimePath 'stop.signal'
     $supervisorStop = Join-Path $RuntimePath 'supervisor.stop'
-    $watchdogProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    $watchdogProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) })
     $wasRunning = $watchdogProcesses.Count -gt 0
     if ($wasRunning) {
@@ -272,7 +273,7 @@ function Stop-RuntimeForUpgrade {
         $deadline = (Get-Date).AddSeconds(12)
         do {
             Start-Sleep -Milliseconds 250
-            $watchdogProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            $watchdogProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
                 Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) })
         } while ($watchdogProcesses.Count -gt 0 -and (Get-Date) -lt $deadline)
         if ($watchdogProcesses.Count -gt 0) {
@@ -280,7 +281,7 @@ function Stop-RuntimeForUpgrade {
         }
     }
 
-    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcp, [System.StringComparison]::OrdinalIgnoreCase) }) |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
@@ -321,10 +322,14 @@ function Restore-IncompleteUpgrade {
         [Parameter(Mandatory = $true)]$Journal,
         [Parameter(Mandatory = $true)][string]$PluginTarget,
         [Parameter(Mandatory = $true)][string]$MarketplacePath,
-        [Parameter(Mandatory = $true)][string]$JournalPath
+        [Parameter(Mandatory = $true)][string]$JournalPath,
+        [Parameter(Mandatory = $true)][string]$RuntimePath,
+        [string]$Cli = '',
+        [string]$PluginId = ''
     )
 
     $transactionRoot = Get-FullPath ([string]$Journal.transaction_root)
+    if (-not (Test-SafeUpgradeTransactionRoot $transactionRoot)) { throw 'Unsafe transaction directory.' }
     $pluginBackup = Get-FullPath (Join-Path $transactionRoot 'plugin-backup')
     $marketplaceBackup = Get-FullPath (Join-Path $transactionRoot 'marketplace.json')
     $pluginExisted = [bool]$Journal.plugin_existed
@@ -334,6 +339,12 @@ function Restore-IncompleteUpgrade {
     }
     if ($marketplaceExisted -and -not (Test-Path -LiteralPath $marketplaceBackup -PathType Leaf)) {
         throw 'The incomplete upgrade is missing its marketplace backup; refusing a guessed rollback.'
+    }
+    Assert-UpgradePlainPath $transactionRoot
+    Assert-UpgradePlainPath $PluginTarget
+    Assert-UpgradePlainPath $MarketplacePath
+    if ($Journal.PSObject.Properties['runtime_snapshot'] -and $Journal.runtime_snapshot) {
+        Restore-UpgradeRuntime -RuntimePath $RuntimePath -TransactionRoot $transactionRoot
     }
 
     if (Test-Path -LiteralPath $PluginTarget -PathType Container) {
@@ -350,8 +361,51 @@ function Restore-IncompleteUpgrade {
     else {
         Remove-Item -LiteralPath $MarketplacePath -Force -ErrorAction SilentlyContinue
     }
+    if ($Journal.PSObject.Properties['registration_attempted'] -and $Journal.registration_attempted) {
+        if (-not $Cli -or -not $PluginId) { throw 'Plugin registration rollback needs a verified CLI.' }
+        $action = if ($pluginExisted) { 'add' } else { 'remove' }
+        $restored = Invoke-CodexCli -Path $Cli -Arguments @('plugin', $action, $PluginId, '--json')
+        if ($restored.ExitCode -ne 0) {
+            throw "Plugin registration rollback failed (exit=$($restored.ExitCode), category=$(Get-ReleaseCommandFailure $restored))."
+        }
+        $document = Get-VerifiedPluginList -Cli $Cli -PluginId $PluginId
+        $entry = @($document.installed | Where-Object pluginId -eq $PluginId)
+        if ($pluginExisted) {
+            $oldManifest = Read-JsonDocument (Join-Path $PluginTarget '.codex-plugin\plugin.json')
+            if ($entry.Count -ne 1 -or -not $entry[0].installed -or -not $entry[0].enabled -or
+                $entry[0].version -ne $oldManifest.version) { throw 'Plugin registration rollback verification failed.' }
+        } elseif (@($entry | Where-Object installed).Count -gt 0) { throw 'New plugin registration was not retired.' }
+    }
+    # Persist completion before removing backups so interruption during cleanup
+    # cannot leave an apparently unfinished transaction with no recovery files.
+    $Journal.phase = 'rolled_back'
+    Write-JsonAtomic -Path $JournalPath -Value $Journal
+    Remove-Item -LiteralPath $JournalPath -Force
     Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $JournalPath -Force -ErrorAction SilentlyContinue
+}
+
+function Get-VerifiedPluginList {
+    param([string]$Cli, [string]$PluginId, [switch]$AllMarketplaces)
+    $marketplaceName = ($PluginId -split '@', 2)[1]
+    $arguments = @('plugin', 'list', '--json')
+    if (-not $AllMarketplaces) { $arguments = @('plugin', 'list', '--marketplace', $marketplaceName, '--json') }
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $listing = Invoke-CodexCli -Path $Cli -Arguments $arguments -TimeoutMilliseconds 30000
+        if ($listing.ExitCode -eq 0) {
+            try { $document = $listing.Output | ConvertFrom-Json }
+            catch { throw 'Codex plugin verification failed (category=invalid_json).' }
+            if ($null -eq $document -or -not $document.PSObject.Properties['installed']) {
+                throw 'Codex plugin verification failed (category=invalid_schema).'
+            }
+            return $document
+        }
+        $category = Get-ReleaseCommandFailure $listing
+        if ($attempt -eq 1 -and $category -in @('timeout', 'connection_failure')) {
+            Start-Sleep -Milliseconds 500
+            continue
+        }
+        throw "Codex plugin verification failed (exit=$($listing.ExitCode), category=$category). No credentials or raw command output were logged."
+    }
 }
 
 function Verify-Installation {
@@ -391,11 +445,12 @@ function Verify-Installation {
     }
 
     if ($VerifyPlugin) {
-        $listing = Invoke-CodexCli -Path $Cli -Arguments @('plugin', 'list', '--json')
-        if ($listing.ExitCode -ne 0) { throw 'Codex could not verify the installed plugin.' }
-        try { $listDocument = $listing.Output | ConvertFrom-Json } catch { throw 'Codex returned an invalid plugin list.' }
-        $match = @($listDocument.installed) | Where-Object { $_.pluginId -eq $PluginId -and $_.installed -and $_.enabled } | Select-Object -First 1
-        if ($null -eq $match) { throw "Codex did not report $PluginId as installed and enabled." }
+        $listDocument = Get-VerifiedPluginList -Cli $Cli -PluginId $PluginId
+        $matches = @($listDocument.installed | Where-Object { $_.pluginId -eq $PluginId -and $_.installed -and $_.enabled })
+        if ($matches.Count -ne 1) { throw "Codex did not report exactly one enabled installation of $PluginId." }
+        if ([string]$matches[0].version -ne [string]$pluginManifest.version) {
+            throw 'Codex plugin verification failed (category=version_mismatch).'
+        }
     }
 
     if ($VerifyRuntime) {
@@ -448,6 +503,7 @@ $localAppDataPath = Get-FullPath $LocalAppDataRoot
 $manifest = Read-ReleaseManifest -Root $packageRootPath
 $payloadRelative = [string]$manifest.payloadPath
 $payloadRoot = Resolve-SafeChildPath -BasePath $packageRootPath -ChildPath $payloadRelative.Replace('/', '\')
+. (Join-Path $payloadRoot 'scripts\startup-approval.ps1')
 $pluginManifestPath = Join-Path $payloadRoot '.codex-plugin\plugin.json'
 $pluginManifest = Read-JsonDocument -Path $pluginManifestPath
 if ($null -eq $pluginManifest -or [string]$pluginManifest.name -ne 'codex-auto-retry' -or
@@ -514,10 +570,11 @@ try {
     $unfinished = Read-UpgradeJournal -Path $upgradeJournalPath
     if ($unfinished) {
         $phase = [string]$unfinished.phase
-        if ($phase -ne 'committed' -and (Test-CodexDesktopRunning)) {
+        if ($phase -notin @('committed', 'rolled_back') -and (Test-CodexDesktopRunning)) {
             throw 'An interrupted upgrade is waiting for recovery. Close Codex completely before running the repair again.'
         }
-        if ($phase -eq 'committed') {
+        if ($phase -in @('committed', 'rolled_back')) {
+            Assert-UpgradePlainPath ([string]$unfinished.transaction_root)
             Remove-Item -LiteralPath ([string]$unfinished.transaction_root) -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $upgradeJournalPath -Force -ErrorAction SilentlyContinue
         }
@@ -526,7 +583,8 @@ try {
             [void](Stop-RuntimeForUpgrade -RuntimePath $runtimePath)
             . (Join-Path $payloadRoot 'scripts\environment.ps1')
             Disable-CodexAutoRetryLegacyRouting -DataDir $runtimePath
-            Restore-IncompleteUpgrade -Journal $unfinished -PluginTarget $pluginTarget -MarketplacePath $marketplacePath -JournalPath $upgradeJournalPath
+            $null = Stop-CodexAutoRetrySharedServerIfUnused -DataDir $runtimePath
+            Restore-IncompleteUpgrade -Journal $unfinished -PluginTarget $pluginTarget -MarketplacePath $marketplacePath -JournalPath $upgradeJournalPath -RuntimePath $runtimePath -Cli $cli -PluginId $pluginId
         }
     }
 
@@ -539,13 +597,24 @@ catch {
     throw
 }
 
-if (-not $SkipRuntimeInstall) {
-    $pathSafety = Join-Path $payloadRoot 'scripts\path-safety.ps1'
-    if (-not (Test-Path -LiteralPath $pathSafety -PathType Leaf)) {
-        throw 'The payload is missing the runtime path-safety helper.'
+try {
+    if (-not $SkipRuntimeInstall) {
+        $pathSafety = Join-Path $payloadRoot 'scripts\path-safety.ps1'
+        if (-not (Test-Path -LiteralPath $pathSafety -PathType Leaf)) {
+            throw 'The payload is missing the runtime path-safety helper.'
+        }
+        . $pathSafety
+        [void](Assert-CodexAutoRetryHostPath -Path $runtimePath)
     }
-    . $pathSafety
-    [void](Assert-CodexAutoRetryHostPath -Path $runtimePath)
+    # A listing failure must be discovered before files, registration or the worker
+    # are replaced. Fresh installs have no personal marketplace to filter yet.
+    if (-not $SkipPluginRegistration) {
+        Write-Step 'Checking plugin listing support before making changes...'
+        $null = Get-VerifiedPluginList -Cli $cli -PluginId $pluginId -AllMarketplaces:(-not (Test-Path -LiteralPath $marketplacePath))
+    }
+} catch {
+    if ($upgradeLock) { $upgradeLock.Dispose(); $upgradeLock = $null }
+    throw
 }
 
 Get-ChildItem -LiteralPath $packageRootPath -File -Recurse -Force -ErrorAction SilentlyContinue |
@@ -556,13 +625,9 @@ $pluginBackup = Join-Path $transactionRoot 'plugin-backup'
 $marketplaceBackup = Join-Path $transactionRoot 'marketplace.json'
 $pluginExisted = Test-Path -LiteralPath $pluginTarget -PathType Container
 $marketplaceExisted = Test-Path -LiteralPath $marketplacePath -PathType Leaf
-$pluginChanged = $false
-$marketplaceChanged = $false
-$runtimeAttempted = $false
-$registered = $false
-$existingRuntimeWasRunning = $false
 $success = $false
 $journalCleared = $false
+$journal = $null
 
 $oldUserProfile = $env:USERPROFILE
 $oldHome = $env:HOME
@@ -576,6 +641,9 @@ try {
     if ($marketplaceExisted) {
         Copy-Item -LiteralPath $marketplacePath -Destination $marketplaceBackup -Force
     }
+    if (-not $SkipRuntimeInstall) {
+        Backup-UpgradeRuntime -RuntimePath $runtimePath -TransactionRoot $transactionRoot
+    }
 	$journal = [pscustomobject][ordered]@{
 	    schema_version = 1
 	    transaction_id = [guid]::NewGuid().ToString('N')
@@ -583,13 +651,15 @@ try {
 	    transaction_root = $transactionRoot
 	    plugin_existed = $pluginExisted
 	    marketplace_existed = $marketplaceExisted
+	    runtime_snapshot = -not $SkipRuntimeInstall
+	    registration_attempted = $false
 	    created_at = [DateTime]::UtcNow.ToString('o')
 	}
 	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
 
     Write-Step 'Installing plugin files...'
-    if ($pluginExisted) {
-        $existingRuntimeWasRunning = Stop-RuntimeForUpgrade -RuntimePath $runtimePath
+    if ($pluginExisted -or -not $SkipRuntimeInstall) {
+        $null = Stop-RuntimeForUpgrade -RuntimePath $runtimePath
     }
 	$journal.phase = 'runtime_stopped'
 	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
@@ -607,7 +677,6 @@ try {
         Copy-Item -LiteralPath $gitMetadataBackup -Destination $gitMetadataTarget -Force
     }
     Set-InstalledMcpLauncher -PluginPath $pluginTarget -RuntimePath $runtimePath
-    $pluginChanged = $true
 	$journal.phase = 'plugin_replaced'
 	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     Write-JsonAtomic -Path (Join-Path $pluginTarget '.codex-auto-retry-release.json') -Value ([pscustomobject][ordered]@{
@@ -618,7 +687,6 @@ try {
 
     Write-Step 'Registering the personal Codex plugin...'
     Write-JsonAtomic -Path $marketplacePath -Value $marketplace
-    $marketplaceChanged = $true
 	$journal.phase = 'plugin_registered'
 	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
 
@@ -628,16 +696,16 @@ try {
 
     if (-not $SkipPluginRegistration) {
         if ([string]::IsNullOrWhiteSpace([string]$cli)) { throw 'Codex CLI is required to register the plugin.' }
+        $journal.registration_attempted = $true
+        Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
         $addResult = Invoke-CodexCli -Path $cli -Arguments @('plugin', 'add', $pluginId, '--json')
         if ($addResult.ExitCode -ne 0) {
-            throw "Codex plugin registration failed with exit code $($addResult.ExitCode)."
+            throw "Codex plugin registration failed (exit=$($addResult.ExitCode), category=$(Get-ReleaseCommandFailure $addResult))."
         }
-        $registered = $true
     }
 
     if (-not $SkipRuntimeInstall) {
         Write-Step 'Installing and starting the background watchdog...'
-        $runtimeAttempted = $true
         [void](Install-Runtime -PluginPath $pluginTarget -EnableSharedAppServer:$EnableSharedAppServer)
 		$journal.phase = 'runtime_installed'
 		Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
@@ -646,9 +714,9 @@ try {
     Write-Step 'Verifying the completed installation...'
     $baseVersion = ([string]$manifest.pluginVersion -split '\+', 2)[0]
     Verify-Installation -PluginPath $pluginTarget -RuntimePath $runtimePath -Cli $cli -PluginId $pluginId -ExpectedBaseVersion $baseVersion -VerifyPlugin (-not $SkipPluginRegistration) -VerifyRuntime (-not $SkipRuntimeInstall) -ExpectedSharedAppServer:$EnableSharedAppServer
-    $success = $true
 	$journal.phase = 'committed'
 	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
+    $success = $true
 
     Write-Step 'Installation completed successfully.'
     if ($EnableSharedAppServer) {
@@ -672,50 +740,20 @@ catch {
     $failure = $_
     Write-Step 'Installation failed; restoring the previous installation...'
     try {
-        if ($runtimeAttempted -and -not $pluginExisted -and
-            (Test-Path -LiteralPath (Join-Path $pluginTarget 'scripts\uninstall.ps1') -PathType Leaf)) {
-            [void](& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $pluginTarget 'scripts\uninstall.ps1') -KeepData 2>&1 | Out-String)
-        }
-        if ($pluginChanged -and (Test-Path -LiteralPath $pluginTarget -PathType Container)) {
-            $current = Get-Item -LiteralPath $pluginTarget -Force
-            if (($current.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
-                Remove-Item -LiteralPath $pluginTarget -Recurse -Force
-            }
-        }
-        if ($pluginExisted -and (Test-Path -LiteralPath $pluginBackup -PathType Container)) {
-            Copy-DirectoryContents -Source $pluginBackup -Destination $pluginTarget
-        }
-        if ($marketplaceChanged) {
-            if ($marketplaceExisted) {
-                Copy-Item -LiteralPath $marketplaceBackup -Destination $marketplacePath -Force
-            }
-            else {
-                Remove-Item -LiteralPath $marketplacePath -Force -ErrorAction SilentlyContinue
-            }
-        }
-        if ($registered -and -not [string]::IsNullOrWhiteSpace([string]$cli)) {
-            if ($pluginExisted) {
-                [void](Invoke-CodexCli -Path $cli -Arguments @('plugin', 'add', $pluginId, '--json'))
-            }
-            else {
-                [void](Invoke-CodexCli -Path $cli -Arguments @('plugin', 'remove', $pluginId, '--json'))
-            }
-        }
-        if ($runtimeAttempted -or $existingRuntimeWasRunning) {
+        if ($journal -and (Test-Path -LiteralPath $upgradeJournalPath)) {
+            if (Test-CodexDesktopRunning) { throw 'Close Codex before completing rollback.' }
+            $null = Stop-RuntimeForUpgrade -RuntimePath $runtimePath
             # Never invoke an old installer's shared-mode publisher on rollback.
             . (Join-Path $payloadRoot 'scripts\environment.ps1')
             Disable-CodexAutoRetryLegacyRouting -DataDir $runtimePath
+            $null = Stop-CodexAutoRetrySharedServerIfUnused -DataDir $runtimePath
+            Restore-IncompleteUpgrade -Journal $journal -PluginTarget $pluginTarget -MarketplacePath $marketplacePath -JournalPath $upgradeJournalPath -RuntimePath $runtimePath -Cli $cli -PluginId $pluginId
+            $journalCleared = $true
+            Write-Step 'Previous files restored. Automatic retry is stopped; settings and task state were preserved.'
         }
-		if ($success -eq $false -and (Test-Path -LiteralPath $upgradeJournalPath -PathType Leaf)) {
-			$rollbackJournal = Read-UpgradeJournal -Path $upgradeJournalPath
-			$rollbackJournal.phase = 'rolled_back'
-			Write-JsonAtomic -Path $upgradeJournalPath -Value $rollbackJournal
-			Remove-Item -LiteralPath $upgradeJournalPath -Force -ErrorAction SilentlyContinue
-			$journalCleared = $true
-		}
     }
     catch {
-        Write-Warning 'Automatic rollback was incomplete. Existing retry data was not deleted.'
+        Write-Warning 'Automatic rollback was incomplete. Backup and upgrade journal were retained; close Codex and rerun this installer. Existing retry data was not deleted.'
     }
     throw $failure
 }
