@@ -812,7 +812,7 @@ window.setInterval(() => {
 if (new URLSearchParams(window.location.search).has("preview")) {
   render(previewSnapshot());
 } else {
-  app = new App({ name: "Codex Auto Retry", version: "0.7.11" });
+  app = new App({ name: "Codex Auto Retry", version: "0.7.12" });
   app.onerror = (error) => showNotice(error instanceof Error ? error.message : "连接失败", true);
   app.onhostcontextchanged = handleHostContext;
   app.ontoolresult = (result) => {
@@ -831,7 +831,7 @@ if (new URLSearchParams(window.location.search).has("preview")) {
 function previewSnapshot(): ManagementSnapshot {
   const now = Date.now();
   return {
-    version: "0.7.11",
+    version: "0.7.12",
     running: true,
     heartbeat_stale: false,
     paused: false,
